@@ -1,0 +1,48 @@
+[build-system]
+requires = ["setuptools==80.9.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "fitsproof"
+version = "0.1.0"
+description = "Predicts, enforces, and proves an LLM inference resource contract on consumer hardware."
+readme = "README.md"
+license = { file = "LICENSE" }
+requires-python = ">=3.11"
+dependencies = [
+    "numpy==2.2.6",
+    "pyyaml==6.0.2",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest==8.3.5",
+    "pytest-cov==6.1.0",
+    "hypothesis==6.135.0",
+    "mutmut==3.3.0",
+    "ruff==0.11.13",
+]
+
+[project.scripts]
+fitsproof = "fitsproof.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-v --tb=short"
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+src = ["src"]
+exclude = ["mutants/"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "N", "W", "UP"]
+ignore = []
+
+[tool.mutmut]
+paths_to_mutate = ["src/fitsproof/contract/"]
+runner = ".venv/bin/python -m pytest tests/contract/ -x -q"
