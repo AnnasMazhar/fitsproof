@@ -26,12 +26,12 @@ If this is useful, star the repo.
 ## Headline evidence
 
 `fitsproof stress` runs 25 configurations against a declared budget and fails the build on any
-violation or undocumented mode change. Real output (budget: 4 GB, reference model ~73 MB):
+violation or undocumented mode change. Real output (budget: 4 GB, reference model ~70 MB):
 
 ```
 $ fitsproof stress
-ADMITTED: 0.073 GB predicted peak <= 4.000 GB budget (margin: 3927.0 MB)
-Stress harness: 25 configs, 0 violations, 0 silent mode changes. Margin: min=3909.2 MB, median=3909.3 MB, max=3912.6 MB.
+ADMITTED: 0.070 GB predicted peak <= 4.000 GB budget (margin: 3930.5 MB)
+Stress harness: 25 configs, 0 violations, 0 silent mode changes. Margin: min=3912.7 MB, median=3912.9 MB, max=3916.2 MB.
 ```
 
 ## Plug it in — four surfaces, every snippet below is executed by the test suite
@@ -231,10 +231,11 @@ These are honest. A repo with no stated limitations is not credible.
   process start. Allocations freed before the post-call sample may not be captured.
 
 - **Boundary safety margin.** `admit` returns NEAR_BOUNDARY (exit 1) when the
-  predicted peak is within 50 MB of the declared budget. This covers a ~25%
-  prediction overrun on a small model. Configurations flagged as NEAR_BOUNDARY
-  should be validated with `fitsproof verify` before use. Admission at a tight
-  budget does not guarantee the proof harness will pass.
+  predicted peak is within 50 MiB (52 MB) of the declared budget. This covers a ~25%
+  prediction overrun on a small model (~70 MB weights × 1.25 = ~17 MB overrun, well under
+  the margin). Configurations flagged as NEAR_BOUNDARY should be validated with
+  `fitsproof verify` before use. Admission at a tight budget does not guarantee the proof
+  harness will pass.
 
 - **Speculative decoding equality only holds at temperature=0.** Probabilistic
   acceptance (temperature > 0) requires rejection sampling (Algorithm 1 of

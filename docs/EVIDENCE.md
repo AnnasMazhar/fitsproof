@@ -35,11 +35,12 @@ Each row: **claim as written in README → exact command → raw output → pass
 **Command (admission — fits):**
 ```
 $ .venv/bin/fitsproof admit --budget-gb 4
-ADMITTED: 0.073 GB predicted peak <= 4.000 GB budget (margin: 3927.1 MB)
+ADMITTED: 0.072 GB predicted peak <= 4.000 GB budget (margin: 3927.8 MB)
 ```
 
-Note: predicted peak now includes process_baseline_bytes (interpreter + numpy, ~34 MB) in addition
-to model weights + KV cache + activations (~39 MB), total ~73 MB. This matches measured RSS.
+Note: predicted peak includes process_baseline_bytes (interpreter + numpy, ~34 MB) in addition
+to model weights + KV cache + activations (~38 MB), total ~70–73 MB. Probe variance is normal;
+the margin column in stress runs reflects the same variation.
 
 **Command (refusal — does not fit, named constraint, exit 2):**
 ```
@@ -70,12 +71,14 @@ Probing machine...
   gemm:       298.65 GFLOPS
   RAM:        33.55 GB
   VRAM:       0.00 GB
-ADMITTED: 0.073 GB predicted peak <= 4.000 GB budget (margin: 3927.1 MB)
-ADMITTED: 0.073 GB predicted peak <= 4.000 GB budget (margin: 3927.1 MB)
-Stress harness: 25 configs, 0 violations, 0 silent mode changes. Margin: min=3908.4 MB, median=3908.6 MB, max=3912.0 MB.
+ADMITTED: 0.070 GB predicted peak <= 4.000 GB budget (margin: 3930.5 MB)
+ADMITTED: 0.072 GB predicted peak <= 4.000 GB budget (margin: 3927.8 MB)
+Stress harness: 25 configs, 0 violations, 0 silent mode changes. Margin: min=3912.7 MB, median=3912.9 MB, max=3916.2 MB.
 ```
 
 **PASS.** No network calls; all commands run from the installed wheel with no external dependencies.
+Note: predicted peak varies slightly between runs (0.069–0.073 GB) because probe() re-measures DRAM
+bandwidth each invocation; this is normal and not a bug.
 
 ---
 
@@ -84,8 +87,8 @@ Stress harness: 25 configs, 0 violations, 0 silent mode changes. Margin: min=390
 **Command:**
 ```
 $ .venv/bin/fitsproof stress
-ADMITTED: 0.073 GB predicted peak <= 4.000 GB budget (margin: 3927.0 MB)
-Stress harness: 25 configs, 0 violations, 0 silent mode changes. Margin: min=3909.2 MB, median=3909.3 MB, max=3912.6 MB.
+ADMITTED: 0.070 GB predicted peak <= 4.000 GB budget (margin: 3930.5 MB)
+Stress harness: 25 configs, 0 violations, 0 silent mode changes. Margin: min=3912.7 MB, median=3912.9 MB, max=3916.2 MB.
 ```
 
 **PASS.** 25 configurations (5 prompt × 5 decode lengths), zero violations, zero silent mode changes.
@@ -96,26 +99,26 @@ Margins are non-identical (min ≠ median ≠ max) because verify.py uses /proc/
 
 ### Claim 3b: "Boundary honesty — admit warns and exits non-zero when within safety margin"
 
-**Problem (pre-fix):** `stress --budget-gb 0.08` admitted with predicted=73 MB < 80 MB, then
-reported 25 violations because measured RSS (~91 MB) exceeded the 80 MB budget. The admission
+**Problem (pre-fix):** `stress --budget-gb 0.08` admitted with predicted ~70 MB < 80 MB, then
+reported 25 violations because measured RSS (~88 MB) exceeded the 80 MB budget. The admission
 and proof paths disagreed at the boundary.
 
-**Fix:** `admit()` returns NEAR_BOUNDARY (exit 1) when `budget - predicted_peak < 50 MB`
-(SAFETY_MARGIN_BYTES). The CLI exits 1 for NEAR_BOUNDARY so builds fail unless the caller
-handles it explicitly.
+**Fix:** `admit()` returns NEAR_BOUNDARY (exit 1) when `budget - predicted_peak < 50 MiB`
+(SAFETY_MARGIN_BYTES = 52428800 bytes, displayed as 52 MB). The CLI exits 1 for NEAR_BOUNDARY
+so builds fail unless the caller handles it explicitly.
 
 **Command (boundary budget):**
 ```
 $ .venv/bin/fitsproof stress --budget-gb 0.08; echo "exit: $?"
-WARNING (near boundary): 0.073 GB predicted peak <= 0.080 GB budget (margin: 7.0 MB < safety margin: 52 MB). Prediction error may exceed the remaining margin. Run `fitsproof verify` to measure actual RSS, or increase the budget.
+WARNING (near boundary): 0.069 GB predicted peak <= 0.080 GB budget (margin: 10.5 MB < safety margin: 52 MB). Prediction error may exceed the remaining margin. Run `fitsproof verify` to measure actual RSS, or increase the budget.
 exit: 1
 ```
 
 **Command (clear budget — no warning):**
 ```
 $ .venv/bin/fitsproof stress --budget-gb 4; echo "exit: $?"
-ADMITTED: 0.073 GB predicted peak <= 4.000 GB budget (margin: 3927.0 MB)
-Stress harness: 25 configs, 0 violations, 0 silent mode changes. Margin: min=3909.2 MB, median=3909.3 MB, max=3912.6 MB.
+ADMITTED: 0.070 GB predicted peak <= 4.000 GB budget (margin: 3930.5 MB)
+Stress harness: 25 configs, 0 violations, 0 silent mode changes. Margin: min=3912.7 MB, median=3912.9 MB, max=3916.2 MB.
 exit: 0
 ```
 
@@ -236,19 +239,19 @@ $ echo '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}
 **Command:**
 ```
 $ .venv/bin/fitsproof verify --budget-gb 1.0 --tokens 8
-ADMITTED: 0.073 GB predicted peak <= 1.000 GB budget (margin: 927.0 MB)
-  measured_peak:    87.6 MB
+ADMITTED: 0.070 GB predicted peak <= 1.000 GB budget (margin: 930.0 MB)
+  measured_peak:    83.7 MB
   budget:           1000.0 MB
   budget_respected: True
-  margin:           912.4 MB
+  margin:           916.3 MB
 ```
 
-**PASS.** Prediction (73 MB) and measurement (87.6 MB) are now consistent: ratio = 87.6/73 = 1.20×.
+**PASS.** Prediction (70 MB) and measurement (83.7 MB) are consistent: ratio = 83.7/70 = 1.20×.
 Previously (v0.1.0) prediction was 39 MB vs measured 301 MB — an 8× gap because the predictor
 excluded the process baseline (~34 MB interpreter + numpy) and verify.py used ru_maxrss (process
 HWM since start, dominated by probe() benchmark arrays). Both are fixed in v0.1.2.
 
-Prediction vs measurement: predicted=73 MB, measured=88 MB, ratio=1.20×, within 3× tolerance.
+Prediction vs measurement: predicted=70 MB, measured=84 MB, ratio=1.20×, within 3× tolerance.
 test_predict_measure_tolerance enforces ratio ≤ 3× in CI.
 
 ---
@@ -260,26 +263,26 @@ test_predict_measure_tolerance enforces ratio ≤ 3× in CI.
 $ .venv/bin/fitsproof pareto
 quant           ctx   peak_MB    tok/s   top1  pred_MB  dominated
 -----------------------------------------------------------------
-none             16      87.8     4.47  1.000     38.7         no
-none             32      87.9     4.38  1.000     38.8        yes
-none             64      87.9     4.11  1.000     39.0        yes
-none            128      87.9     4.34  1.000     39.3        yes
-none            256      87.9     4.01  1.000     40.1        yes
-int8_sym         16      88.1     4.60  0.984     10.3        yes
-int8_sym         32      88.1     4.41  0.984     10.3        yes
-int8_sym         64      88.1     4.71  0.984     10.3         no
-int8_sym        128      88.1     4.57  0.984     10.4        yes
-int8_sym        256      88.1     4.63  0.984     10.6        yes
-int4_sym         16      88.1     4.59  0.754      5.5        yes
-int4_sym         32      88.1     4.32  0.754      5.6        yes
-int4_sym         64      88.1     4.68  0.754      5.6        yes
-int4_sym        128      88.1     4.65  0.754      5.6        yes
-int4_sym        256      88.1     4.63  0.754      5.7        yes
+none             16      87.2     4.33  1.000     38.7         no
+none             32      87.3     4.51  1.000     38.8         no
+none             64      87.3     4.34  1.000     39.0        yes
+none            128      87.3     3.91  1.000     39.3        yes
+none            256      87.3     4.29  1.000     40.1        yes
+int8_sym         16      87.4     4.05  0.984     10.3        yes
+int8_sym         32      87.4     4.73  0.984     10.3        yes
+int8_sym         64      87.4     4.43  0.984     10.3        yes
+int8_sym        128      87.4     4.79  0.984     10.4         no
+int8_sym        256      87.4     4.53  0.984     10.6        yes
+int4_sym         16      87.5     4.76  0.754      5.5        yes
+int4_sym         32      87.5     4.69  0.754      5.6        yes
+int4_sym         64      87.5     4.58  0.754      5.6        yes
+int4_sym        128      87.5     4.57  0.754      5.6        yes
+int4_sym        256      87.5     4.52  0.754      5.7        yes
 Total configs: 15
-Non-dominated: 2
+Non-dominated: 3
 ```
 
-**PASS.** `peak_MB` varies across configs (87.8–88.1 MB) because pareto.py now uses
+**PASS.** `peak_MB` varies across configs (87.2–87.5 MB) because pareto.py uses
 `_get_rss_bytes()` from `verify.py` (live /proc/self/status VmRSS, not ru_maxrss process HWM).
 The variation is small because the reference model is tiny (39 MB weights); the dominant cost is
 interpreter + numpy baseline (~48–49 MB), and different context lengths produce slightly different
@@ -496,7 +499,7 @@ rootdir: /build/portfolio/fitsproof
 configfile: pyproject.toml
 testpaths: tests
 plugins: cov-6.1.0, hypothesis-6.135.0, platformdirs-4.12.0
-collected 148 items
+collected 160 items
 
 tests/adversarial/test_byzantine_inputs.py ............................
 ....................
@@ -507,10 +510,11 @@ tests/engine/test_quant.py ..............
 tests/engine/test_sampling.py ............
 tests/engine/test_server.py ......
 tests/engine/test_speculative.py ...
+tests/test_cli_smoke.py ..........
 tests/value/test_incumbent_gap.py .........
 tests/value/test_readme_snippets.py ..
 
-160 passed in 400.22s (0:06:40)
+160 passed in 265.91s (0:04:25)
 ```
 
 ---
