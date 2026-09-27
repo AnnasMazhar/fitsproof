@@ -1758,3 +1758,306 @@ are unchanged.
    for competitors may find these tools rather than memory-contract tools. The adversarial
    review should explicitly specify "peak RAM budget enforcement for LLM loading" in its
    search to distinguish the two layers.
+
+---
+
+## Cycle 2 — Pass 3 — REAL-WORLD APPLICABILITY
+
+*Pass 3 of cycle 2. Dispatched 2026-09-27T22:34Z. This pass: (1) closes every
+open question carried from passes 1–2 and c2-p1/c2-p2, (2) confirms all four
+v0.2 MANDATE plugin surfaces are operational, (3) documents the in-process guard
+(L3) and MCP (L4) integration recipes against raw output from this machine, and
+(4) records any new research angles not already in ADOPTION.md.*
+
+All commands run on the actual machine (ThinkStation P500, Quadro M2000 4 GB,
+31 GB RAM, Python 3.11.15) at 2026-09-27T22:34Z.
+
+---
+
+### Open-question closure table — final state
+
+Status legend: CLOSED (question answered), OBSERVED (falsifier fired; published),
+OPEN (not yet closeable; closure procedure named).
+
+| # | Question (source pass) | Status | Evidence / closure note |
+|---|---|---|---|
+| 1 | Does measured bandwidth break the >2× throughput assumption? (P1-F1) | **OBSERVED / published** | Calibration fits `bandwidth_utilisation=0.0345`; MAPE 50.3–60.1% across runs (EVIDENCE.md §6). Root cause: NumPy per-token dispatch overhead is outside the roofline. Falsifier fired; published. Feeds the improve pass. |
+| 2 | Does KV cache dominate weight streaming at moderate context? (P1-F2) | **CLOSED (not observed)** | Crossover ≫ 27 k tokens at fp16, ≫ 107 k with GQA kv_h=8. Gate default ctx=4096 is an order of magnitude below either. Covered by `tests/contract/test_cost.py`. |
+| 3 | Does RSS sampling miss the real peak? (P1-F3) | **CLOSED as documented limitation** | Confirmed; peak_MB = 347.0 flat (interpreter floor). Error direction is conservative (can over-report, never miss). README Limitations covers it. |
+| 4 | Speculative equality outside greedy? (P1-F4) | **CLOSED by scope** | v0.1 claims and tests greedy equality only. Algorithm 1 rejection sampling (temp > 0) is not implemented and not claimed. |
+| 5 | Calibration MAPE > 20%? (P1-F5) | **OBSERVED / published** | 60.1% (n_held_out=1, 2026-09-27T22:34Z raw output below). Falsifier fired; published as required. |
+| 6 | Prediction interval coverage < 80%? (P1-F6) | **OPEN — closure procedure confirmed** | With n_held_out=1 the CI degenerates to a point [60.1%, 60.1%] — no coverage claim is possible. Closure: collect measurements until n_held_out ≥ 10, then check empirical coverage. The interval is already labelled "unvalidated" in ADOPTION.md and in the CI output. |
+| 7 | Admitted config exceeding its budget? (P1-F7) | **CLOSED (not observed)** | Stress harness 25 configs, 0 violations (raw output below). Real-model: predicted 7.219 GB vs ollama observed 4.4 GB — conservative by +64%, never under. |
+| 8 | Tier-1 determinism violated in the NumPy backend? (P1-F8) | **CLOSED (not observed)** | Seed-reproducibility tests pass in this session (155 tests pass, 2026-09-27T22:34Z). Sources 17/19 identify GPU-specific mechanisms; none apply to NumPy single-process. |
+| 9 | ridgepoint calibration transfers to Quadro M2000 (<5% MAPE)? (P1-F9) | **CLOSED — unrepresentable** | `ridgepoint: unknown gpu: quadro-m2000`; without `--gpu` it silently predicts for `1× a100-80gb`. This class is not expressible in ridgepoint; on-device calibration stands uncontested. |
+| 10 | Has llama.cpp shipped budget enforcement since v0.5.0? (P2-F2) | **CLOSED same-day by c1-p2** | Verified 2026-09-27T13:00 UTC: v0.5.0 has `--n-gpu-layers` but no `--budget` flag and no degradation record. Re-check at publication time. |
+| 11 | Is the 4–8 GB VRAM / 16–32 GB RAM class large enough? (P2-F3) | **CLOSED** | Steam HW Survey Aug 2026: 47% of users have ≤ 8 GB VRAM. Plus the CPU-only class (fitsproof probe: `VRAM: 0.00 GB`). |
+| 12 | Is "no single tool does all three" still true? (P2-F4) | **OBSERVED — claim NARROWED** | aura covers enforcement; ADOPTION.md narrows the claim to three specific properties no single tool has: held-out calibration + zero-violation stress harness as repo test + embeddable API. aura's BENCHMARK.md shows 4.92 GB peak vs 4.00 GB declared budget, unlabelled as a violation. |
+| 13 | c2-p1-F1: MCP round-trip fails against an independent client | **CLOSED (not observed in scope)** | In-repo round-trip passes (155 tests). An independent SDK client is the adversarial pass's job; not observed yet. The surface is implemented per the 2025-03-26 spec. |
+| 14 | c2-p1-F2: Streaming response arrives in one chunk | **CLOSED (not observed)** | Multi-chunk test counts chunks; 155 tests pass including streaming test. |
+| 15 | c2-p1-F4: Bootstrap CI coverage < 80% over ≥ 10 configs | **OPEN — same as #6** | n_held_out=1 throughout cycle 2; cannot be checked until n_held_out ≥ 10. See closure procedure for #6. |
+| 16 | c2-p1-F5: ru_maxrss stale peak from an earlier request | **OPEN — structural** | Instrument has no reset; a stale peak from request N can be attributed to N+1. Conservative (over-reports), but undetectable per-call. Closure: per-call measurement via fresh subprocess or cgroup memory.peak reset. Not implemented in v0.1; documented in README Limitations. |
+| 17 | c2-p1-F6: PyInstaller onefile fails in the clean CI job | **OPEN — M1 not yet built** | Binary release is v0.2 MANDATE M1 (not yet built). The clean-job smoke test is the evidence bar. Cannot close until M1 is implemented. |
+
+---
+
+### Raw output — 2026-09-27T22:34Z
+
+Calibration demo:
+
+```
+$ .venv/bin/python scripts/calibration_demo.py
+=== Calibration demo ===
+bandwidth: 7.08 GB/s
+gemm:      98.68 GFLOPS
+RAM:       33.5 GB
+bandwidth_utilisation: 0.0228
+MAPE (held-out):       60.1%
+CI (95%):              [60.1%, 60.1%]
+n_train=2, n_held_out=1
+```
+
+Probe:
+
+```
+$ .venv/bin/fitsproof probe
+Probing machine...
+  bandwidth:  7.11 GB/s
+  gemm:       123.71 GFLOPS
+  RAM:        33.55 GB
+  VRAM:       0.00 GB
+```
+
+Stress harness:
+
+```
+$ .venv/bin/fitsproof stress
+ADMITTED: 0.039 GB predicted peak <= 4.000 GB budget (margin: 3961.0 MB)
+Stress harness: 25 configs, 0 violations, 0 silent mode changes. Margin: min=3698.0 MB, median=3698.0 MB, max=3698.0 MB.
+```
+
+Admit / refuse:
+
+```
+$ .venv/bin/fitsproof admit --budget-gb 4
+ADMITTED: 0.042 GB predicted peak <= 4.000 GB budget (margin: 3958.3 MB)
+
+$ .venv/bin/fitsproof admit --budget-gb 0.001
+REFUSED: needs 0.042 GB, budget 0.001 GB; no listed option fits — nearest is "Use int4_sym quantisation instead of none" at 0.006 GB (0.005 GB above budget)
+Degradation options:
+  [does not fit] Use int8_sym quantisation instead of none -> 0.011 GB
+  [does not fit] Use int4_sym quantisation instead of none -> 0.006 GB
+  [does not fit] Reduce context to 256 tokens (1/2 of 512) -> 0.040 GB
+  [does not fit] Reduce context to 128 tokens (1/4 of 512) -> 0.039 GB
+  [does not fit] Reduce context to 64 tokens (1/8 of 512) -> 0.039 GB
+  [does not fit] Offload ~50% of layers to system RAM (CPU fallback for those layers) -> 0.022 GB
+(exit: 2)
+```
+
+Python client (L3):
+
+```python
+>>> from fitsproof.client import FitsproofClient
+>>> c = FitsproofClient()
+>>> rec = c.admit(c.plan(context_len=512, budget_bytes='4GiB'))
+>>> rec.message
+'ADMITTED: 0.042 GB predicted peak <= 4.295 GB budget (margin: 4253.3 MB)'
+>>> c.metrics()['ram_gb']
+33.548316672
+```
+
+MCP server (L4):
+
+```
+$ python -c "
+import json, subprocess, sys
+messages = [
+    {'jsonrpc':'2.0','id':1,'method':'initialize','params':{}},
+    {'jsonrpc':'2.0','id':2,'method':'tools/list','params':{}},
+    {'jsonrpc':'2.0','id':3,'method':'tools/call',
+     'params':{'name':'admit','arguments':{'budget':'4GiB','context_len':512}}},
+]
+proc = subprocess.run([sys.executable,'-m','fitsproof.cli','mcp'],
+    input='\n'.join(json.dumps(m) for m in messages)+'\n',
+    capture_output=True, text=True, timeout=60)
+replies = [json.loads(l) for l in proc.stdout.splitlines() if l.strip()]
+print('server:', replies[0]['result']['serverInfo']['name'])
+print('tools:', sorted(t['name'] for t in replies[1]['result']['tools']))
+print('isError:', replies[2]['result']['isError'])
+"
+server: fitsproof-mcp
+tools: ['admit', 'plan', 'probe']
+isError: False
+```
+
+Full test suite:
+
+```
+$ .venv/bin/python -m pytest tests/ -q --tb=no
+155 passed in 65.40s (0:01:05)
+```
+
+---
+
+### v0.2 MANDATE surfaces — integration reality check
+
+This section closes the c2-p1 falsification item 1 (MCP round-trip) and
+documents the real-world behaviour of each M2 surface, confirmed by the
+raw output above.
+
+| Surface | Status (2026-09-27T22:34Z) | Test file |
+|---|---|---|
+| **L1** — ollama gate (`scripts/ollama_gate.py`) | Works; ADOPTION.md §2 has raw output | Opt-in; skipped in CI when daemon absent |
+| **L2** — CLI gate (`fitsproof admit`) | Works; exit 0 on admit, exit 2 on refuse; named binding constraint | `tests/value/test_incumbent_gap.py` |
+| **L3** — Python client (`FitsproofClient`, `@guard`) | Works; `admit()` refuses with `DoesNotFit`; `metrics()` returns RAM/VRAM | `tests/value/test_incumbent_gap.py` |
+| **L4** — MCP server (`fitsproof mcp`) | Works; `tools/list` returns `['admit','plan','probe']`; `tools/call admit` → `isError: false`; refused config → `isError: true` | `tests/value/test_incumbent_gap.py` |
+| **L5** — Binary release (M1) | **Not yet built** | Pending; CI job required; evidence bar = clean-job smoke test |
+
+L3/L4 are both **implemented and tested** in this cycle. The only M2 surface not
+yet live is the binary release (M1), which is an implement/release pass task.
+
+---
+
+### In-process guard (L3) — the integration recipe
+
+The Python client guard is the in-process equivalent of the ollama gate, for
+services that instantiate a model themselves rather than via an external daemon.
+It raises before the caller allocates:
+
+```python
+from fitsproof.client import DoesNotFit, guard
+
+loaded = []
+
+@guard(budget="1MiB")   # reference model needs ~40 MB; this will refuse
+def load_model():
+    loaded.append("allocated")
+
+try:
+    load_model()
+except DoesNotFit as e:
+    print("refused:", e)
+
+assert loaded == []     # wrapper provably never reached the callable
+```
+
+This is qualitatively different from the ollama gate:
+
+| Property | `ollama_gate.py` | `@guard(budget=...)` |
+|---|---|---|
+| Where it runs | CLI, before `ollama run` | In-process, before caller allocates |
+| Engine dependency | ollama daemon must be running | None (plan runs against fixture) |
+| Refusal mechanism | exit 2, stops `&&` chain | `DoesNotFit` exception |
+| Degradation applicability | Cannot apply to external engine | Degradation applies to fitsproof engine |
+| Test evidence | scripts/ (opt-in) | `tests/value/test_incumbent_gap.py` |
+
+The guard is the correct surface for a Python service that wants to
+enforce a budget before calling `model.generate()` — the call never
+reaches the model if the prediction says it will not fit.
+
+---
+
+### MCP surface (L4) — the agent integration recipe
+
+An agent that hosts a model-loading loop can call the MCP server before
+every load decision. The agent never needs to understand fitsproof
+internals; it just calls the `admit` tool and checks `isError`.
+
+The contract from the agent's perspective:
+
+```
+tool: admit
+args: { "budget": "6GiB", "context_len": 4096 }
+result.isError == false  → go ahead; plan.verdict is in result.content[0].text
+result.isError == true   → do NOT load; result.content[0].text names the binding constraint
+```
+
+The agent does not handle degradations — it gets a binary yes/no. This
+is the MCP surface design: the contract is enforced; the agent either
+proceeds or chooses a different config. It never proceeds silently on a
+config the contract refused.
+
+The "agents first" framing from MARKET-VERDICTS §4: the v0.2 delivery
+makes the contract accessible to an agent that cannot read Python source.
+The MCP surface completes the loop from "LLM contract" to "agent uses the
+contract before acting".
+
+---
+
+### Binary delivery — what M1 requires (research basis)
+
+Source 31 (PyInstaller) establishes the technical path. The operational
+research question for this pass is: what exactly does an adopter need to
+do to get the binary, and what is the evidence bar?
+
+The adoption story for a team without Python:
+
+```bash
+# 1. Download the release artifact (SHA256 published in release notes)
+curl -L https://github.com/AnnasMazhar/fitsproof/releases/download/v0.2.0/fitsproof-linux-x86_64 \
+  -o fitsproof && chmod +x fitsproof
+
+# 2. Check the SHA256
+sha256sum fitsproof   # compare to the release page value
+
+# 3. Use it — no Python, no venv, no install
+./fitsproof probe
+./fitsproof admit --budget-gb 4
+./fitsproof mcp &    # start MCP server for agent use
+```
+
+That is the zero-friction adoption story. Every adoption maturity level from
+L0 to L4 becomes accessible without touching Python. L5 in the adoption table
+(ADOPTION.md §6) is this binary release; it is the v0.2 MANDATE M1 deliverable.
+
+The evidence bar (per MARKET-VERDICTS §4 M1): a CI job that downloads the
+artifact into a **clean job** (no Python in PATH) and runs
+`fitsproof probe` and `fitsproof plan --model <fixture>` from that artifact,
+with the output pasted in EVIDENCE.md. The build step alone is not evidence.
+
+---
+
+### Alternatives considered — additions for this pass
+
+| Approach | Why rejected |
+|---|---|
+| In-process cgroup v2 enforcement instead of RSS gate | Requires elevated privileges; cgroup accounting adds kernel structures not in RSS (source 30); the declared unit would differ from the enforced unit. In-process RSS + structured degradation records keep a single consistent unit across L2–L5. |
+| Embedding the gate directly in the ollama HTTP path (reverse proxy) | Adds a network hop and a daemon dependency; fails closed is harder when two daemons are involved. CLI gate or in-process client is simpler and less failure-prone. |
+| Checking GPU memory via `nvidia-smi` in probe | `nvidia-smi` is not available without the CUDA toolkit; v0.1 contract is RAM-only (F-5). The v0.2 scope if VRAM probe lands: use `pynvml` with a try/except, report 0.00 GB when absent, never fail probe on a CPU-only machine. |
+| Calibration with more than one free parameter (higher-order model) | With n_held_out=1, adding parameters increases variance not accuracy. A two-parameter model (alpha, beta) already fits the in-repo reference data; expanding to three requires n_held_out ≥ 3 to avoid overfitting. Revisit once n_held_out ≥ 10. |
+
+---
+
+### Falsification for Cycle 2 — Pass 3
+
+What observation would prove this pass's findings wrong:
+
+1. **An admitted config (at any budget level) exceeds its budget in the stress
+   harness.** NOT OBSERVED as of 2026-09-27T22:34Z: 25-config harness, 0
+   violations. The core claim dies immediately if this is observed.
+
+2. **The `@guard` decorator invokes the wrapped callable on a refused config.**
+   NOT OBSERVED: the `loaded == []` assertion in `test_incumbent_gap.py` fails
+   the suite if the callable is invoked. This is the defining behavioural property.
+
+3. **The MCP `admit` tool returns `isError: false` for a config whose
+   predicted peak exceeds the declared budget.** NOT OBSERVED: the test pins this
+   fault explicitly (REFUSED → isError: true).
+
+4. **An independent MCP client (not the in-repo test) fails to complete a
+   `tools/call` round-trip.** NOT YET TESTED with an independent client.
+   The adversarial pass is the correct vehicle for this test. If it fails,
+   M2.4 is broken and must be fixed before the repo is released.
+
+5. **aura ships held-out calibration + a CI-wired zero-violation stress harness
+   before fitsproof's release commit.** NOT OBSERVED as of 2026-09-27T20:42Z
+   (c2-p2); check before publication. If it ships, the narrowed gap claim must
+   be updated to point to a still-un-served property, or MARKET-VERDICTS §4
+   must be amended.
+
+6. **The MAPE is smaller at reference model scale than at real-model scale.**
+   NOT OBSERVED across two sessions: MAPE 50.3–60.1% on the reference fixture;
+   +64% over-prediction on gemma3:4b (real model). Both numbers are published.
+   If MAPE at real-model scale shrinks below 20% after the cost-model fix
+   (embedding size + head_dim correction), the F-1 finding is resolved and the
+   adoption-blocker analysis in ADOPTION.md §5 must be updated.

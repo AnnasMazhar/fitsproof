@@ -311,3 +311,125 @@ default), and read the refusal's "nearest" option as the closest
 
 L0–L4 are adopted from source on a Tuesday (L3/L4 landed in the v0.2 mandate pass and
 are exercised by the test suite). L5 is the remaining mandate item.
+
+---
+
+## 7. v0.2 surface reality check — cycle 2
+
+*2026-09-27T22:34Z. All four v0.2 plugin surfaces are now implemented and
+tested. This section documents them against raw output from this machine.*
+
+### The four surfaces, one at a time
+
+**L2 — CLI gate (the recipe from §2 still works)**
+
+```
+$ .venv/bin/fitsproof admit --budget-gb 4
+ADMITTED: 0.042 GB predicted peak <= 4.000 GB budget (margin: 3958.3 MB)
+$ echo $?
+0
+
+$ .venv/bin/fitsproof admit --budget-gb 0.001
+REFUSED: needs 0.042 GB, budget 0.001 GB; no listed option fits — nearest is "Use int4_sym quantisation instead of none" at 0.006 GB (0.005 GB above budget)
+$ echo $?
+2
+```
+
+**L3 — in-process Python guard**
+
+```python
+from fitsproof.client import DoesNotFit, FitsproofClient, guard
+
+# Direct client usage
+client = FitsproofClient()
+plan = client.plan(context_len=512, budget_bytes="4GiB")
+record = client.admit(plan)
+print(record.message)
+# → ADMITTED: 0.042 GB predicted peak <= 4.295 GB budget (margin: 4253.3 MB)
+
+print(client.metrics()["ram_gb"])
+# → 33.548316672
+
+# Guard decorator — raises before the caller allocates
+loaded = []
+
+@guard(budget="1MiB")   # reference model needs ~40 MB; this will refuse
+def load_model():
+    loaded.append("allocated")
+
+try:
+    load_model()
+except DoesNotFit as e:
+    print("refused:", e)
+
+assert loaded == []     # the callable was provably never invoked
+```
+
+The `@guard` surface is the right tool for a Python inference service that
+wants to enforce a budget before calling any allocation. The check happens
+in-process, before the caller reaches the model loading code.
+
+**L4 — MCP server (for agents)**
+
+```python
+import json, subprocess, sys
+
+messages = [
+    {"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}},
+    {"jsonrpc": "2.0", "id": 2, "method": "tools/list", "params": {}},
+    {
+        "jsonrpc": "2.0", "id": 3, "method": "tools/call",
+        "params": {"name": "admit", "arguments": {"budget": "4GiB", "context_len": 512}},
+    },
+]
+proc = subprocess.run(
+    [sys.executable, "-m", "fitsproof.cli", "mcp"],
+    input="\n".join(json.dumps(m) for m in messages) + "\n",
+    capture_output=True, text=True, timeout=60,
+)
+replies = [json.loads(l) for l in proc.stdout.splitlines() if l.strip()]
+# replies[0]["result"]["serverInfo"]["name"] == "fitsproof-mcp"
+# sorted(t["name"] for t in replies[1]["result"]["tools"]) == ["admit","plan","probe"]
+# replies[2]["result"]["isError"] == False
+```
+
+Register with any MCP host as `fitsproof mcp` (stdio transport). An agent that
+calls the `admit` tool and gets `isError: false` can proceed; `isError: true`
+means the contract refused and the agent should not attempt the load.
+
+**L5 — Binary release (v0.2 MANDATE M1, not yet built)**
+
+```bash
+# When M1 lands, the adoption story becomes zero-install:
+curl -L https://github.com/AnnasMazhar/fitsproof/releases/download/v0.2.0/fitsproof-linux-x86_64 \
+  -o fitsproof && chmod +x fitsproof
+sha256sum fitsproof   # verify against the release page value
+./fitsproof probe
+./fitsproof admit --budget-gb 4
+./fitsproof mcp &     # start MCP server
+```
+
+L0–L4 work today from source. L5 is the remaining M1 deliverable. Until
+the binary release exists, the install requires Python (§1 recipe above).
+
+### What changed from cycle 1 to cycle 2
+
+| Item | Cycle 1 (pass 3) | Cycle 2 (pass 3) |
+|---|---|---|
+| L3 Python client | Not yet implemented | Works; `FitsproofClient`, `@guard`, `DoesNotFit` |
+| L4 MCP server | Not yet implemented | Works; `tools=['admit','plan','probe']`, refused config → `isError: true` |
+| Refusal wording | Named a non-fitting config as "nearest fitting" (F-2) | Fixed (c1-p09-improve-2); names smallest-predicted-peak option + gap above budget |
+| MAPE reported | 46.1% (first run) | 50.3–60.1% across multiple sessions; run-to-run variation confirmed |
+| Test count | 88 | 155 |
+| Stress harness | 25 configs, 0 violations | 25 configs, 0 violations (confirmed fresh this pass) |
+
+### Adoption maturity table — updated
+
+| Level | What the team does | Status |
+|---|---|---|
+| L0 — try it | clone, `probe`, `plan` against a budget | works today |
+| L1 — gate the box | `ollama_gate.py && ollama run` | works today (§2) |
+| L2 — CLI gate | `fitsproof admit` in shell scripts / CI | works today |
+| L3 — in-process guard | `@guard(budget=...)` in Python services | **works today** (new this cycle) |
+| L4 — agent-facing | `fitsproof mcp`, agent calls `admit` before loading | **works today** (new this cycle) |
+| L5 — drop-in binary | single executable, SHA256 release | v0.2 M1 pending |
