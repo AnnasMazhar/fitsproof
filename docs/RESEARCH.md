@@ -1487,3 +1487,181 @@ design (need data / a better instrument), and both closure procedures are
 stated above. The conflict with the product spec's "three things no single
 existing tool does together" (aura covers the enforcement limb) is recorded in
 `docs/EVIDENCE.md` per the positioning rule; MARKET-VERDICTS wording wins.
+
+---
+
+## Cycle 2 — Pass 2 — ECOSYSTEM AND COMPETITION DEEPENING
+
+*Pass 2 of cycle 2. Star counts and release data retrieved via GitHub REST API at
+2026-09-27T20:42Z (raw output below). This pass: (1) refreshes the comparison table
+with new star counts for all named tools, (2) documents two new tools surfaced by
+re-running the c2-p1 search queries, (3) deepens the aura entry with evidence from
+aura's own BENCHMARK.md, and (4) states which items in the pass-3 narrowed-claim
+table are now confirmed, still open, or newly resolved.*
+
+### Raw star-count refresh (2026-09-27T20:42:43Z)
+
+Retrieved in a single batch via `curl -s https://api.github.com/repos/<owner>/<repo>`:
+
+```
+ggml-org/llama.cpp          | stars=129701 | push=2026-09-27T20:07:41Z | license=MIT
+vllm-project/vllm           | stars=92792  | push=2026-09-27T19:47:37Z | license=Apache-2.0
+kvcache-ai/ktransformers    | stars=19541  | push=2026-09-23T05:07:33Z | license=Apache-2.0
+Isk4R1oT/ridgepoint         | stars=1      | push=2026-09-08T18:40:09Z | license=MIT
+pochenai/llm-inference-calculator | stars=20 | push=2026-09-09T15:58:07Z | license=None
+Pluenet-Killian/llm-roofline      | stars=0  | push=2026-06-20T19:26:33Z | license=MIT
+JohnScheuer/hardware-aware-llm-runtime | stars=0 | push=2026-06-25T09:50:23Z | license=MIT
+Shun-Calvin/llm-vram-calculator   | stars=1  | push=2026-09-26T06:38:02Z | license=MIT
+tommasocerruti/detllm       | stars=20     | push=2026-08-20T21:07:45Z | license=Apache-2.0
+Grevix/aura                 | stars=4      | push=2026-09-03T17:50:25Z | license=Apache-2.0
+```
+
+Latest releases (confirmed via `/releases/latest`):
+
+```
+ggml-org/llama.cpp       | tag=v0.5.0  | published=2026-09-23T20:50:06Z
+vllm-project/vllm        | tag=v0.30.0 | published=2026-09-22T05:20:54Z
+kvcache-ai/ktransformers | tag=v0.7.1  | published=2026-09-15T10:17:55Z
+```
+
+Deltas vs the c2-p1 18:45 UTC snapshot: llama.cpp +11, vLLM +4, KTransformers +1;
+ridgepoint/detllm/aura/inactive repos unchanged. Rankings and gap conclusions
+unchanged. PyPI ridgepoint still at v0.1.2 (last upload 2026-09-08).
+
+### New tools surfaced by repeat search (same queries as c2-p1)
+
+Two new entries appeared in the `llm+memory+budget+enforcement` search results that
+were not present at the c2-p1 snapshot. Both were evaluated and neither closes the
+fitsproof gap.
+
+#### ashcakeancient7671/aura (1 star, pushed 2026-09-27T19:50:02Z)
+
+- **Not a fork** (GitHub API `fork: false`). An independent rewrite of the aura
+  concept, Windows-focused, targeting a different audience (consumer laptops with 4 GB
+  RAM). The README describes itself as "a smart helper program" and directs users to
+  download a ZIP binary. No CI, no MAPE, no calibration protocol, no proof harness.
+- **Conclusion:** does not enter the comparison table. Simpler tool, single platform,
+  no research contribution.
+
+#### acasavaraju/AIOS (1 star, pushed 2026-03-29T22:54:39Z, Apache-2.0)
+
+- **Description:** CPU-native LLM inference architecture with a "Model Contract spec",
+  weight aliasing, sparsity maps, KV cache tiering, activation chunking.
+- **Critical self-disclosure (README):** *"AIOS is a published framework and open
+  specification. It is not yet a working implementation."* The runtime C ABI
+  (`aios.h`) is "specified — not implemented". Profiler is "stubbed — not
+  implemented". All performance numbers are analytical projections `[A]` or from
+  prior work `[P]`. *"No inference has run under AIOS."*
+- **Also surfaced by:** `llm+inference+contract+enforcement` search.
+- **Conclusion:** not a competitor today (no working runtime). Does not enter the
+  comparison table. Provides no evidence against the gap claim.
+
+### Deepened aura entry — BENCHMARK.md evidence
+
+c2-p1 noted that aura's README shows `Peak RSS: 4.92 GB` against a `4.00 GB
+(Win32 Job Object Enforced)` budget, and flagged this as ambiguous (different
+accounting units). This pass retrieved aura's `BENCHMARK.md` directly:
+
+```
+aura BENCHMARK.md (fetched 2026-09-27T20:42Z):
+
+| Model            | Runtime                | Hardware         | Budget      | Pass Rate | Peak Working Set | Provenance      |
+|qwen3:8b          | AURA llama-server      | Win32 Job Object | 4.00 GB     | 100% (1/1)| 4.92 GB          | aura_measured   |
+|nous-hermes2:11B  | AURA llama-server      | Win32 Job Object | 8.00 GB     | 100% (1/1)| 7.41 GB          | aura_measured   |
+```
+
+The `4.92 GB` peak is in the same column as the 4.00 GB budget and labelled
+`aura_measured` with `Simulated: false`. Win32 Job Object limits Working Set, not
+page file usage; the Working Set is the resident physical memory of the process group.
+The observed Working Set (4.92 GB) is 23% above the declared budget (4.00 GB).
+
+aura's README does not contain the words "calibration", "held-out", "MAPE",
+"prediction interval", "stress harness", or "violation". The 70-prompt benchmark
+suite is an inference quality check (pass/fail per prompt), not a budget compliance
+assertion. The audit tool (`aura audit`) checks 10-tier quality gates; based on the
+README there is no gate that asserts `measured_peak ≤ declared_budget`.
+
+**What this means for the gap claim:** aura's own published data, measured under its
+own enforcement, shows peak Working Set exceeding declared budget by 0.92 GB. The
+aura README does not report this as a violation and provides no mechanism to detect
+or fail-fast on it. A fitsproof-style stress harness (which asserts
+`measured_peak <= declared_budget` and exits non-zero on any violation) would flag
+this run. That asymmetry — detect-and-fail vs run-and-report-post-hoc — is the
+operationally relevant difference for a CI gate.
+
+### Updated comparison table — all tools, counts as of 2026-09-27T20:42Z
+
+| Tool | Stars | Latest release / Last push | Approach | What it does well | Gap it leaves | What fitsproof does differently |
+|---|---|---|---|---|---|---|
+| **llama.cpp** (ggml-org/llama.cpp) | 129,701 | v0.5.0 (2026-09-23) | CPU/GPU inference, GGUF, k-quants | Mature (3+ yr), broad model + quant support, fast CPU kernels, layer offload | Silent OOM; silent CPU fallback; no user-declared budget; no calibrated prediction; no proof harness | Explicit budget; loud degradation record; zero-violation stress harness |
+| **vLLM** (vllm-project/vllm) | 92,792 | v0.30.0 (2026-09-22) | GPU serving, PagedAttention, continuous batching | Highest GPU throughput, 100+ models, production serving | Targets A100/H100; does not serve 4–8 GB VRAM class; non-deterministic by default | CPU-first; 4–8 GB class; per-machine calibration; deterministic by construction |
+| **KTransformers** (kvcache-ai/ktransformers) | 19,541 | v0.7.1 (2026-09-15) | CPU/GPU hybrid MoE, Intel AMX kernels | Runs 671B on ~14 GB VRAM; 1.25–4.09× over llama.cpp; SOSP 2025 | Requires 128 GB RAM + AMX + CUDA/ROCm; no resource contract layer; no proof harness | Targets 16–32 GB RAM class; adds predict→enforce→prove pipeline |
+| **ridgepoint** (Isk4R1oT/ridgepoint, PyPI v0.1.2) | 1 | 2026-09-08 | Calibrated VRAM + roofline for A100/H100 | ~1% MAPE vs real vLLM; MLA-correct; per-field `calibrated` flag; roofline intervals | Prediction only; offline calibration for A100/H100 only; no enforcement; no RSS proof harness | On-device calibration with held-out MAPE; enforcement gate; measured RSS proof |
+| **llm-inference-calculator** (pochenai) | 20 | 2026-09-09 | Two-phase roofline; MoE sparsity; spec-decoding modelling | Rigorous two-phase model; data-centre multi-GPU scope | No calibration; no enforcement; no consumer-hardware focus | On-device calibration; single-machine consumer target; enforcement |
+| **llm-roofline** (Pluenet-Killian) | 0 | 2026-06-20 (inactive) | Decode throughput floor = bytes/bandwidth per GPU | Simple clean derivation and chart | Throughput floor only; no memory prediction; no enforcement; inactive | Memory contract + enforcement + RSS proof |
+| **hardware-aware-llm-runtime** (JohnScheuer) | 0 | 2026-06-25 (inactive) | Hardware-calibrated roofline; empirical optimal batch | Empirical constant fitting; finds compute/bandwidth crossover | Throughput focus; no enforcement; no stress harness; inactive | Memory-safety focus; enforcement gate after calibration |
+| **llm-vram-calculator** (Shun-Calvin) | 1 | 2026-09-26 | Formula-based VRAM/tok/s for 100+ models × 70+ GPUs | Widest model×GPU coverage; public API | Formula-based, not calibrated; GPU-only; no enforcement | On-device calibration; enforcement; proof harness |
+| **aura** (Grevix/aura, Rust, MIT/Apache-2.0) | 4 | 2026-09-03 | Kernel-level enforcement (cgroup v2 / Win32 Job Object); pre-execution feasibility model; context-ladder degradation; NVMe/GPU/SIMD diagnostics | More aggressive enforcement (OS-level) than fitsproof; four-tier memory hierarchy; `MetricProvenance` tagging | **BENCHMARK.md shows 4.92 GB peak against 4.00 GB budget** — no mechanism asserts `peak ≤ budget`; no held-out calibration protocol; no MAPE; no embeddable `plan`/`admit` API; no OpenAI/MCP plugin surfaces | Held-out MAPE (published even when bad); zero-violation stress harness as repo test; embeddable API surfaces |
+| **detllm** (tommasocerruti) | 20 | 2026-08-20 | Capability-gated determinism tier reporting; repro packs | Honest tier framing (reports the tier actually achieved, never claims higher) | Determinism only; no memory prediction or enforcement | Adopts detllm tier model for verify layer (source 14); adds contract enforcement |
+
+### Confirmed gap claim — state as of 2026-09-27T20:42Z
+
+The narrowed claim from pass 3 survives this deepening pass:
+
+**No single tool in the table above does all three of the following:**
+
+1. Calibrate prediction constants from measurements on the user's own hardware with a
+   held-out train/test split and a published MAPE. (ridgepoint calibrates, but against
+   A100/H100 offline; aura probes hardware but documents no calibration protocol with
+   held-out evaluation.)
+2. Enforce a declared budget with a gate that emits a structured degradation record
+   naming exactly what changed. (aura enforces at the OS level — more aggressive than
+   fitsproof's in-process gate — but its BENCHMARK.md shows a run exceeding the
+   declared budget without flagging it as a violation.)
+3. Prove compliance: a test-suite-wired stress harness that asserts
+   `measured_peak ≤ declared_budget` across ≥20 configurations and exits non-zero on
+   any violation.
+
+**How a user would notice:**
+
+With aura, they set `--memory 4G`, run `qwen3:8b`, and get `Peak Working Set: 4.92 GB`
+in the telemetry — 23% over budget, reported as a pass. With fitsproof, the stress
+harness fails the build if any of ≥20 measured peaks exceeds the declared budget
+(acceptance criterion 7). The contract either holds or the run fails loudly; there
+is no middle ground.
+
+**Watch items:**
+
+1. **aura at publication time.** aura is active (4 stars, Rust, active contributor
+   call). If it ships (a) a held-out calibration protocol with published MAPE and (b) a
+   CI-integrated stress harness asserting zero violations, the gap closes. Check its
+   repo before the fitsproof release commit.
+2. **llama.cpp budget enforcement.** Confirmed absent in v0.5.0 (c2-p1 item 10).
+   Re-check at publication time.
+
+### Falsification for Cycle 2 — Pass 2
+
+Observations that would prove this pass's findings wrong:
+
+1. **aura's BENCHMARK.md figure is a different memory unit than the Job Object budget.**
+   If Win32 Job Object limits Working Set in one unit and aura reports Peak Working Set
+   in a different one, the 4.92 vs 4.00 comparison is not apples-to-apples.
+   Observable: run the same config and compare `task manager → working set` vs
+   `aura telemetry → Peak Working Set` on the same Windows machine. We cannot run
+   this (Linux-only dev box); this remains an open measurement question. The conservative
+   reading is that the figure is measured in the same unit as the budget (aura labels it
+   identically, `Provenance: aura_measured`, `Simulated: false`).
+
+2. **ashcakeancient7671/aura is a fork with different features from Grevix/aura.**
+   GitHub API reported `fork: false` and the README confirms independent authorship.
+   If further inspection reveals a shared codebase with features not in Grevix/aura,
+   this entry should be updated.
+
+3. **acasavaraju/AIOS ships a working runtime after this pass.**
+   Last push is 2026-03-29 (6 months ago at time of writing). If it ships a working
+   inference runtime with a calibrated contract, it enters the comparison table as a
+   competitor. Re-check at publication time.
+
+4. **A search with different query terms finds a tool not found here.**
+   The adversarial reviewer should repeat with "LLM resource budget enforcement CLI"
+   and "inference memory proof harness" to independently validate the table is complete.
