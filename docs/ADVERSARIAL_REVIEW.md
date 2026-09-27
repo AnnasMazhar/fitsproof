@@ -350,3 +350,274 @@ the fault its docstring claims it detects. See ADV-05.
   all injections reverted).
 
 PASS_c1-p10-adversarial-1 COMPLETE
+
+---
+
+# Pass 2 — Property Attacks (c1-p11-adversarial-2)
+
+Independent review, pass `c1-p11-adversarial-2` (cycle 1, adversarial pass 2 of 3).
+Reviewer lane: kiro (claude-opus-4.5). The reviewer does not fix code.
+
+Baseline before attack (repo state `2de8389`, branch `feat/v0.1`):
+
+```
+$ .venv/bin/pytest -q
+155 passed in 152.36s (0:02:32)
+$ .venv/bin/ruff check . && .venv/bin/ruff format --check .
+All checks passed!
+```
+
+## 5. Property attacks — attempt to defeat the core safety/correctness property
+
+### P2-A1: Bypass refusal gate by feeding verify_run a REFUSED record
+
+Attack: construct a REFUSED `AdmitRecord` and pass it to `verify_run()` directly.
+
+```python
+refused_plan = Plan(verdict=Verdict.DOES_NOT_FIT, predicted_peak_bytes=10**12, ...)
+refused_record = AdmitRecord(status=AdmitStatus.REFUSED, plan=refused_plan, ...)
+
+result = verify_run(dummy_gen, 10**9, refused_record, "attack-bypass-refuse")
+```
+
+Result:
+```
+ATTACK FAILED (defense held): verify_run raised RuntimeError as expected
+Message: verify_run called with a REFUSED admit record for 'attack-bypass-refuse'.
+A refused plan must not reach execution.
+```
+
+**Verdict: Defense held.** `verify_run` explicitly guards against REFUSED records
+reaching execution.
+
+### P2-A2: Speculative decoding with a DIFFERENT draft model
+
+Attack: ADV-05 noted the test uses draft=target, making it vacuous. Test the
+actual property with different-seed draft model.
+
+```python
+generate_reference_model(Path(td1), seed=42)    # target
+generate_reference_model(Path(td2), seed=9999)  # different draft
+
+target = Transformer(target_cfg, target_weights)
+draft = Transformer(draft_cfg, draft_weights)   # DIFFERENT model
+
+greedy_out = target.generate(prompt, max_new_tokens=8, temperature=0.0, ...)
+spec_out = speculative_generate(target=target, draft=draft, prompt_ids=prompt, ...)
+```
+
+Result:
+```
+Target greedy: [60, 60, 176, 176, 176, 176, 176, 176]
+Speculative:   [60, 60, 176, 176, 176, 176, 176, 176]
+ATTACK FAILED (good): speculative equals greedy even with different draft
+```
+
+**Verdict: Defense held.** Speculative decoding maintains the equality property
+even when draft differs from target — the verify-then-accept logic is correct.
+ADV-05 is still valid (test is vacuous) but the underlying implementation is sound.
+
+### P2-A3: Break determinism via RNG pollution
+
+Attack: call speculative_generate, pollute global numpy RNG, call again with same
+seed — outputs should still match if seed isolation is correct.
+
+```python
+out1 = speculative_generate(model, model, prompt, max_new_tokens=8, seed=12345)
+for _ in range(100):
+    np.random.rand()  # Pollute global numpy RNG
+out3 = speculative_generate(model, model, prompt, max_new_tokens=8, seed=12345)
+```
+
+Result:
+```
+Run 1: [206, 26, 26, 26, 26, 26, 26, 26]
+Run 3 (after RNG pollution): [206, 26, 26, 26, 26, 26, 26, 26]
+ATTACK FAILED (good): outputs are deterministic despite RNG pollution
+```
+
+**Verdict: Defense held.** The sampler uses `np.random.default_rng(seed)` which is
+isolated from the global RNG state.
+
+### P2-A4: Bypass budget enforcement with falsified AdmitRecord
+
+Attack: create an ADMITTED record that falsely claims tiny memory usage, then call
+`verify_run` with a real generation function.
+
+```python
+fake_plan = Plan(verdict=Verdict.FITS, predicted_peak_bytes=1024, ...)  # Claim 1KB
+fake_record = AdmitRecord(status=AdmitStatus.ADMITTED, plan=fake_plan, ...)
+
+def real_generation():
+    return model.generate(prompt, max_new_tokens=4, temperature=0.0)
+
+result = verify_run(real_generation, budget_bytes=2048, admit_record=fake_record)
+```
+
+Result:
+```
+Budget:    2048 bytes (2.0 KB)
+Measured:  83857408 bytes (80.0 MB)
+Margin:    -83855360 bytes (-80.0 MB)
+Respected: False
+ATTACK DETECTED (good): verify_run correctly flagged budget violation
+The harness measures ACTUAL memory, not the claimed prediction
+```
+
+**Verdict: Defense held.** `verify_run` measures real RSS, not the prediction in
+the record. A falsified admission still results in a violation being detected.
+
+### P2-A5: Confirm ADV-03 — silent mode detection is vacuous
+
+Attack: create a DEGRADED record (mode was changed) and verify that
+`mode_changed_silently` is still False.
+
+```python
+degraded_record = AdmitRecord(
+    status=AdmitStatus.DEGRADED,
+    applied_degradation=DegradationStep(...),
+    ...
+)
+result = verify_run(dummy_gen, 10_000_000, degraded_record, "degraded-test")
+print(f"mode_changed_silently: {result.mode_changed_silently}")
+```
+
+Result:
+```
+Status: AdmitStatus.DEGRADED
+Applied degradation: DegradationStep(kind='lower_quant', ...)
+mode_changed_silently: False
+ADV-03 CONFIRMED: mode_changed_silently is False even with DEGRADED record
+The 'silent mode changes' counter can NEVER be non-zero
+```
+
+**Verdict: ADV-03 confirmed.** The counter is hardcoded False and cannot detect
+mode changes. The blocker stands.
+
+### P2-A6: Adversarial inputs to quantisation
+
+Attack: provide extreme, zero, NaN/Inf weights to the quantiser.
+
+**6a. Extreme float32 values:**
+```python
+extreme_weights = np.array([[np.finfo(np.float32).max, 0], ...], dtype=np.float32)
+qw = quantize(extreme_weights, "int8_sym")
+dqw = dequantize(qw)
+```
+
+Result:
+```
+RuntimeWarning: overflow encountered in multiply
+Dequantized:
+[[inf  0.]
+ [ 0.  1.]]
+ATTACK 6a SUCCEEDED: Quantisation produced NaN/Inf!
+```
+
+Root cause: `scale = max_abs / 127` for float32_max yields `~2.68e36`. When
+dequantising, `127 * 2.68e36 = inf` (float32 overflow). See ADV-09.
+
+**6b. All-zero weights:**
+```
+ATTACK 6b FAILED (good): Zero weights handled correctly
+```
+
+**6c. NaN/Inf in input:**
+```
+ATTACK 6c FAILED (good): Exception on NaN/Inf input: quantize: weight tensor
+contains NaN or inf
+```
+
+The quantiser validates inputs but not outputs (P2-A6a overflow).
+
+### P2-A7: Concurrent request race condition
+
+Attack: send multiple concurrent requests to the server to test if budget
+enforcement races.
+
+```python
+srv = start_server(Transformer(cfg, weights), ..., budget_bytes=100_000_000)
+with ThreadPoolExecutor(max_workers=5) as executor:
+    results = [executor.submit(send_request, i) for i in range(5)]
+```
+
+Result:
+```
+Results:
+  Request 0: status=200, admission=admitted
+  Request 1: status=0, admission=exception: timed out
+  Request 2: status=0, admission=exception: timed out
+  Request 3: status=200, admission=admitted
+  Request 4: status=200, admission=admitted
+Admitted: 3, Refused (503): 0
+```
+
+**Observation:** Multiple requests admitted concurrently. The per-request budget
+check does not account for concurrent memory usage. This is expected behaviour
+for a stateless HTTP server (each request is independent), but worth noting that
+the budget is per-request, not global. See ADV-10.
+
+### P2-A8: Bypass @guard decorator via __wrapped__
+
+Attack: access the wrapped function directly to bypass the guard.
+
+```python
+@guard(budget="1MiB")
+def expensive_operation():
+    call_tracker["called"] = True
+    return "allocated"
+
+# Direct call
+expensive_operation()  # Raises DoesNotFit, call_tracker["called"]=False
+
+# Bypass via __wrapped__
+expensive_operation.__wrapped__()  # Succeeds!
+```
+
+Result:
+```
+ATTACK 8a FAILED (good): DoesNotFit raised
+Function was called: False
+
+ATTACK 8b SUCCEEDED: Bypassed guard via __wrapped__
+```
+
+**Verdict: Expected Python behaviour.** `functools.wraps` preserves `__wrapped__`
+by design (PEP 362). This is a documentation matter, not a code bug — the guard
+cannot prevent a caller who explicitly unwraps it. See ADV-11.
+
+---
+
+## 6. Updated Findings Table
+
+| id | severity | finding | evidence | status |
+|---|---|---|---|---|
+| ADV-01 | blocker | FlexGen citation mis-attribution | §2b pass 1 | open |
+| ADV-02 | blocker | GPTQ per-channel vs per-group | §2b pass 1 | open |
+| ADV-03 | blocker | mode_changed_silently hardcoded False | §1 Attack 1c, §5 P2-A5 | open — confirmed in pass 2 |
+| ADV-04 | major | Stress-harness margin is degenerate | §1 Attacks 1a/1b/1d pass 1 | open |
+| ADV-05 | major | test_speculative_equals_greedy vacuous | §3 F-I5 pass 1 | open — underlying impl sound (P2-A2) |
+| ADV-06 | minor | calibration_demo numbers load-dependent | §1 C3 pass 1 | open |
+| ADV-07 | minor | ACM link 403s automation | §2a pass 1 | limitation |
+| ADV-08 | minor | README RSS limitation self-contradicts | pass 1 | open |
+| ADV-09 | major | int8_sym dequantisation overflows to inf for float32-max weights | §5 P2-A6a | **new — pass 2** |
+| ADV-10 | minor | Server budget is per-request, not global; concurrent requests not tracked | §5 P2-A7 | **new — pass 2, limitation** |
+| ADV-11 | minor | @guard decorator bypassable via __wrapped__ | §5 P2-A8 | **new — pass 2, limitation (Python stdlib)** |
+
+### Failed attacks (evidence for the defence, pass 2)
+
+- P2-A1: verify_run refuses to execute with a REFUSED record.
+- P2-A2: speculative decoding equality holds with different draft models.
+- P2-A3: determinism holds despite global RNG pollution.
+- P2-A4: budget enforcement measures real RSS, catches falsified predictions.
+- P2-A6b: zero weights handled correctly.
+- P2-A6c: NaN/Inf inputs rejected with explicit error.
+
+### Gate status for this pass
+
+- Artifact: `docs/ADVERSARIAL_REVIEW.md` updated with pass 2 property attacks.
+- Open blockers at end of pass 2: ADV-01, ADV-02, ADV-03 (same as pass 1).
+- New major finding: ADV-09 (int8 overflow on extreme values).
+- Repo left green: 155 passed.
+
+PASS_c1-p11-adversarial-2 COMPLETE
