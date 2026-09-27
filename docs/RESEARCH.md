@@ -1665,3 +1665,96 @@ Observations that would prove this pass's findings wrong:
 4. **A search with different query terms finds a tool not found here.**
    The adversarial reviewer should repeat with "LLM resource budget enforcement CLI"
    and "inference memory proof harness" to independently validate the table is complete.
+
+---
+
+## Cycle 2 — Pass 2 (this session) — STAR COUNT REFRESH + NEW TOOLS
+
+*Dispatched 2026-09-27T22:07Z. Star counts retrieved via GitHub REST API at
+2026-09-27T22:10Z (raw batch output below). This pass: (1) refreshes all named
+tools to the session timestamp, (2) evaluates two new repos that appeared in a
+repeat search run, (3) records the narrow delta vs the prior c2-p2 session.*
+
+### Raw star-count refresh (2026-09-27T22:10Z)
+
+All calls made in parallel with `curl -s https://api.github.com/repos/<owner>/<repo>`:
+
+```
+ggml-org/llama.cpp               | stars=129700 | push=2026-09-27T20:07:41Z | license=MIT
+vllm-project/vllm                | stars=92792  | push=2026-09-27T20:43:56Z | license=Apache-2.0
+kvcache-ai/ktransformers         | stars=19541  | push=2026-09-23T05:07:33Z | license=Apache-2.0
+Isk4R1oT/ridgepoint              | stars=1      | push=2026-09-08T18:40:09Z | license=MIT
+pochenai/llm-inference-calculator| stars=20     | push=2026-09-09T15:58:07Z | license=None
+Pluenet-Killian/llm-roofline     | stars=0      | push=2026-06-20T19:26:33Z | license=MIT
+JohnScheuer/hardware-aware-llm-runtime | stars=0 | push=2026-06-25T09:50:23Z | license=MIT
+Shun-Calvin/llm-vram-calculator  | stars=1      | push=2026-09-26T06:38:02Z | license=MIT
+tommasocerruti/detllm            | stars=20     | push=2026-08-20T21:07:45Z | license=Apache-2.0
+Grevix/aura                      | stars=4      | push=2026-09-03T17:50:25Z | license=Apache-2.0
+```
+
+Deltas vs the prior c2-p2 session (20:42Z): llama.cpp −1 (rounding/race in API cache),
+vLLM +0, KTransformers +0; all others unchanged. Rankings, conclusions, and gap claim
+are stable across this refresh.
+
+### New tools surfaced by repeat search (2026-09-27T22:10Z)
+
+Re-ran `llm+memory+budget+enforcement&sort=updated&per_page=10`. Two entries not
+evaluated in either prior c2-p2 session appeared:
+
+#### mrshelll/baton (0 stars, Python, pushed 2026-09-25)
+
+- **Description:** "Context handoff between Claude Code sessions with a document that
+  doesn't grow: rewritten whole every time, with a hard budget enforced by code and
+  derived from the harness's real 8000-character ceiling."
+- **Conclusion:** enforces a *character/token context size* budget for agent session
+  handoff, not a VRAM/RAM budget for model loading. Not a competitor. Does not enter
+  the comparison table.
+
+#### edouard-claude/longe (3 stars, Rust, pushed 2026-09-12, MIT)
+
+- **Description:** "A self-improving harness for any LLM, in one Rust binary. Persistent
+  Lua REPL as the single tool, three-level memory, persistent sub-agents, enforced
+  budgets, external verification, per-process sandbox, and post-run reflection."
+- **From README (fetched 2026-09-27T22:10Z):** the "enforced budgets" are *token and
+  turn budgets* for the agent loop (context budget, sub-agent call limits), not memory
+  budgets for model loading. There is no probe, calibrate, predict-peak, or RSS
+  assertion in the codebase. The word "budget" refers to the harness's compute
+  allowance, not the inference engine's memory footprint.
+- **Conclusion:** different problem domain (agent harness budget vs inference memory
+  contract). Not a competitor. Does not enter the comparison table.
+
+  However, longe's existence is notable evidence for the adjacent claim: "budget
+  enforcement" as a concept is now active in at least three distinct layers of the LLM
+  stack — agent turn budgets (longe, baton), OS-level memory budgets (aura), and
+  in-process inference memory budgets (fitsproof). The three layers are not
+  interchangeable; fitsproof's budget is specifically `peak_RSS ≤ declared_bytes`
+  during model loading and generation, not a context or turn limit.
+
+### Gap claim — stable after this refresh
+
+The narrowed claim from pass 3 / prior c2-p2 session stands:
+
+**No single tool in the comparison table does all three:**
+
+1. Calibrate prediction constants from measurements on the user's own hardware with a
+   train/hold-out split and a published held-out MAPE.
+2. Enforce a declared budget with a structured degradation record naming what changed.
+3. Prove compliance: a repo test (stress harness) asserts `measured_peak ≤ budget`
+   across ≥20 configurations and exits non-zero on any violation.
+
+This session's search found no new tool that closes the gap. Watch items from prior
+c2-p2 (aura adding calibration + zero-violation harness; llama.cpp shipping `--budget`)
+are unchanged.
+
+### Falsification — additions for this session
+
+5. **`edouard-claude/longe` or `mrshelll/baton` adds VRAM/RAM memory-budget
+   enforcement as a feature.** Both are active repos (pushed 2026-09-12 and 2026-09-25).
+   If either adds peak-memory assertion (not context-size assertion), the enforcement
+   half of the claim narrows further. Not observed as of this session.
+
+6. **The "budget enforcement" term has drifted toward agent-harness budgets** (longe,
+   baton) in the GitHub search results, which means future adversarial reviewers searching
+   for competitors may find these tools rather than memory-contract tools. The adversarial
+   review should explicitly specify "peak RAM budget enforcement for LLM loading" in its
+   search to distinguish the two layers.
