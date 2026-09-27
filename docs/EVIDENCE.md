@@ -1,6 +1,7 @@
 # EVIDENCE — fitsproof v0.1
 
-Raw terminal output only. All commands run from /home/openclaw/portfolio/fitsproof on 2026-09-26.
+Raw terminal output only. All commands run from the repo root on 2026-09-26.
+Absolute home directories are shown as `/build/`; that is the only redaction.
 Python 3.11.15, pytest 8.3.5.
 
 ---
@@ -9,11 +10,11 @@ Python 3.11.15, pytest 8.3.5.
 
 ```
 $ uv pip install -e '.[dev]' --python=.venv/bin/python
-      Built fitsproof @ file:///home/openclaw/portfolio/fitsproof
+      Built fitsproof @ file:///build/portfolio/fitsproof
 Prepared 1 package in 715ms
 Uninstalled 1 package in 0.53ms
 Installed 1 package in 4ms
- ~ fitsproof==0.1.0 (from file:///home/openclaw/portfolio/fitsproof)
+ ~ fitsproof==0.1.0 (from file:///build/portfolio/fitsproof)
 ```
 
 ---
@@ -24,7 +25,7 @@ Installed 1 package in 4ms
 $ .venv/bin/python -m pytest tests/ -q
 ============================= test session starts ==============================
 platform linux -- Python 3.11.15, pytest-8.3.5, pluggy-1.6.0
-rootdir: /home/openclaw/portfolio/fitsproof
+rootdir: /build/portfolio/fitsproof
 configfile: pyproject.toml
 plugins: cov-6.1.0, hypothesis-6.135.0, platformdirs-4.12.0
 collected 88 items
@@ -59,8 +60,8 @@ $ .venv/bin/ruff format --check .
 ```
 $ .venv/bin/python -m pytest tests/engine/test_attention.py::test_kv_cache_equals_reference -v
 ============================= test session starts ==============================
-platform linux -- Python 3.11.15, pytest-8.3.5, pluggy-1.6.0 -- /home/openclaw/portfolio/fitsproof/.venv/bin/python
-rootdir: /home/openclaw/portfolio/fitsproof
+platform linux -- Python 3.11.15, pytest-8.3.5, pluggy-1.6.0 -- /build/portfolio/fitsproof/.venv/bin/python
+rootdir: /build/portfolio/fitsproof
 configfile: pyproject.toml
 collected 1 item
 
@@ -76,8 +77,8 @@ tests/engine/test_attention.py::test_kv_cache_equals_reference PASSED    [100%]
 ```
 $ .venv/bin/python -m pytest tests/engine/test_speculative.py::test_speculative_equals_greedy -v
 ============================= test session starts ==============================
-platform linux -- Python 3.11.15, pytest-8.3.5, pluggy-1.6.0 -- /home/openclaw/portfolio/fitsproof/.venv/bin/python
-rootdir: /home/openclaw/portfolio/fitsproof
+platform linux -- Python 3.11.15, pytest-8.3.5, pluggy-1.6.0 -- /build/portfolio/fitsproof/.venv/bin/python
+rootdir: /build/portfolio/fitsproof
 configfile: pyproject.toml
 collected 1 item
 
@@ -132,8 +133,8 @@ ADMITTED: 0.042 GB predicted peak <= 4.295 GB budget (margin: 4253.3 MB)
 ```
 $ .venv/bin/python -m pytest tests/contract/test_plan_admit_verify.py::test_stress_harness_zero_violations -v
 ============================= test session starts ==============================
-platform linux -- Python 3.11.15, pytest-8.3.5, pluggy-1.6.0 -- /home/openclaw/portfolio/fitsproof/.venv/bin/python
-rootdir: /home/openclaw/portfolio/fitsproof
+platform linux -- Python 3.11.15, pytest-8.3.5, pluggy-1.6.0 -- /build/portfolio/fitsproof/.venv/bin/python
+rootdir: /build/portfolio/fitsproof
 configfile: pyproject.toml
 collected 1 item
 
@@ -237,7 +238,7 @@ Commands run from /tmp/fitsproof-verify (fresh clone of feat/v0.1).
 Python 3.13.12, pytest 8.3.5, ruff 0.11.13.
 
 ```
-$ git clone /home/openclaw/portfolio/fitsproof /tmp/fitsproof-verify
+$ git clone /build/portfolio/fitsproof /tmp/fitsproof-verify
 Cloning into '/tmp/fitsproof-verify'...
 done.
 
@@ -289,7 +290,7 @@ EXIT_RUFF:0
 $ .venv/bin/python -m pytest -q --tb=short
 ============================= test session starts ==============================
 platform linux -- Python 3.11.15, pytest-8.3.5, pluggy-1.6.0
-rootdir: /home/openclaw/portfolio/fitsproof
+rootdir: /build/portfolio/fitsproof
 configfile: pyproject.toml
 testpaths: tests
 plugins: cov-6.1.0, hypothesis-6.135.0, platformdirs-4.12.0
@@ -428,10 +429,10 @@ TRACEABILITY OK (core only): all core test files cite valid research sources. Ch
 ### Adversarial / byzantine suite (new this pass)
 $ .venv/bin/python -m pytest tests/adversarial -v
 ============================= test session starts ==============================
-platform linux -- Python 3.11.15, pytest-8.3.5, pluggy-1.6.0 -- /home/openclaw/portfolio/fitsproof/.venv/bin/python
+platform linux -- Python 3.11.15, pytest-8.3.5, pluggy-1.6.0 -- /build/portfolio/fitsproof/.venv/bin/python
 cachedir: .pytest_cache
 hypothesis profile 'default'
-rootdir: /home/openclaw/portfolio/fitsproof
+rootdir: /build/portfolio/fitsproof
 configfile: pyproject.toml
 plugins: cov-6.1.0, hypothesis-6.135.0, platformdirs-4.12.0
 collecting ... collected 49 items
@@ -491,10 +492,10 @@ tests/adversarial/test_byzantine_inputs.py::test_server_completion_carries_admis
 ### README snippet executor (M2: every README python block runs)
 $ .venv/bin/python -m pytest tests/value/test_readme_snippets.py -v
 ============================= test session starts ==============================
-platform linux -- Python 3.11.15, pytest-8.3.5, pluggy-1.6.0 -- /home/openclaw/portfolio/fitsproof/.venv/bin/python
+platform linux -- Python 3.11.15, pytest-8.3.5, pluggy-1.6.0 -- /build/portfolio/fitsproof/.venv/bin/python
 cachedir: .pytest_cache
 hypothesis profile 'default'
-rootdir: /home/openclaw/portfolio/fitsproof
+rootdir: /build/portfolio/fitsproof
 configfile: pyproject.toml
 plugins: cov-6.1.0, hypothesis-6.135.0, platformdirs-4.12.0
 collecting ... collected 2 items
@@ -568,7 +569,7 @@ Successfully built dist/fitsproof-0.1.0-py3-none-any.whl
 $ uv pip install --python /tmp/fp-wheel dist/fitsproof-0.1.0-py3-none-any.whl
          If this is intentional, set `export UV_LINK_MODE=copy` or use `--link-mode=copy` to suppress this warning.
 Installed 1 package in 3ms
- ~ fitsproof==0.1.0 (from file:///home/openclaw/portfolio/fitsproof/dist/fitsproof-0.1.0-py3-none-any.whl)
+ ~ fitsproof==0.1.0 (from file:///build/portfolio/fitsproof/dist/fitsproof-0.1.0-py3-none-any.whl)
 $ /tmp/fp-wheel/bin/fitsproof plan --budget-gb 4
 ADMITTED: 0.042 GB predicted peak <= 4.000 GB budget (margin: 3958.3 MB)
 $ /tmp/fp-wheel/bin/fitsproof admit --budget-gb 0.001; echo exit=$?
