@@ -169,8 +169,11 @@ def decode_tok_s(
     bandwidth_utilisation: empirical fraction of peak bandwidth achievable
     (0.6 is a conservative default; calibrate.py fits this from measurements).
 
-    Source: Sheng et al. 2023 (FlexGen), Sec 3.1 — decode throughput is
-    proportional to effective memory bandwidth divided by model size.
+    Source: Williams et al. 2009 (Roofline model, source 1) — the decode step is
+    memory-bandwidth-bound, so tok/s = effective_bandwidth / bytes_per_token.
+    Confirmed in the LLM domain by FlexGen (Sheng et al. 2023, arXiv:2303.06865,
+    §4.3 offloading cost model), which measures bandwidth as the bottleneck.
+    Note: §3.1 of arXiv:2303.06865 is background context, not the derivation.
 
     Fault detected: using raw peak bandwidth (utilisation=1.0) over-predicts
     by ~40-67% vs measured; calibrate.py tests this on held-out configs.

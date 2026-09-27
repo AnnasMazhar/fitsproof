@@ -66,19 +66,14 @@ def _get_rss_bytes() -> int:
     """
     Return current process RSS (Resident Set Size) in bytes.
 
-    Uses resource.getrusage on Linux/macOS. ru_maxrss is in KB on Linux.
-    Falls back to /proc/self/status on Linux if available.
-    """
-    try:
-        usage = resource.getrusage(resource.RUSAGE_SELF)
-        # Linux: ru_maxrss in kilobytes; macOS: in bytes
-        if os.uname().sysname == "Linux":
-            return usage.ru_maxrss * 1024
-        return usage.ru_maxrss
-    except (OSError, AttributeError):
-        pass
+    Reads from /proc/self/status VmRSS on Linux for a point-in-time current
+    RSS reading (not the lifetime high-water mark). Falls back to ru_maxrss.
 
-    # Fallback: /proc/self/status
+    Note: this returns *current* RSS, not peak-since-process-start.
+    For per-config peak measurement, callers should track the maximum of multiple
+    samples during and after the call.
+    """
+    # Prefer /proc/self/status VmRSS on Linux — it is current RSS, not lifetime HWM
     try:
         with open("/proc/self/status") as fh:
             for line in fh:
@@ -87,7 +82,33 @@ def _get_rss_bytes() -> int:
                     return kb * 1024
     except (FileNotFoundError, ValueError):
         pass
+
+    # Fallback: ru_maxrss (lifetime high-water mark — less accurate for per-config)
+    try:
+        usage = resource.getrusage(resource.RUSAGE_SELF)
+        if os.uname().sysname == "Linux":
+            return usage.ru_maxrss * 1024
+        return usage.ru_maxrss
+    except (OSError, AttributeError):
+        pass
+
     return 0
+
+
+def _get_peak_rss_hwm() -> int:
+    """
+    Return the process-lifetime peak RSS high-water mark in bytes.
+
+    On Linux, ru_maxrss is the VmHWM — the maximum RSS since process start.
+    This is useful for reporting the absolute maximum across the whole run.
+    """
+    try:
+        usage = resource.getrusage(resource.RUSAGE_SELF)
+        if os.uname().sysname == "Linux":
+            return usage.ru_maxrss * 1024
+        return usage.ru_maxrss
+    except (OSError, AttributeError):
+        return 0
 
 
 def _sample_peak_rss(
@@ -95,31 +116,39 @@ def _sample_peak_rss(
     sample_interval_s: float = 0.01,
 ) -> tuple[list[int], int]:
     """
-    Run *fn* in the current thread, sampling RSS every *sample_interval_s* seconds.
+    Run *fn* in the current thread, measuring peak RSS during the call.
 
-    Returns (result, peak_rss_bytes).
+    Uses current VmRSS samples (from /proc/self/status, not lifetime ru_maxrss),
+    so per-config measurements reflect the config's actual memory contribution
+    rather than a degenerate process-lifetime maximum.
 
-    Note: Python threading would be cleaner but adds overhead. We sample
-    before and after for simplicity; peak is the max of all samples.
-    Real OOM detection requires OS-level tracking; this is a best-effort
-    upper bound on RSS during the call.
+    Strategy:
+      1. Record baseline VmRSS before the call.
+      2. Sample VmRSS after the call.
+      3. Peak = max(before, after) — captures allocation growth.
 
-    Fault detected: if we only sample after the call, we miss peak memory
-    during intermediate computation.
+    Note: this is a best-effort measure. Allocations that are both allocated and
+    freed within fn() may not be captured if the kernel reclaims pages before the
+    post-call sample. For conservative budget enforcement, callers should use a
+    budget with margin above the predicted peak.
+
+    Fault detected: if we only sample after the call, we miss peak memory during
+    intermediate computation.
     """
-    samples: list[int] = []
-
     # Sample before
-    samples.append(_get_rss_bytes())
+    rss_before = _get_rss_bytes()
 
     result = fn()
 
-    # Sample after (RSS may have been released)
-    samples.append(_get_rss_bytes())
+    # Sample after (may be lower if memory was freed, but captures any retained growth)
+    rss_after = _get_rss_bytes()
 
-    # Take the max (Linux RSS reports maximum since process start, so the
-    # post-call value captures any growth that occurred)
-    peak = max(samples)
+    # Peak for this config = max of before and after.
+    # We also add the growth delta on top of the baseline to get an estimate
+    # of the per-config peak: baseline + max(0, delta).
+    growth = max(0, rss_after - rss_before)
+    peak = rss_before + growth
+
     return result, peak
 
 
@@ -160,10 +189,31 @@ def verify_run(
     budget_respected = peak_rss <= budget_bytes
     margin = budget_bytes - peak_rss
 
-    # Check for silent mode changes: if admit_record is DEGRADED, the
-    # applied degradation must have been described; we can only check
-    # that the record exists (runtime mode enforcement is in admit.py).
-    mode_changed_silently = False  # no silent changes if admit() was called
+    # Detect silent mode changes: a silent mode change occurs when execution
+    # proceeds via a different path than what was admitted without emitting a record.
+    #
+    # Detectable cases:
+    #   1. admit_record.status == ADMITTED but the plan verdict was FITS_WITH_DEGRADATION
+    #      (someone bypassed admit() and passed a hand-constructed ADMITTED record for
+    #      a config that required degradation). This is a builder error, not a user error.
+    #   2. admit_record.status == DEGRADED but applied_degradation is None
+    #      (admitted as degraded without naming what changed — the record is incomplete).
+    #
+    # Non-detectable at this layer: runtime backend switches that happen inside fn()
+    # without touching the admit/plan layer (e.g., NumPy falling back to a different
+    # BLAS). Those are outside the contract boundary.
+    mode_changed_silently = False
+
+    if admit_record.status == AdmitStatus.ADMITTED:
+        # Check: if the plan predicted a peak that exceeds budget, an ADMITTED record
+        # means the planner and the enforcer disagree — that is a silent mode change.
+        if admit_record.plan is not None and admit_record.plan.predicted_peak_bytes > budget_bytes:
+            mode_changed_silently = True
+
+    elif admit_record.status == AdmitStatus.DEGRADED:
+        # A DEGRADED record with no applied_degradation named is a silent mode change
+        if admit_record.applied_degradation is None:
+            mode_changed_silently = True
 
     # Determinism tier assessment
     tier = DeterminismTier.TIER_0

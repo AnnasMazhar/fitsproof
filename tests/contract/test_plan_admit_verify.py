@@ -93,10 +93,10 @@ import pytest
 from hypothesis import given, settings
 from hypothesis import strategies as st
 
-from fitsproof.contract.admit import AdmitStatus, admit
+from fitsproof.contract.admit import AdmitRecord, AdmitStatus, admit
 from fitsproof.contract.plan import Verdict, plan
 from fitsproof.contract.verify import run_stress_harness, verify_run
-from fitsproof.engine.model import REFERENCE_CONFIG, generate_reference_model
+from fitsproof.engine.model import REFERENCE_CONFIG, generate_reference_model, get_reference_bundle
 
 
 def make_machine(bw_bps: float = 20e9, gemm_flops: float = 100e9, ram: int = 32 * 1024**3):
@@ -803,3 +803,64 @@ def test_admit_inconsistent_plan_record_has_plan() -> None:
     p = _make_inconsistent_plan()
     record = admit(p)
     assert record.plan is p, "AdmitRecord.plan must be the original plan, not None"
+
+
+# ---------------------------------------------------------------------------
+# ADV-03 fix: mode_changed_silently can become True
+# ---------------------------------------------------------------------------
+
+
+def test_verify_mode_changed_silently_detectable(transformer) -> None:
+    """
+    ADV-03 fix: mode_changed_silently must be detectable (not hardcoded False).
+
+    Fault detected: if mode_changed_silently is always False, the stress harness
+    silent_mode_changes counter is unfalsifiable — the claim 'zero silent mode
+    changes' is vacuous and cannot fail.
+
+    This test constructs the failure case explicitly:
+    - A plan whose predicted_peak_bytes > budget_bytes (i.e., a plan that should
+      have been refused or degraded)
+    - But the admit_record is manually set to ADMITTED (bypassing admit())
+    - verify_run must detect this discrepancy and set mode_changed_silently=True
+
+    This is the canonical silent mode change: execution proceeds via a config
+    that exceeds the budget without the required refusal/degradation record.
+    """
+    from fitsproof.contract.plan import plan
+    from fitsproof.contract.probe import probe
+    from fitsproof.engine.sampling import Sampler
+
+    cfg, weights = get_reference_bundle()
+
+    budget = 1  # 1 byte — any model exceeds this
+    prompt = [1, 2, 3]
+
+    machine = probe()
+    p = plan(cfg, machine, context_len=64, budget_bytes=budget)
+    assert p.predicted_peak_bytes > budget  # sanity: the plan correctly says it exceeds
+
+    # Manually build an ADMITTED record for a plan whose peak exceeds the budget.
+    # This simulates a caller that bypasses admit() — the silent mode change.
+    fake_admitted_record = AdmitRecord(
+        status=AdmitStatus.ADMITTED,
+        plan=p,
+        applied_degradation=None,
+        refusal_reason="",
+        message="ADMITTED: (forged record — bypasses the contract)",
+    )
+
+    result = verify_run(
+        fn=lambda: transformer.generate(
+            prompt, max_new_tokens=4, temperature=0.0, sampler=Sampler(0)
+        ),
+        budget_bytes=budget,
+        admit_record=fake_admitted_record,
+        config_label="adv03_test",
+    )
+
+    assert result.mode_changed_silently is True, (
+        "verify_run must set mode_changed_silently=True when an ADMITTED record "
+        "is presented for a plan whose predicted_peak_bytes exceeds budget_bytes. "
+        "This is the silent mode change ADV-03 requires to be detectable."
+    )

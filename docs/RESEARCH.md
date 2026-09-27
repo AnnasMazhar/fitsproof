@@ -40,20 +40,26 @@ this formula underpredicts throughput. Not the consumer use case we target.
 
 ---
 
-### 2. Memory-Bandwidth-Bound Decode (FlexGen)
+### 2. Memory-Bandwidth-Bound Decode
 **Sheng, Y., Zheng, L., Yuan, B., et al. (2023).** FlexGen: High-Throughput Generative
 Inference of Large Language Models with a Single GPU.
 *ICML 2023*. arXiv:2303.06865.
 https://arxiv.org/abs/2303.06865
 
-**Claim it supports:** For single-batch LLM decode, memory bandwidth is the bottleneck.
-FlexGen Section 3.1 explicitly derives `throughput ∝ bandwidth / model_size`.
+**Claim it supports:** LLM decoding is memory-bandwidth-bound for single-batch inference.
+FlexGen §4.3 (the offloading cost model) measures memory transfer cost as the bottleneck
+and derives throughput from it. The primary derivation of `tok/s = bandwidth / bytes_per_token`
+comes from source 1 (Williams et al. 2009, Roofline) — FlexGen applies that analysis to
+the LLM case and confirms it empirically. The equation attributed to "FlexGen §3.1" in
+earlier versions of this file was incorrect: §3.1 of arXiv:2303.06865 is Background
+context, not a derivation. The correct attribution for the equation is Roofline (source 1).
 
-**Equation (Section 3.1):**
+**Equation (Roofline applied to LLM decode, confirmed by FlexGen §4.3 measurements):**
 ```
 decode_tok_s ≈ effective_bandwidth / weight_bytes
 ```
-This is the direct source for `cost.py:decode_tok_s`.
+This is the source for `cost.py:decode_tok_s`. Attribution: Williams et al. 2009 (source 1)
+as primary derivation; FlexGen as empirical LLM-domain confirmation.
 
 **Assumptions:** batch=1, model fits in memory, KV cache overhead small relative to weights.
 
@@ -150,7 +156,14 @@ arXiv:2210.17323.
 https://arxiv.org/abs/2210.17323
 
 **Claim it supports:** The symmetric int8 quantisation in `quant.py:_int8_sym_quant`.
-GPTQ uses per-channel scaling (each output channel has its own scale), which we adopt.
+GPTQ uses per-group scaling (each group of weights — typically 128 or 32 consecutive
+elements — shares one FP16 scale), which is the design we adapt for our per-channel
+implementation. Our quant.py uses per-channel scales (one scale per output channel)
+for simplicity; GPTQ uses finer per-group scales for better accuracy — both are
+min-max symmetric quantisation, the difference is the granularity of the scale.
+The "per-channel" description in earlier versions of this file was imprecise: GPTQ
+proper uses per-group, not per-channel. Our implementation adopts per-channel as a
+simpler approximation, which we state explicitly below.
 
 **Method extracted:**
 ```

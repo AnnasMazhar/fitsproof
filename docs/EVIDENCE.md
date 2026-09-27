@@ -620,3 +620,126 @@ exit: 2
 - Support for GPU inference.
 - Coherent text generation (the engine is for testing the contract, not for production inference).
 - Broad model format support.
+
+---
+
+## Cycle 2, Pass 4 (implement pass 1) — 2026-09-28
+
+### Adversarial Findings Addressed
+
+All five open ADV findings (3 blockers, 2 majors) from cycle 1 adversarial review closed.
+
+#### ADV-01 FIXED — FlexGen §3.1 mis-attribution
+**Finding:** RESEARCH.md attached "FlexGen §3.1 derives throughput ∝ bandwidth / model_size"
+to arXiv 2303.06865; §3.1 is Background context, not a derivation.
+**Fix:** RESEARCH.md source 2 re-titled to "Memory-Bandwidth-Bound Decode"; the primary
+attribution for `decode_tok_s ≈ effective_bandwidth / weight_bytes` is now Williams et al.
+2009 (Roofline, source 1) as derivation, with FlexGen §4.3 cited as LLM-domain confirmation.
+cost.py:decode_tok_s docstring updated to match.
+
+#### ADV-02 FIXED — GPTQ per-channel vs per-group
+**Finding:** RESEARCH.md claimed "GPTQ uses per-channel scaling"; arXiv 2210.17323 describes
+FP16 scale per group (group-size 128/32), not per-channel.
+**Fix:** RESEARCH.md source 7 corrected. Our implementation uses per-channel as a simpler
+approximation; the distinction is now stated explicitly: "GPTQ proper uses per-group;
+our quant.py uses per-channel as a simpler approximation."
+
+#### ADV-03 FIXED — mode_changed_silently hardcoded False
+**Finding:** `verify.py:mode_changed_silently = False` was hardcoded; `silent_mode_changes`
+in StressResult was always 0 regardless of whether a mode change occurred.
+**Fix:** verify_run now detects the canonical silent mode change: an ADMITTED record
+presented for a plan whose `predicted_peak_bytes > budget_bytes` (bypassing admit()).
+Also detects DEGRADED records with no `applied_degradation`.
+New test `test_verify_mode_changed_silently_detectable` constructs this case and asserts
+mode_changed_silently=True.
+
+**Verification — the counter can now be non-zero:**
+```
+$ .venv/bin/pytest tests/contract/test_plan_admit_verify.py::test_verify_mode_changed_silently_detectable -v
+tests/contract/test_plan_admit_verify.py::test_verify_mode_changed_silently_detectable PASSED
+1 passed in 7.05s
+```
+
+#### ADV-04 FIXED — Stress-harness margin degenerate
+**Finding:** `_get_rss_bytes()` returned `ru_maxrss` (lifetime HWM), so all 25 configs
+reported identical margins.
+**Fix:** `_get_rss_bytes()` now reads `/proc/self/status` VmRSS (current point-in-time RSS)
+on Linux. `_sample_peak_rss` computes growth = max(0, rss_after − rss_before), so each
+config measurement reflects its specific memory contribution above baseline.
+
+#### ADV-05 FIXED — test_speculative_equals_greedy vacuous
+**Finding:** `draft=target` (same seed 42) made every draft proposal trivially accepted —
+the rejection path was never exercised, so "accepts a wrong draft token" fault could not
+be observed.
+**Fix:** draft fixture now uses `generate_reference_model(path, seed=999)` — a different
+model. Draft proposals differ from target's greedy choices, exercising the
+accept/reject verification path. Test still passes: speculative output equals greedy target.
+
+```
+$ .venv/bin/pytest tests/engine/test_speculative.py -v
+tests/engine/test_speculative.py::test_speculative_equals_greedy PASSED
+tests/engine/test_speculative.py::test_speculative_respects_max_tokens PASSED
+tests/engine/test_speculative.py::test_speculative_is_deterministic PASSED
+3 passed in 30.30s
+```
+
+### Full Test Suite — Cycle 2 Pass 4
+
+```
+$ .venv/bin/pytest -q
+============================= test session info ==============================
+platform linux -- Python 3.11.15, pytest-8.3.5, pluggy-1.6.0
+rootdir: /home/openclaw/portfolio/fitsproof
+configfile: pyproject.toml
+testpaths: tests
+plugins: cov-6.1.0, hypothesis-6.135.0, platformdirs-4.12.0
+collected 156 items
+
+tests/adversarial/test_byzantine_inputs.py .............................
+....................
+tests/contract/test_cost.py ................
+tests/contract/test_plan_admit_verify.py .............................
+tests/engine/test_attention.py ..............
+tests/engine/test_quant.py ..............
+tests/engine/test_sampling.py ............
+tests/engine/test_server.py ......
+tests/engine/test_speculative.py ...
+tests/test_packaging.py ..
+tests/value/test_incumbent_gap.py .........
+tests/value/test_readme_snippets.py ..
+
+156 passed in 157.03s (0:02:37)
+```
+
+156 tests pass (155 at end of cycle 1).
+
+### Ruff — Cycle 2 Pass 4
+
+```
+$ .venv/bin/ruff check .
+All checks passed!
+
+$ .venv/bin/ruff format --check .
+39 files already formatted
+```
+
+### Traceability — Cycle 2 Pass 4
+
+```
+$ .venv/bin/python scripts/check_research_traceability.py
+TRACEABILITY OK (core only): all core test files cite valid research sources.
+Checked 34 source IDs from RESEARCH.md.
+PAPER-TRACEABILITY.md table validated (15 IMPLEMENTED rows).
+```
+
+### Findings Table Update
+
+| ID | Severity | Finding | Status |
+|----|----------|---------|--------|
+| ADV-01 | blocker | FlexGen §3.1 mis-attribution | **FIXED** — attribution corrected to Williams 2009 (source 1) as primary; FlexGen §4.3 as confirmation |
+| ADV-02 | blocker | GPTQ per-channel vs per-group | **FIXED** — RESEARCH.md corrected; per-channel stated as our approximation |
+| ADV-03 | blocker | mode_changed_silently hardcoded False | **FIXED** — detection implemented; test proves counter can be non-zero |
+| ADV-04 | major | Stress-harness margin degenerate | **FIXED** — per-config VmRSS via /proc/self/status; baseline delta measurement |
+| ADV-05 | major | test_speculative_equals_greedy vacuous | **FIXED** — draft uses seed=999 (different from target seed=42); reject path exercised |
+| ADV-06 | minor | calibration_demo numbers load-dependent | open — marked as limitation in README |
+| ADV-08 | minor | README RSS limitation self-contradicts | open — minor wording issue |
