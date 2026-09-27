@@ -5,14 +5,14 @@
   "failures": 0,
   "pytest_rc": 0,
   "pytest_tail": [
-    "Building fitsproof @ file:///home/openclaw/portfolio/fitsproof",
-    "      Built fitsproof @ file:///home/openclaw/portfolio/fitsproof",
+    "Building fitsproof @ file:///build/fitsproof",
+    "      Built fitsproof @ file:///build/fitsproof",
     "Uninstalled 1 package in 0.68ms",
     "Installed 1 package in 2ms",
     "........................................................................ [ 48%]",
     "........................................................................ [ 97%]",
     "....                                                                     [100%]",
-    "- generated xml file: /home/openclaw/portfolio/fitsproof/.cycle-eval-c1-p6.xml -",
+    "- generated xml file: /build/fitsproof/.cycle-eval-c1-p6.xml -",
     "148 passed in 64.43s (0:01:04)"
   ],
   "generated_at": 1790519496.1419668
