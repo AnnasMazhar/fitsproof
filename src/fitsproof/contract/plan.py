@@ -17,9 +17,10 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from enum import Enum
+from math import isfinite
 from typing import Literal
 
-from fitsproof.contract.cost import estimate, kv_cache_bytes, weight_bytes
+from fitsproof.contract.cost import BITS_PER_QUANT, estimate, kv_cache_bytes, weight_bytes
 from fitsproof.contract.probe import MachineProfile
 from fitsproof.engine.model import ModelConfig
 
@@ -97,7 +98,21 @@ def plan(
     formula (e.g. omitting KV cache), the plan will give FITS for a config
     that actually OOMs; tested with configs chosen to exceed the budget
     only via the KV cache term.
+
+    Fail closed: an unknown quant name, a non-positive/non-finite budget, or
+    a context_len < 1 raises ValueError instead of silently planning with
+    fp32 defaults (the cost model's .get(quant, 32.0) fallback would
+    otherwise hide a typo like "int2" or "int_4").
     """
+    if quant not in BITS_PER_QUANT:
+        raise ValueError(f"unknown quant {quant!r}; valid: {', '.join(sorted(BITS_PER_QUANT))}")
+    if isinstance(context_len, bool) or not isinstance(context_len, int) or context_len < 1:
+        raise ValueError(f"context_len must be a positive integer, got {context_len!r}")
+    if isinstance(budget_bytes, bool) or not isinstance(budget_bytes, int | float):
+        raise ValueError(f"budget_bytes must be a number of bytes, got {budget_bytes!r}")
+    if not isfinite(budget_bytes) or budget_bytes < 1:
+        raise ValueError(f"budget_bytes must be a positive finite number, got {budget_bytes!r}")
+
     cost = estimate(cfg, machine, context_len, quant, bandwidth_utilisation)
     predicted_peak = cost.total_peak_bytes
     predicted_tok_s = cost.predicted_tok_s

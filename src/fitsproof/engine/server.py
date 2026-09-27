@@ -22,6 +22,9 @@ import time
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from typing import Any
 
+from fitsproof.contract.admit import AdmitStatus, admit
+from fitsproof.contract.plan import plan
+from fitsproof.contract.probe import MachineProfile, probe
 from fitsproof.engine.model import ModelConfig
 from fitsproof.engine.sampling import Sampler
 from fitsproof.engine.transformer import Transformer
@@ -96,8 +99,40 @@ class _Handler(BaseHTTPRequestHandler):
 
         sampler = Sampler(seed=seed)
 
+        # Resource contract: predict + admit for this request, before allocating output.
+        machine: MachineProfile = self.server.machine_profile  # type: ignore[attr-defined]
+        budget: int = self.server.budget_bytes  # type: ignore[attr-defined]
+        p = plan(
+            cfg,
+            machine,
+            context_len=max(len(prompt_ids) + max_tokens, 1),
+            budget_bytes=budget,
+        )
+        record = admit(p)
+        fitsproof_field = {
+            "admission": record.status.value,
+            "verdict": p.verdict.value,
+            "message": record.message,
+            "predicted_peak_bytes": p.predicted_peak_bytes,
+            "budget_bytes": budget,
+        }
+        if record.status == AdmitStatus.REFUSED:
+            self._send_json(
+                503,
+                {
+                    "error": {
+                        "message": record.message,
+                        "type": "fitsproof_refused",
+                    },
+                    "fitsproof": fitsproof_field,
+                },
+            )
+            return
+
         if stream:
-            self._stream_completion(transformer, cfg, prompt_ids, max_tokens, temperature, sampler)
+            self._stream_completion(
+                transformer, cfg, prompt_ids, max_tokens, temperature, sampler, fitsproof_field
+            )
         else:
             tokens = transformer.generate(
                 prompt_ids,
@@ -123,6 +158,7 @@ class _Handler(BaseHTTPRequestHandler):
                     "completion_tokens": len(tokens),
                     "total_tokens": len(prompt_ids) + len(tokens),
                 },
+                "fitsproof": fitsproof_field,
             }
             self._send_json(200, resp)
 
@@ -134,6 +170,7 @@ class _Handler(BaseHTTPRequestHandler):
         max_tokens: int,
         temperature: float,
         sampler: Sampler,
+        fitsproof_field: dict[str, Any],
     ) -> None:
         """Real chunked SSE streaming — emits one chunk per token."""
         self.send_response(200)
@@ -172,13 +209,14 @@ class _Handler(BaseHTTPRequestHandler):
             }
             send_chunk(json.dumps(delta))
 
-        # Final chunk
+        # Final chunk — carries the plan/admission record (M2)
         done_delta = {
             "id": cid,
             "object": "chat.completion.chunk",
             "created": created,
             "model": "fitsproof-reference",
             "choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}],
+            "fitsproof": fitsproof_field,
         }
         send_chunk(json.dumps(done_delta))
         send_chunk("[DONE]")
@@ -197,18 +235,22 @@ class _Handler(BaseHTTPRequestHandler):
 
 
 class FitsproodHTTPServer(HTTPServer):
-    """HTTPServer subclass carrying the transformer instance."""
+    """HTTPServer subclass carrying the transformer, machine profile and budget."""
 
     def __init__(
         self,
         transformer: Transformer,
         cfg: ModelConfig,
+        machine_profile: MachineProfile,
+        budget_bytes: int,
         *args: Any,
         **kwargs: Any,
     ) -> None:
         super().__init__(*args, **kwargs)
         self.transformer = transformer
         self.model_cfg = cfg
+        self.machine_profile = machine_profile
+        self.budget_bytes = budget_bytes
 
 
 def start_server(
@@ -217,15 +259,23 @@ def start_server(
     host: str = "127.0.0.1",
     port: int = 8080,
     block: bool = True,
+    budget_bytes: int = 4 * 1024**3,
 ) -> FitsproodHTTPServer:
     """
     Start the OpenAI-compatible HTTP server.
+
+    The server probes the machine once at startup and enforces *budget_bytes*
+    on every request: a request whose predicted peak exceeds the budget is
+    refused with HTTP 503 and a `fitsproof` record naming the binding
+    constraint. Every non-refused response carries a `fitsproof` field with
+    the admission record (M2).
 
     If *block* is True, serves forever in the current thread.
     If *block* is False, starts in a daemon thread and returns the server object
     (caller must call server.shutdown() to stop it).
     """
-    server = FitsproodHTTPServer(transformer, cfg, (host, port), _Handler)
+    machine = probe()
+    server = FitsproodHTTPServer(transformer, cfg, machine, budget_bytes, (host, port), _Handler)
     if block:
         server.serve_forever()
     else:

@@ -6,8 +6,8 @@ Subcommands:
   plan      — predict resource usage for a given model config
   admit     — enforce the contract (refuses or degrades loudly)
   verify    — run the proof harness (assert measured peak <= budget)
-  stress    — run the stress harness over N configurations
-  server    — start the OpenAI-compatible HTTP server
+  stress    — run the stress harness over >=20 configurations
+  server    — start the OpenAI-compatible HTTP server (alias: serve)
   mcp       — start the MCP server (stdio transport)
   pareto    — sweep and emit the Pareto frontier
 """
@@ -15,7 +15,29 @@ Subcommands:
 from __future__ import annotations
 
 import argparse
+import math
 import sys
+
+
+def _budget_bytes(gb: float) -> int | None:
+    """Convert --budget-gb to bytes; None if not a positive finite number."""
+    if not math.isfinite(gb) or gb <= 0:
+        return None
+    return int(gb * 1e9)
+
+
+def _load_model_config(path: str | None) -> object:
+    """Load a ModelConfig from a fitsproof bundle dir, or the built-in fixture."""
+    if path is None:
+        from fitsproof.engine.model import REFERENCE_CONFIG
+
+        return REFERENCE_CONFIG
+    from pathlib import Path
+
+    from fitsproof.engine.model import load_bundle
+
+    cfg, _weights = load_bundle(Path(path))
+    return cfg
 
 
 def main() -> int:
@@ -34,12 +56,18 @@ def main() -> int:
     plan_p.add_argument("--budget-gb", type=float, default=4.0)
     plan_p.add_argument("--context", type=int, default=512)
     plan_p.add_argument("--quant", default="none")
+    plan_p.add_argument(
+        "--model", default=None, help="Path to a fitsproof bundle dir (default: built-in fixture)"
+    )
 
     # admit
     admit_p = sub.add_parser("admit", help="Enforce the resource contract (refuse or degrade)")
     admit_p.add_argument("--budget-gb", type=float, default=4.0)
     admit_p.add_argument("--context", type=int, default=512)
     admit_p.add_argument("--quant", default="none")
+    admit_p.add_argument(
+        "--model", default=None, help="Path to a fitsproof bundle dir (default: built-in fixture)"
+    )
 
     # verify
     verify_p = sub.add_parser("verify", help="Proof harness: assert measured peak <= budget")
@@ -48,10 +76,21 @@ def main() -> int:
     verify_p.add_argument("--quant", default="none")
     verify_p.add_argument("--tokens", type=int, default=16, help="Tokens to generate")
 
-    # server
-    srv_p = sub.add_parser("server", help="Start OpenAI-compatible HTTP server")
+    # stress
+    stress_p = sub.add_parser(
+        "stress", help="Run the stress harness across >=20 configurations (exit 1 on violation)"
+    )
+    stress_p.add_argument("--budget-gb", type=float, default=4.0)
+    stress_p.add_argument("--context", type=int, default=64)
+    stress_p.add_argument("--quant", default="none")
+
+    # server (alias: serve — the v0.2 MANDATE binary surface name)
+    srv_p = sub.add_parser("server", aliases=["serve"], help="Start OpenAI-compatible HTTP server")
     srv_p.add_argument("--host", default="127.0.0.1")
     srv_p.add_argument("--port", type=int, default=8080)
+    srv_p.add_argument(
+        "--budget-gb", type=float, default=4.0, help="Memory budget enforced on every request"
+    )
 
     # mcp
     _mcp_p = sub.add_parser(
@@ -83,11 +122,21 @@ def main() -> int:
         from fitsproof.contract.admit import admit as _admit
         from fitsproof.contract.plan import plan as make_plan
         from fitsproof.contract.probe import probe
-        from fitsproof.engine.model import REFERENCE_CONFIG
 
-        machine = probe()
-        budget = int(args.budget_gb * 1e9)
-        p = make_plan(REFERENCE_CONFIG, machine, args.context, budget, args.quant)
+        budget = _budget_bytes(args.budget_gb)
+        if budget is None:
+            print(
+                f"ERROR: --budget-gb must be a positive finite number, got {args.budget_gb}",
+                file=sys.stderr,
+            )
+            return 2
+        try:
+            model_cfg = _load_model_config(args.model)
+            machine = probe()
+            p = make_plan(model_cfg, machine, args.context, budget, args.quant)
+        except (ValueError, OSError) as e:
+            print(f"ERROR: {e}", file=sys.stderr)
+            return 2
         record = _admit(p)
         print(record.message)
         if p.degradations:
@@ -108,9 +157,19 @@ def main() -> int:
         from fitsproof.engine.sampling import Sampler
         from fitsproof.engine.transformer import Transformer
 
+        budget = _budget_bytes(args.budget_gb)
+        if budget is None:
+            print(
+                f"ERROR: --budget-gb must be a positive finite number, got {args.budget_gb}",
+                file=sys.stderr,
+            )
+            return 2
         machine = probe()
-        budget = int(args.budget_gb * 1e9)
-        p = make_plan(REFERENCE_CONFIG, machine, args.context, budget, args.quant)
+        try:
+            p = make_plan(REFERENCE_CONFIG, machine, args.context, budget, args.quant)
+        except ValueError as e:
+            print(f"ERROR: {e}", file=sys.stderr)
+            return 2
         record = _admit(p)
         print(record.message)
         if record.status.value == "refused":
@@ -137,7 +196,58 @@ def main() -> int:
             print("PROOF FAILED: measured peak exceeded declared budget.")
             return 1
 
-    elif args.command == "server":
+    elif args.command == "stress":
+        import numpy as np
+
+        from fitsproof.contract.admit import admit as _admit
+        from fitsproof.contract.plan import plan as make_plan
+        from fitsproof.contract.probe import probe
+        from fitsproof.contract.verify import run_stress_harness
+        from fitsproof.engine.model import REFERENCE_CONFIG, get_reference_bundle
+        from fitsproof.engine.sampling import Sampler
+        from fitsproof.engine.transformer import Transformer
+
+        budget = _budget_bytes(args.budget_gb)
+        if budget is None:
+            print(
+                f"ERROR: --budget-gb must be a positive finite number, got {args.budget_gb}",
+                file=sys.stderr,
+            )
+            return 2
+        machine = probe()
+        try:
+            p = make_plan(REFERENCE_CONFIG, machine, args.context, budget, args.quant)
+        except ValueError as e:
+            print(f"ERROR: {e}", file=sys.stderr)
+            return 2
+        record = _admit(p)
+        print(record.message)
+        if record.status.value == "refused":
+            return 2
+
+        cfg, weights = get_reference_bundle()
+        transformer = Transformer(cfg, weights)
+        rng = np.random.default_rng(42)
+        configs = []
+        for prompt_len in (2, 4, 6, 8, 10):
+            for decode_len in (1, 2, 4, 8, 16):
+                prompt = rng.integers(0, cfg.vocab_size, size=prompt_len, dtype=np.int64).tolist()
+                sampler = Sampler(seed=prompt_len + decode_len)
+                configs.append(
+                    {
+                        "fn": lambda p=prompt, d=decode_len, s=sampler: transformer.generate(
+                            p, max_new_tokens=d, temperature=0.0, sampler=s
+                        ),
+                        "admit_record": record,
+                        "label": f"prompt{prompt_len}_decode{decode_len}",
+                    }
+                )
+        result = run_stress_harness(configs, budget_bytes=budget)
+        print(result.summary())
+        if not (result.violation_free and result.all_modes_explicit):
+            return 1
+
+    elif args.command in ("server", "serve"):
         from fitsproof.engine.model import get_reference_bundle
         from fitsproof.engine.server import start_server
         from fitsproof.engine.transformer import Transformer
@@ -145,8 +255,15 @@ def main() -> int:
         print("Loading reference model...")
         cfg, weights = get_reference_bundle()
         transformer = Transformer(cfg, weights)
-        print(f"Starting server on {args.host}:{args.port}")
-        start_server(transformer, cfg, args.host, args.port, block=True)
+        budget = _budget_bytes(args.budget_gb)
+        if budget is None:
+            print(
+                f"ERROR: --budget-gb must be a positive finite number, got {args.budget_gb}",
+                file=sys.stderr,
+            )
+            return 2
+        print(f"Starting server on {args.host}:{args.port} (budget: {budget / 1e9:.3f} GB)")
+        start_server(transformer, cfg, args.host, args.port, block=True, budget_bytes=budget)
 
     elif args.command == "mcp":
         from fitsproof.mcp import run_mcp_server

@@ -22,6 +22,7 @@ Integration pattern (M2 from v0.2 MANDATE):
 from __future__ import annotations
 
 import functools
+import math
 from collections.abc import Callable
 from typing import Any
 
@@ -55,12 +56,22 @@ def _parse_budget(budget: str | int | float) -> int:
     Parse a human-readable budget string or numeric bytes into integer bytes.
 
     Accepts: int/float bytes, or strings like "4GiB", "512MiB", "4GB", "512MB".
+    Raises ValueError for anything that is not a positive finite number of
+    bytes — injection strings, unicode digits, NaN/inf, empty, negative.
 
     Fault detected: a parser that silently truncates (e.g. "4GiB" → 4) would
-    pass an impossibly small budget and refuse every valid configuration.
+    pass an impossibly small budget and refuse every valid configuration;
+    a parser that evals or int()-crashes on hostile input turns a refusal
+    into a traceback (tested in test_byzantine_inputs.py).
     """
+    if isinstance(budget, bool):
+        raise ValueError(f"budget must be bytes, got bool {budget!r}")
     if isinstance(budget, int | float):
+        if not math.isfinite(budget) or budget < 1:
+            raise ValueError(f"budget must be a positive finite number of bytes, got {budget!r}")
         return int(budget)
+    if not isinstance(budget, str):
+        raise ValueError(f"budget must be int, float or str, got {type(budget).__name__}")
     s = budget.strip()
     for suffix, multiplier in [
         ("GiB", 1024**3),
@@ -71,8 +82,19 @@ def _parse_budget(budget: str | int | float) -> int:
         ("KB", 10**3),
     ]:
         if s.endswith(suffix):
-            return int(float(s[: -len(suffix)]) * multiplier)
-    return int(s)  # bare integer string
+            return _scaled_bytes(s[: -len(suffix)], multiplier, budget)
+    return _scaled_bytes(s, 1, budget)
+
+
+def _scaled_bytes(text: str, multiplier: float, original: str) -> int:
+    """Convert *text* to bytes with *multiplier*, failing closed on bad input."""
+    try:
+        value = float(text) * multiplier
+    except ValueError:
+        raise ValueError(f"cannot parse budget {original!r}") from None
+    if not math.isfinite(value) or value < 1:
+        raise ValueError(f"budget must be a positive finite number of bytes, got {original!r}")
+    return int(value)
 
 
 class FitsproofClient:

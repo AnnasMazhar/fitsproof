@@ -98,7 +98,10 @@ def _int8_asym_quant(w: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarray]
     min_vals = flat.min(axis=1)
     max_vals = flat.max(axis=1)
     ranges = max_vals - min_vals
-    ranges = np.where(ranges == 0, 1e-8, ranges)
+    # Constant row (range == 0): use range = max(|c|, 1) so the zero point
+    # stays small enough for int32. An epsilon guard (range -> 1e-8) makes
+    # zp = round(-c/eps) overflow int32 for |c| > ~21 and corrupts the row.
+    ranges = np.where(ranges == 0, np.maximum(np.abs(min_vals), 1.0), ranges)
     scales = ranges / 255.0
     # zero_point = round(-min / scale); not clipped (may be outside [0,255])
     zero_points = np.round(-min_vals / scales).astype(np.int32)
@@ -189,6 +192,71 @@ def _int4_sym_dequant(packed: np.ndarray, scales: np.ndarray, original_shape: tu
     return dequant_flat[:, :inner].reshape(original_shape)
 
 
+def _int4_asym_quant(w: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """
+    Per-channel asymmetric int4 quantisation, packed into uint8 nibbles.
+
+    Maps [min_val, max_val] -> [0, 15] per output channel.
+    Scale: s = range / 15; zero point: z = round(-min / s) (stored as int32,
+    may fall outside [0, 15] for rows that do not span zero).
+    Quantised: q = clip(round(w / s) + z, 0, 15); dequant: (q - z) * s.
+
+    Constant rows use range = max(|c|, 1) for the same int32 overflow
+    reason as _int8_asym_quant.
+
+    Fault detected: reusing the signed nibble unpack here sign-extends
+    values 8..15 to -8..-1, silently corrupting half the quantisation range;
+    tested with a known-value tensor in test_byzantine_inputs.py.
+    """
+    out_channels = w.shape[0]
+    flat = w.reshape(out_channels, -1).astype(np.float32)
+    if flat.shape[1] % 2 != 0:
+        flat = np.pad(flat, ((0, 0), (0, 1)))
+    min_vals = flat.min(axis=1)
+    max_vals = flat.max(axis=1)
+    ranges = max_vals - min_vals
+    ranges = np.where(ranges == 0, np.maximum(np.abs(min_vals), 1.0), ranges)
+    scales = ranges / 15.0
+    zero_points = np.round(-min_vals / scales).astype(np.int32)
+    quantised = (
+        (np.round(flat / scales[:, np.newaxis]) + zero_points[:, np.newaxis].astype(np.float32))
+        .clip(0, 15)
+        .astype(np.uint8)
+    )
+    return _int4_pack(quantised.astype(np.int8)), scales, zero_points
+
+
+def _int4_unpack_unsigned(packed: np.ndarray) -> np.ndarray:
+    """
+    Unpack raw [0, 15] nibbles (asymmetric int4) with no sign extension.
+
+    Fault detected: applying the signed unpack (_int4_unpack) to asymmetric
+    values maps 8..15 to -8..-1; this path must keep them unsigned.
+    """
+    out = np.empty((*packed.shape[:-1], packed.shape[-1] * 2), dtype=np.uint8)
+    out[..., 0::2] = (packed >> 4) & 0x0F
+    out[..., 1::2] = packed & 0x0F
+    return out
+
+
+def _int4_asym_dequant(
+    packed: np.ndarray,
+    scales: np.ndarray,
+    zero_points: np.ndarray,
+    original_shape: tuple,
+) -> np.ndarray:
+    """Dequantise asymmetric int4: unpack unsigned nibbles, apply (q - z) * s."""
+    unpacked = _int4_unpack_unsigned(packed)
+    out_channels = scales.shape[0]
+    flat = unpacked.reshape(out_channels, -1).astype(np.float32)
+    inner = 1
+    for d in original_shape[1:]:
+        inner *= d
+    flat = flat[:, :inner]
+    dequant = (flat - zero_points[:, np.newaxis].astype(np.float32)) * scales[:, np.newaxis]
+    return dequant.reshape(original_shape)
+
+
 # ---------------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------------
@@ -202,15 +270,20 @@ def quantize(w: np.ndarray, mode: QuantMode) -> QuantizedWeight:
       - int8_sym:  symmetric int8, range [-127, 127]
       - int8_asym: asymmetric int8, range [0, 255]
       - int4_sym:  symmetric int4 packed into uint8
+      - int4_asym: asymmetric int4 packed into uint8 nibbles
 
-    Returns a QuantizedWeight containing the quantised data and metadata needed
-    for dequantise_matmul.
+    Raises ValueError for non-2D input, non-finite weights (NaN/inf), or an
+    unknown mode — corrupted weights must fail closed, never quantise to
+    garbage silently.
 
     Fault detected: passing a wrong mode silently falls through; the ValueError
-    ensures this is caught.
+    ensures this is caught. NaN weights silently producing integer garbage is
+    rejected by the isfinite check.
     """
     if w.ndim < 2:
         raise ValueError(f"quantize requires at least 2D tensor, got shape {w.shape}")
+    if not np.isfinite(w).all():
+        raise ValueError("quantize: weight tensor contains NaN or inf")
 
     original_shape = w.shape
 
@@ -234,7 +307,14 @@ def quantize(w: np.ndarray, mode: QuantMode) -> QuantizedWeight:
             data=data, scales=scales, zero_points=None, mode=mode, original_shape=original_shape
         )
     elif mode == "int4_asym":
-        raise NotImplementedError("int4_asym not implemented in v0.1")
+        data, scales, zero_points = _int4_asym_quant(w)
+        return QuantizedWeight(
+            data=data,
+            scales=scales,
+            zero_points=zero_points,
+            mode=mode,
+            original_shape=original_shape,
+        )
     else:
         raise ValueError(f"Unknown quantisation mode: {mode!r}")
 
@@ -258,6 +338,9 @@ def dequantize(qw: QuantizedWeight) -> np.ndarray:
         return ((flat - zp) * qw.scales[:, np.newaxis]).reshape(qw.original_shape)
     elif qw.mode == "int4_sym":
         return _int4_sym_dequant(qw.data, qw.scales, qw.original_shape)
+    elif qw.mode == "int4_asym":
+        assert qw.zero_points is not None
+        return _int4_asym_dequant(qw.data, qw.scales, qw.zero_points, qw.original_shape)
     else:
         raise ValueError(f"Cannot dequantize mode: {qw.mode!r}")
 
