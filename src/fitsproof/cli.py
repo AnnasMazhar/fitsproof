@@ -289,8 +289,8 @@ def main() -> int:
         for row in table:
             print(
                 f"{row.quant:<12} {row.context_len:>6} "
-                f"{row.measured_peak_mb:>9.1f} {row.tok_s:>8.2f} "
-                f"{row.top1_agreement:>6.3f} {row.predicted_peak_mb:>8.1f} "
+                f"{row.measured_peak_bytes / 1e6:>9.1f} {row.measured_tok_s:>8.2f} "
+                f"{row.top1_agreement:>6.3f} {row.predicted_peak_bytes / 1e6:>8.1f} "
                 f"{'yes' if row.dominated else 'no':>10}"
             )
         non_dom = sum(1 for r in table if not r.dominated)

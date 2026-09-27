@@ -46,6 +46,11 @@ class ParetoPoint:
     predicted_tok_s: float
     pareto_dominated: bool  # True if some other config strictly dominates this one
 
+    @property
+    def dominated(self) -> bool:
+        """Alias kept for CLI compatibility."""
+        return self.pareto_dominated
+
 
 def _is_dominated(point: ParetoPoint, others: list[ParetoPoint]) -> bool:
     """
@@ -212,6 +217,21 @@ def emit_png(points: list[ParetoPoint], path: Path) -> None:
     # We produce a minimal SVG instead of PNG (no image library needed)
     svg_path = path.with_suffix(".svg")
     _emit_svg(points, svg_path)
+
+
+def run_pareto_sweep(
+    transformer: Transformer,
+    cfg: ModelConfig,
+    machine: MachineProfile,
+    quants: list[str] | None = None,
+    context_lens: list[int] | None = None,
+) -> list[ParetoPoint]:
+    """
+    Public entry point: sweep and return Pareto-annotated points.
+
+    Thin wrapper around sweep() so the CLI can import a single symbol.
+    """
+    return sweep(transformer, cfg, machine, quants=quants, context_lens=context_lens)
 
 
 def _emit_svg(points: list[ParetoPoint], path: Path) -> None:

@@ -16,8 +16,8 @@ fitsproof admit --budget-gb 4
 fitsproof admit --budget-gb 0.001   # REFUSED — names the binding constraint, exit code 2
 ```
 
-Python 3.11+. Everything runs offline after install. Once the first tagged release is published
-the install is `pip install fitsproof`.
+Python 3.11+. Everything runs offline after install. Once the PyPI release is published
+(pending — `pip install fitsproof` is not yet available), use the Git-URL form above.
 
 If this is useful, star the repo.
 

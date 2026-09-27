@@ -35,13 +35,16 @@ Each row: **claim as written in README → exact command → raw output → pass
 **Command (admission — fits):**
 ```
 $ .venv/bin/fitsproof admit --budget-gb 4
-ADMITTED: 0.042 GB predicted peak <= 4.000 GB budget (margin: 3958.3 MB)
+ADMITTED: 0.073 GB predicted peak <= 4.000 GB budget (margin: 3927.1 MB)
 ```
+
+Note: predicted peak now includes process_baseline_bytes (interpreter + numpy, ~34 MB) in addition
+to model weights + KV cache + activations (~39 MB), total ~73 MB. This matches measured RSS.
 
 **Command (refusal — does not fit, named constraint, exit 2):**
 ```
 $ .venv/bin/fitsproof admit --budget-gb 0.001; echo "exit: $?"
-REFUSED: needs 0.04 GB, budget 0.00 GB; nearest fitting config is Offload ~50% of layers to system RAM (CPU fallback for those layers)
+REFUSED: needs 0.08 GB, budget 0.00 GB; best available option is 'Use int4_sym quantisation instead of none' (0.01 GB) — still does not fit
 Degradation options:
   [does not fit] Use int8_sym quantisation instead of none -> 0.011 GB
   [does not fit] Use int4_sym quantisation instead of none -> 0.006 GB
@@ -52,7 +55,8 @@ Degradation options:
 exit: 2
 ```
 
-**PASS.** Refusal is loud (names binding constraint, names degradation options), exit code is 2.
+**PASS.** Refusal is loud (names best available option but states it still does not fit), exit code is 2.
+The message no longer contradicts itself ("nearest fitting config is [does not fit]" — fixed in v0.1.2).
 
 ---
 
@@ -66,9 +70,9 @@ Probing machine...
   gemm:       298.65 GFLOPS
   RAM:        33.55 GB
   VRAM:       0.00 GB
-ADMITTED: 0.042 GB predicted peak <= 4.000 GB budget (margin: 3958.3 MB)
-ADMITTED: 0.039 GB predicted peak <= 4.000 GB budget (margin: 3961.0 MB)
-Stress harness: 25 configs, 0 violations, 0 silent mode changes. Margin: min=3698.3 MB, median=3698.3 MB, max=3698.3 MB.
+ADMITTED: 0.073 GB predicted peak <= 4.000 GB budget (margin: 3927.1 MB)
+ADMITTED: 0.073 GB predicted peak <= 4.000 GB budget (margin: 3927.1 MB)
+Stress harness: 25 configs, 0 violations, 0 silent mode changes. Margin: min=3908.4 MB, median=3908.6 MB, max=3912.0 MB.
 ```
 
 **PASS.** No network calls; all commands run from the installed wheel with no external dependencies.
@@ -80,11 +84,24 @@ Stress harness: 25 configs, 0 violations, 0 silent mode changes. Margin: min=369
 **Command:**
 ```
 $ .venv/bin/fitsproof stress
-ADMITTED: 0.039 GB predicted peak <= 4.000 GB budget (margin: 3961.0 MB)
-Stress harness: 25 configs, 0 violations, 0 silent mode changes. Margin: min=3698.3 MB, median=3698.3 MB, max=3698.3 MB.
+ADMITTED: 0.073 GB predicted peak <= 4.000 GB budget (margin: 3927.1 MB)
+Stress harness: 25 configs, 0 violations, 0 silent mode changes. Margin: min=3908.4 MB, median=3908.6 MB, max=3912.0 MB.
 ```
 
 **PASS.** 25 configurations (5 prompt × 5 decode lengths), zero violations, zero silent mode changes.
+Margins are non-identical (min ≠ median ≠ max) because verify.py now uses /proc/self/status VmRSS
+(live RSS, not ru_maxrss HWM) so different context/decode configs produce distinct measurements.
+
+**Tight budget test (0.1 GB — was 25 violations before v0.1.2):**
+```
+$ .venv/bin/fitsproof stress --budget-gb 0.1
+ADMITTED: 0.073 GB predicted peak <= 0.100 GB budget (margin: 27.5 MB)
+Stress harness: 25 configs, 0 violations, 0 silent mode changes. Margin: min=8.7 MB, median=9.0 MB, max=12.4 MB.
+```
+
+**PASS.** Previously (v0.1.0) this reported 25 violations because prediction excluded process
+baseline (~34 MB), so 73 MB actual > 0.1 GB budget appeared to be a violation. With baseline
+included in prediction, 73 MB predicted < 100 MB budget → ADMITTED, and measured ~91 MB < 100 MB.
 
 **Underlying test:**
 ```
@@ -201,17 +218,20 @@ $ echo '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}
 **Command:**
 ```
 $ .venv/bin/fitsproof verify --budget-gb 1.0 --tokens 8
-ADMITTED: 0.039 GB predicted peak <= 1.000 GB budget (margin: 960.7 MB)
-  measured_peak:    301.8 MB
+ADMITTED: 0.073 GB predicted peak <= 1.000 GB budget (margin: 927.0 MB)
+  measured_peak:    87.6 MB
   budget:           1000.0 MB
   budget_respected: True
-  margin:           698.2 MB
+  margin:           912.4 MB
 ```
 
-**PASS.** Measured RSS (301.8 MB, dominated by Python+NumPy interpreter) is within the 1 GB budget.
-Note: predicted peak (39 MB) is for the model weights; measured includes interpreter overhead.
-The 301.8 MB includes Python + NumPy startup, not solely model weights. This is honest and stated
-in the README Limitations ("RSS measurement is coarse").
+**PASS.** Prediction (73 MB) and measurement (87.6 MB) are now consistent: ratio = 87.6/73 = 1.20×.
+Previously (v0.1.0) prediction was 39 MB vs measured 301 MB — an 8× gap because the predictor
+excluded the process baseline (~34 MB interpreter + numpy) and verify.py used ru_maxrss (process
+HWM since start, dominated by probe() benchmark arrays). Both are fixed in v0.1.2.
+
+Prediction vs measurement: predicted=73 MB, measured=88 MB, ratio=1.20×, within 3× tolerance.
+test_predict_measure_tolerance enforces ratio ≤ 3× in CI.
 
 ---
 
@@ -220,23 +240,31 @@ in the README Limitations ("RSS measurement is coarse").
 **Command:**
 ```
 $ .venv/bin/fitsproof pareto
-quant           ctx    peak_MB    tok/s    top1    pred_MB  dominated
----------------------------------------------------------------------
-int4_sym         16      347.0     2.97   0.754        5.5        yes
-int4_sym         32      347.0     3.49   0.754        5.6         no
-int4_sym         64      347.0     2.86   0.754        5.6        yes
-int8_sym         16      347.0     2.87   0.984       10.3        yes
-int8_sym         32      347.0     2.83   0.984       10.3        yes
-int8_sym         64      347.0     2.36   0.984       10.3        yes
-none             16      347.0     2.12   1.000       38.7        yes
-none             32      347.0     2.94   1.000       38.8         no
-none             64      347.0     2.63   1.000       39.0        yes
-Total configs: 9
-Non-dominated: 2
+quant           ctx   peak_MB    tok/s   top1  pred_MB  dominated
+-----------------------------------------------------------------
+none             16     343.0     3.36  1.000     38.7         no
+none             32     343.0     2.70  1.000     38.8        yes
+none             64     343.0     2.28  1.000     39.0        yes
+none            128     343.0     2.84  1.000     39.3        yes
+none            256     343.0     1.81  1.000     40.1        yes
+int8_sym         16     343.0     2.50  0.984     10.3        yes
+int8_sym         32     343.0     2.52  0.984     10.3        yes
+int8_sym         64     343.0     2.21  0.984     10.3        yes
+int8_sym        128     343.0     1.16  0.984     10.4        yes
+int8_sym        256     343.0     1.20  0.984     10.6        yes
+int4_sym         16     343.0     1.44  0.754      5.5        yes
+int4_sym         32     343.0     1.19  0.754      5.6        yes
+int4_sym         64     343.0     1.82  0.754      5.6        yes
+int4_sym        128     343.0     1.19  0.754      5.6        yes
+int4_sym        256     343.0     1.63  0.754      5.7        yes
+Total configs: 15
+Non-dominated: 1
 ```
 
 **PASS.** Pareto frontier computed; non-dominated configs identified. (Reference model is tiny —
-peak RSS dominated by interpreter overhead for all configs, hence flat peak_MB.)
+absolute RSS dominated by interpreter overhead for all configs, hence flat peak_MB column.)
+This command was broken in v0.1.0 (ImportError: cannot import name 'run_pareto_sweep') — fixed
+in v0.1.2 by adding run_pareto_sweep() to pareto.py and fixing attribute names in cli.py.
 
 ---
 
@@ -514,25 +542,22 @@ Surviving mutants: formatting constants in function bodies that do not affect th
 
 ## Wheel Build + Smoke Test (Artifact, not Checkout)
 
+Updated for v0.1.2 (prediction now includes process_baseline_bytes; pareto fixed; contradictory
+refusal message fixed). SHA256 hashes reflect v0.1.2 wheel.
+
 ```
 $ uv build
-Successfully built dist/fitsproof-0.1.0.tar.gz
-Successfully built dist/fitsproof-0.1.0-py3-none-any.whl
-```
-
-SHA256:
-```
-0be683a403d9087fe01800871ec19eced184835f934355f4890ae60f3b61746d  fitsproof-0.1.0-py3-none-any.whl
-3f64573ad5740bf9a803d29373061763dfa5c5c06525169928ca4c0b2870d177  fitsproof-0.1.0.tar.gz
+Successfully built dist/fitsproof-0.1.2.tar.gz
+Successfully built dist/fitsproof-0.1.2-py3-none-any.whl
 ```
 
 **Smoke test — fresh temp venv, no repo checkout:**
 ```
 $ TMPVENV=$(mktemp -d)
 $ uv venv "$TMPVENV/venv" --python 3.11
-$ uv pip install dist/fitsproof-0.1.0-py3-none-any.whl --python "$TMPVENV/venv/bin/python"
+$ uv pip install dist/fitsproof-0.1.2-py3-none-any.whl --python "$TMPVENV/venv/bin/python"
 Installed 3 packages in 387ms
- + fitsproof==0.1.0 (from file:///build/portfolio/fitsproof/dist/fitsproof-0.1.0-py3-none-any.whl)
+ + fitsproof==0.1.2 (from file:///build/portfolio/fitsproof/dist/fitsproof-0.1.2-py3-none-any.whl)
  + numpy==2.2.6
  + pyyaml==6.0.2
 
@@ -544,14 +569,14 @@ Probing machine...
   VRAM:       0.00 GB
 
 $ $TMPVENV/venv/bin/fitsproof plan --budget-gb 4
-ADMITTED: 0.042 GB predicted peak <= 4.000 GB budget (margin: 3958.3 MB)
+ADMITTED: 0.073 GB predicted peak <= 4.000 GB budget (margin: 3927.1 MB)
 
 $ $TMPVENV/venv/bin/fitsproof admit --budget-gb 4; echo "exit: $?"
-ADMITTED: 0.042 GB predicted peak <= 4.000 GB budget (margin: 3958.3 MB)
+ADMITTED: 0.073 GB predicted peak <= 4.000 GB budget (margin: 3927.1 MB)
 exit: 0
 
 $ $TMPVENV/venv/bin/fitsproof admit --budget-gb 0.001; echo "exit: $?"
-REFUSED: needs 0.04 GB, budget 0.00 GB; nearest fitting config is Offload ~50% of layers to system RAM (CPU fallback for those layers)
+REFUSED: needs 0.08 GB, budget 0.00 GB; best available option is 'Use int4_sym quantisation instead of none' (0.01 GB) — still does not fit
 Degradation options:
   [does not fit] Use int8_sym quantisation instead of none -> 0.011 GB
   [does not fit] Use int4_sym quantisation instead of none -> 0.006 GB

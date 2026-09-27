@@ -114,7 +114,7 @@ def plan(
         raise ValueError(f"budget_bytes must be a positive finite number, got {budget_bytes!r}")
 
     cost = estimate(cfg, machine, context_len, quant, bandwidth_utilisation)
-    predicted_peak = cost.total_peak_bytes
+    predicted_peak = cost.total_peak_bytes + machine.process_baseline_bytes
     predicted_tok_s = cost.predicted_tok_s
 
     # Simple CI: ±20% of predicted (replaced by fitted CI when calibrate is used)
@@ -195,11 +195,20 @@ def plan(
         binding = ""
     else:
         verdict = Verdict.DOES_NOT_FIT
-        binding = (
-            f"needs {predicted_peak / 1e9:.2f} GB, budget {budget_bytes / 1e9:.2f} GB; "
-            f"nearest fitting config is "
-            + (f"{degradations[-1].description}" if degradations else "none found")
-        )
+        # Find the degradation closest to fitting (smallest predicted_peak_bytes).
+        # Do NOT call it "nearest fitting" if it also does not fit.
+        if degradations:
+            closest = min(degradations, key=lambda d: d.predicted_peak_bytes)
+            binding = (
+                f"needs {predicted_peak / 1e9:.2f} GB, budget {budget_bytes / 1e9:.2f} GB; "
+                f"best available option is {closest.description!r} "
+                f"({closest.predicted_peak_bytes / 1e9:.2f} GB) — still does not fit"
+            )
+        else:
+            binding = (
+                f"needs {predicted_peak / 1e9:.2f} GB, budget {budget_bytes / 1e9:.2f} GB; "
+                "no degradation options available"
+            )
 
     return Plan(
         verdict=verdict,
