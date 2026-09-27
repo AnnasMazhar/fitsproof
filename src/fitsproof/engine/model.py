@@ -21,7 +21,6 @@ from typing import Any
 
 import numpy as np
 
-
 # ---------------------------------------------------------------------------
 # Config dataclass
 # ---------------------------------------------------------------------------
@@ -74,7 +73,7 @@ class ModelConfig:
         return asdict(self)
 
     @classmethod
-    def from_dict(cls, d: dict[str, Any]) -> "ModelConfig":
+    def from_dict(cls, d: dict[str, Any]) -> ModelConfig:
         return cls(**d)
 
 

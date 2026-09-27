@@ -18,7 +18,6 @@ from typing import Literal
 
 import numpy as np
 
-
 QuantMode = Literal["int8_sym", "int8_asym", "int4_sym", "int4_asym"]
 
 

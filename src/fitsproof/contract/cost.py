@@ -32,7 +32,6 @@ from dataclasses import dataclass
 from fitsproof.contract.probe import MachineProfile
 from fitsproof.engine.model import ModelConfig
 
-
 BYTES_PER_DTYPE: dict[str, int] = {
     "float32": 4,
     "float16": 2,

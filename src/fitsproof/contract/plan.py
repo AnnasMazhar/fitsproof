@@ -164,7 +164,7 @@ def plan(
     degradations.append(
         DegradationStep(
             kind="offload_layers",
-            description=f"Offload ~50% of layers to system RAM (CPU fallback for those layers)",
+            description="Offload ~50% of layers to system RAM (CPU fallback for those layers)",
             predicted_peak_bytes=offloaded_peak,
             predicted_tok_s=predicted_tok_s * 0.3,  # significant tok/s penalty
             fits_budget=fits_offload,

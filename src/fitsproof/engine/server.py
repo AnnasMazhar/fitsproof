@@ -17,8 +17,8 @@ Usage:
 from __future__ import annotations
 
 import json
-import time
 import threading
+import time
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from typing import Any
 
@@ -221,7 +221,7 @@ def start_server(
     host: str = "127.0.0.1",
     port: int = 8080,
     block: bool = True,
-) -> "FitsproodHTTPServer":
+) -> FitsproodHTTPServer:
     """
     Start the OpenAI-compatible HTTP server.
 

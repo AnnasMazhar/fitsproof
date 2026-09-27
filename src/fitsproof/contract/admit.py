@@ -16,7 +16,6 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from enum import Enum
-from typing import Literal
 
 from fitsproof.contract.plan import DegradationStep, Plan, Verdict
 

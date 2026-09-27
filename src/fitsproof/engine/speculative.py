@@ -50,7 +50,6 @@ def speculative_generate(
     Fault detected: if the verification step accepts tokens that don't match
     target greedy, the equality property is broken and the test fails.
     """
-    sampler = Sampler(seed=seed)
     generated: list[int] = []
     context = list(prompt_ids)
 

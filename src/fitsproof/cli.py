@@ -40,8 +40,9 @@ def main() -> int:
     args = parser.parse_args()
 
     if args.command == "probe":
-        from fitsproof.contract.probe import probe, save_profile
         from pathlib import Path
+
+        from fitsproof.contract.probe import probe, save_profile
 
         print("Probing machine...")
         profile = probe()
@@ -54,9 +55,9 @@ def main() -> int:
             print(f"  saved to:   {args.out}")
 
     elif args.command == "plan":
-        from fitsproof.contract.probe import probe
-        from fitsproof.contract.plan import plan as make_plan
         from fitsproof.contract.admit import admit
+        from fitsproof.contract.plan import plan as make_plan
+        from fitsproof.contract.probe import probe
         from fitsproof.engine.model import REFERENCE_CONFIG
 
         machine = probe()
@@ -72,10 +73,10 @@ def main() -> int:
 
     elif args.command == "server":
         from fitsproof.engine.model import get_reference_bundle
-        from fitsproof.engine.transformer import Transformer
         from fitsproof.engine.server import start_server
+        from fitsproof.engine.transformer import Transformer
 
-        print(f"Loading reference model...")
+        print("Loading reference model...")
         cfg, weights = get_reference_bundle()
         transformer = Transformer(cfg, weights)
         print(f"Starting server on {args.host}:{args.port}")

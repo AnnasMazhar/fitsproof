@@ -14,18 +14,16 @@ the configuration. Predicted values are labelled as such.
 
 from __future__ import annotations
 
-import json
 import time
-from dataclasses import asdict, dataclass
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Callable
 
 import numpy as np
 
 from fitsproof.contract.cost import estimate
 from fitsproof.contract.probe import MachineProfile
 from fitsproof.engine.model import ModelConfig
-from fitsproof.engine.quant import dequantize, memory_reduction_factor, quantize, top1_agreement
+from fitsproof.engine.quant import dequantize, quantize, top1_agreement
 from fitsproof.engine.sampling import Sampler
 from fitsproof.engine.transformer import Transformer
 
@@ -95,7 +93,8 @@ def sweep(
     This is the data behind the "≥20 configurations, zero budget violations"
     acceptance criterion in the stress harness.
     """
-    import resource, os
+    import os
+    import resource
 
     if quants is None:
         quants = ["none", "int8_sym", "int4_sym"]
@@ -134,9 +133,7 @@ def sweep(
             except Exception:
                 t1 = 0.9  # fallback if quant mode not supported for this shape
 
-        cost = estimate(cfg, machine, max(context_lens), quant, bandwidth_utilisation)
-        predicted_peak = cost.total_peak_bytes
-        predicted_tok_s = cost.predicted_tok_s
+        estimate(cfg, machine, max(context_lens), quant, bandwidth_utilisation)
 
         for ctx in context_lens:
             rss_before = get_rss()

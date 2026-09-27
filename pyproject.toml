@@ -41,7 +41,11 @@ exclude = ["mutants/"]
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "N", "W", "UP"]
-ignore = []
+ignore = [
+    "N802",   # do_GET / do_POST are mandated by http.server.BaseHTTPRequestHandler
+    "N806",   # single-letter uppercase math vars (V, L, W, H) are conventional in ML/cost models
+    "E501",   # long SVG literals and math formulas that cannot be meaningfully split
+]
 
 [tool.mutmut]
 paths_to_mutate = ["src/fitsproof/contract/"]

@@ -23,9 +23,9 @@ from __future__ import annotations
 import os
 import resource
 import time
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Callable
 
 import numpy as np
 
@@ -108,7 +108,6 @@ def _sample_peak_rss(
     during intermediate computation.
     """
     samples: list[int] = []
-    start = time.perf_counter()
 
     # Sample before
     samples.append(_get_rss_bytes())

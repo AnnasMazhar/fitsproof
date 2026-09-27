@@ -17,7 +17,6 @@ from fitsproof.engine.attention import AttentionLayer, KVCache
 from fitsproof.engine.model import ModelConfig
 from fitsproof.engine.sampling import Sampler
 
-
 # ---------------------------------------------------------------------------
 # Norms
 # ---------------------------------------------------------------------------
@@ -193,7 +192,7 @@ class Transformer:
             raise ValueError("prompt_ids must not be empty")
 
         prompt = np.array(prompt_ids, dtype=np.int64)[np.newaxis, :]  # (1, seq)
-        logits = self.forward_reference(prompt)  # (1, seq, vocab)
+        self.forward_reference(prompt)  # prime non-cached path (result unused)
         # Prime the cache with all prompt tokens' K/V by re-running cached path
         # Reset and replay incrementally to populate cache correctly
         cache.reset()
@@ -204,7 +203,6 @@ class Transformer:
                 x = self._layer_forward_cached(x, i, cache)
 
         # The last logits from the cached prefill drive the first new token
-        x_last = self._embed(np.array([[prompt_ids[-1]]], dtype=np.int64))
         # Re-derive last hidden state from the cache path
         # We already have cache populated; logits for last position come from
         # the final cached hidden state

@@ -23,7 +23,6 @@ import numpy as np
 
 from fitsproof.engine.model import ModelConfig
 
-
 # ---------------------------------------------------------------------------
 # RoPE positional encoding
 # ---------------------------------------------------------------------------
@@ -42,7 +41,6 @@ def _rope_freqs(head_dim: int, max_seq: int, theta: float = 10000.0) -> np.ndarr
     hand-computed values for d=4, positions 0 and 1.
     """
     assert head_dim % 2 == 0, "head_dim must be even for RoPE"
-    half = head_dim // 2
     # Frequency for each dimension pair: shape (half,)
     inv_freq = 1.0 / (theta ** (np.arange(0, head_dim, 2, dtype=np.float32) / head_dim))
     # Position indices: shape (max_seq,)
@@ -72,7 +70,6 @@ def apply_rope(x: np.ndarray, freqs: np.ndarray, offset: int = 0) -> np.ndarray:
     dot products to differ from reference by a sign flip.
     """
     *batch, seq_len, head_dim = x.shape
-    half = head_dim // 2
     # Select positions for this chunk
     pos_freqs = freqs[offset : offset + seq_len]  # (seq_len, half, 2)
     cos_vals = pos_freqs[..., 0]  # (seq_len, half)
@@ -230,7 +227,7 @@ class AttentionLayer:
     def forward_cached(
         self,
         x: np.ndarray,
-        cache: "KVCache",
+        cache: KVCache,
         layer_idx: int,
     ) -> np.ndarray:
         """
@@ -249,7 +246,6 @@ class AttentionLayer:
         """
         batch, _, _ = x.shape
         offset = cache.seq_len
-        hd = self.cfg.head_dim
 
         q, k_new, v_new = self._project(x)  # each: (batch, n_heads or n_kv_heads, 1, hd)
         q = apply_rope(q, self._freqs, offset=offset)

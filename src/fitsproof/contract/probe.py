@@ -54,12 +54,12 @@ class MachineProfile:
         return json.dumps(self.to_dict(), indent=2)
 
     @classmethod
-    def from_dict(cls, d: dict[str, Any]) -> "MachineProfile":
+    def from_dict(cls, d: dict[str, Any]) -> MachineProfile:
         extra = d.pop("extra", {})
         return cls(**d, extra=extra)
 
     @classmethod
-    def from_json(cls, s: str) -> "MachineProfile":
+    def from_json(cls, s: str) -> MachineProfile:
         return cls.from_dict(json.loads(s))
 
 
