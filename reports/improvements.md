@@ -120,3 +120,158 @@ The new tests are proper KATs with external ground truth:
   bandwidth, 50% efficiency worst case). Upper bound 500 GB/s rules out cache measurement.
 - `test_verify_determinism_tier`: three cases covering all tier transitions from the capability-
   gated tier model (Cerruti 2024).
+
+---
+
+## Pass c1-p09-improve-2 (2026-09-27) — adoption readiness + README credibility
+
+### 1. Top credibility gap found (after re-reading RESEARCH.md pass 2/3 + ADOPTION.md)
+
+**The README claimed "predicts peak memory" with no accuracy benchmark and no failure
+case**, while our own artifacts publish both: `docs/EVIDENCE.md` Claim 12 (MAPE 50.3%,
+n_held_out=1) and `docs/ADOPTION.md` F-1 (+64% over-prediction on gemma3:4b, 7.219 GB
+predicted vs 4.4 GB observed) and §5 ("the single most likely reason someone would NOT
+adopt it"). A skeptical reviewer cross-reading the docs finds the README claim
+unsupported — MARKET-VERDICTS.md also mandates: "plus calibration MAPE on held-out
+configurations. If that number is bad, publish it."
+
+**Fixed:** README now carries a "Prediction accuracy — the benchmark, published even
+though it is unflattering" section with raw output from a *reproducible* script
+(`scripts/calibration_demo.py`, new), the real-model error, and how to read it
+(one-sided, safe for refusals, costly as false degradations). Plus a matching
+Limitations bullet. The benchmark run today (loaded box — load average 12.6):
+
+```
+$ .venv/bin/python scripts/calibration_demo.py
+=== Calibration demo ===
+bandwidth: 1.92 GB/s
+gemm:      37.19 GFLOPS
+RAM:       33.5 GB
+bandwidth_utilisation: 0.0487
+MAPE (held-out):       46.1%
+CI (95%):              [46.1%, 46.1%]
+n_train=2, n_held_out=1
+rc=0
+```
+
+(First draft of the script multiplied by 100 twice — `calibrate._mape` already returns
+a percentage; caught by reconciling against EVIDENCE.md's published 50.3% before use.)
+
+### 2. F-2 fixed — error message a stranger can act on (deferred major finding)
+
+ADOPTION.md F-2 (major, explicitly "recorded for the improve pass"): the refusal named a
+"nearest *fitting* config" on the DOES_NOT_FIT path where no fitting config can exist by
+construction — and named `degradations[-1]` (offload, 0.022 GB) while int4_sym at
+0.006 GB was nearer, contradicting the `[does not fit]` tags printed in the same block.
+
+Before (raw, from this cycle's evidence transcripts):
+
+```
+$ .venv/bin/fitsproof admit --budget-gb 0.001
+REFUSED: needs 0.04 GB, budget 0.00 GB; nearest fitting config is Offload ~50% of layers to system RAM (CPU fallback for those layers)
+Degradation options:
+  [does not fit] Use int8_sym quantisation instead of none -> 0.011 GB
+  [does not fit] Use int4_sym quantisation instead of none -> 0.006 GB
+  [does not fit] Reduce context to 256 tokens (1/2 of 512) -> 0.040 GB
+  [does not fit] Reduce context to 128 tokens (1/4 of 512) -> 0.039 GB
+  [does not fit] Reduce context to 64 tokens (1/8 of 512) -> 0.039 GB
+  [does not fit] Offload ~50% of layers to system RAM (CPU fallback for those layers) -> 0.022 GB
+```
+
+After (raw, `src/fitsproof/contract/plan.py:no_fit_reason`):
+
+```
+$ .venv/bin/fitsproof admit --budget-gb 0.001
+REFUSED: needs 0.042 GB, budget 0.001 GB; no listed option fits — nearest is "Use int4_sym quantisation instead of none" at 0.006 GB (0.005 GB above budget)
+Degradation options:
+  [does not fit] Use int8_sym quantisation instead of none -> 0.011 GB
+  [does not fit] Use int4_sym quantisation instead of none -> 0.006 GB
+  [does not fit] Reduce context to 256 tokens (1/2 of 512) -> 0.040 GB
+  [does not fit] Reduce context to 128 tokens (1/4 of 512) -> 0.039 GB
+  [does not fit] Reduce context to 64 tokens (1/8 of 512) -> 0.039 GB
+  [does not fit] Offload ~50% of layers to system RAM (CPU fallback for those layers) -> 0.022 GB
+rc=2
+```
+
+Test that would have caught it (three faults pinned): `test_refusal_never_names_a_non_fitting_config`
+in `tests/contract/test_plan_admit_verify.py` — asserts (1) "nearest fitting config"
+never appears on DOES_NOT_FIT, (2) the *smallest-predicted-peak* option is named
+(the old code named `degradations[-1]`), (3) the named option is honestly above budget.
+
+### 3. Packaging and versioning
+
+```
+$ .venv/bin/fitsproof --version
+fitsproof 0.1.0
+rc=0
+```
+
+- New `-V/--version` flag (was: `unrecognized arguments: --version`, exit 2).
+- New `tests/test_packaging.py`: pyproject version == `fitsproof.__version__` (drift
+  makes releases untraceable) and the CLI actually reports it.
+
+### 4. Integration example against a real external tool — re-verified end-to-end
+
+ollama 0.20.3, `gemma3:4b` pulled, daemon live. All three gate paths re-run after the
+F-2 change (docs/ADOPTION.md §2 refreshed to match the code exactly):
+
+```
+$ .venv/bin/python scripts/ollama_gate.py gemma3:4b --budget-gb 12 --context 4096
+model:   gemma3:4b (4.3B, Q4_K_M -> int4_sym)
+shape:   34L x 2560h, heads 8/4, vocab 262145, ctx 4096
+budget:  12 GB
+ADMITTED: 7.219 GB predicted peak <= 12.000 GB budget (margin: 4781.1 MB)
+EXIT:0
+
+$ .venv/bin/python scripts/ollama_gate.py gemma3:4b --budget-gb 3 --context 4096
+REFUSED: needs 7.219 GB, budget 3.000 GB; no listed option fits — nearest is "Offload ~50% of layers to system RAM (CPU fallback for those layers)" at 3.699 GB (0.699 GB above budget)
+EXIT:2
+
+$ .venv/bin/python scripts/ollama_gate.py gemma3:4b --budget-gb 6 --context 4096
+DEGRADED: base config needs 7.219 GB > budget 6.000 GB. Applying: Offload ~50% of layers to system RAM (CPU fallback for those layers). New predicted peak: 3.699 GB.
+GATE: config only fits after a declared degradation, and this gate cannot apply it to an external engine. Not chaining. Re-run with --allow-degrade only if you will wire the degradation yourself.
+EXIT:2
+```
+
+### 5. Docs vs code, and the narrowed claim
+
+- `COMPARISONS.md` gains the **aura** row (4 stars, 2026-09-03) that RESEARCH pass 3
+  required but deferred to a parallel lane; README's comparison claim is re-scoped to
+  match the narrowed claim (aura enforces at kernel level; nobody pairs enforcement with
+  published on-device calibration + measured proof harness + embeddable API).
+- `docs/ADOPTION.md` §6 maturity table: L3 (guard) and L4 (MCP) moved from "mandate, not
+  claimed" to "works today" — they landed in the M2 pass and are exercised by tests.
+- `docs/RESEARCH.md` F-2 status row flipped to fixed; the pass-2 illustrative refusal
+  string updated to the new wording.
+
+### Before/after metrics
+
+| Metric | Before | After | Delta |
+|---|---|---|---|
+| `pytest -q` | 152 passed | 155 passed | +3 |
+| Refusal on DOES_NOT_FIT names a config that fits | NO (F-2) | YES (impossible by construction; names nearest listed option + gap) | fixed |
+| Refusal names nearest option vs last-enumerated | last (`degradations[-1]`) | smallest predicted peak | fixed |
+| `fitsproof --version` | error, exit 2 | `fitsproof 0.1.0`, exit 0 | added |
+| README publishes calibration MAPE | no | yes (46.1% fresh, reproducible via `scripts/calibration_demo.py`) | added |
+| README publishes real-model failure case (F-1, +64%) | no | yes (Limitations + benchmark section) | added |
+| COMPARISONS aura row (required by RESEARCH pass 3) | missing | present | added |
+| ADOPTION.md L3/L4 status vs code | stale ("not claimed") | matches code | fixed |
+| `ruff check .` / `ruff format --check .` | clean | clean | — |
+| `check_research_traceability.py` | passed | passed | — |
+
+### Terminal evidence (full gate)
+
+```
+$ .venv/bin/ruff check . && .venv/bin/ruff format --check . && .venv/bin/python scripts/check_research_traceability.py
+All checks passed!
+39 files already formatted
+TRACEABILITY OK (core only): all core test files cite valid research sources. Checked 22 source IDs from RESEARCH.md. PAPER-TRACEABILITY.md table validated (15 IMPLEMENTED rows).
+
+$ .venv/bin/pytest -q 2>&1 | tail -3
+tests/value/test_readme_snippets.py ..                                               [100%]
+======================= 155 passed in 122.86s (0:02:02) ========================
+
+$ git log --oneline -2
+8b60db7 fix: refusal names nearest listed option, never a non-fitting config (F-2)
+cbd6570 docs: publish prediction-accuracy benchmark, add aura row, --version flag
+```
