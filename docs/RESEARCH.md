@@ -860,3 +860,119 @@ workstations purchased before 2023 and the majority of non-gaming laptops with d
    plus a targeted search for "LLM memory budget enforcement" on GitHub; no additional
    tools appeared. The adversarial reviewer should repeat the search with different query
    terms.
+
+---
+
+## Pass 3 — Real-World Applicability (cycle 1, pass 3)
+
+Deliverables of this pass: **`docs/ADOPTION.md`** (Tuesday adoption against
+ollama 0.20.3, executed on this machine) and **`scripts/ollama_gate.py`**
+(the gate the recipe chains, committed at `367fa45`). Everything below is
+raw output from 2026-09-27.
+
+### Open questions from passes 1–2 — closure table
+
+Status legend: CLOSED (question answered), OBSERVED (the falsifier fired;
+recorded as a defect, not hidden), OPEN (cannot be closed in this pass;
+closure procedure named).
+
+| # | Question (source) | Status | Evidence |
+|---|---|---|---|
+| 1 | Does measured bandwidth break the >2× throughput assumption? (P1-F1) | **OBSERVED** | Calibration fits `bandwidth_utilisation=0.0345` (vs the 0.6 default), held-out MAPE 50.3%, tok/s over-predicted ~2× at reference scale (EVIDENCE.md §6). Root cause named there: NumPy per-token dispatch not in the roofline. Falsifier fired; published as required. Feeds the improve pass. |
+| 2 | Does KV cache dominate weight streaming at moderate context? (P1-F2) | **CLOSED (not observed)** | First-principles: KV = 2·L·kv_h·head_dim·elem_bytes per token (cost.py `kv_cache_bytes`, same formula as ridgepoint's documented GQA form). Llama-7B fp16 non-GQA: 2·32·32·128·2 = 524,288 B/tok → 4096 ctx = 2.15 GB vs 14 GB weights; crossover ≈ 27k tokens. With GQA kv_h=8: crossover ≈ 107k tokens. Gate default ctx 4096 is an order of magnitude below either. The term is inside `estimate()` (`total_peak = weight + kv + activation`), so an omission fault is covered by tests/contract/test_cost.py. |
+| 3 | Does RSS sampling miss the real peak? (P1-F3) | **CLOSED as documented limitation** | Confirmed empirically this campaign: peak_MB is 347.0 flat across all 9 Pareto configs (EVIDENCE.md §10) — the interpreter floor masks the 38 MB fixture. No violation observed (item 7), but the instrument has a known floor; README Limitations carries it. |
+| 4 | Speculative equality outside greedy? (P1-F4) | **CLOSED by scope** | v0.1 claims and tests greedy equality only (acceptance criterion 4). Rejection sampling for temp>0 is not implemented and not claimed. No open risk. |
+| 5 | Calibration MAPE >20% on held-out configs? (P1-F5) | **OBSERVED** | 50.3% (n_held_out=1, EVIDENCE.md §6). The falsifier fired exactly as written; spec says publish it, so it is published. Root cause + fix path in ADOPTION.md F-1 and the improve pass. |
+| 6 | Prediction-interval coverage <80%? (P1-F6) | **OPEN (procedure defined)** | Not measurable at n_held_out=1 (CI degenerates to [50.3%, 50.3%]). Closure: run `calibrate.collect_measurements` until n_held_out ≥ 10, then check coverage. Until then any interval claim must be labelled unvalidated — it is, in this document. |
+| 7 | Admitted config exceeding its budget in measurement? (P1-F7) | **CLOSED (not observed)** | 25-config stress harness: zero violations (EVIDENCE.md §8). Real-model cross-check this pass: predicted peak 7.219 GB vs ollama-observed 4.4 GB for gemma3:4b — conservative by +64%, never above. |
+| 8 | Tier-1 determinism violated in the NumPy path? (P1-F8) | **CLOSED (not observed)** | Seed-reproducibility asserted in tests/engine/test_sampling.py, test_attention.py, test_speculative.py; full suite 88 passed (re-run this pass, `367fa45` parent). |
+| 9 | Does ridgepoint's calibration transfer to a Quadro M2000 (<5% MAPE)? (P1-F9 / P2-F1) | **CLOSED by capability absence** | ridgepoint cannot express this hardware: `ridgepoint fit Qwen/Qwen2.5-7B-Instruct --gpu quadro-m2000` → `ridgepoint: unknown gpu: quadro-m2000`. Run *without* `--gpu` on this CPU box it silently predicts for `1× a100-80gb · Ampere` (raw header captured) — it answers a question about different silicon. A head-to-head MAPE on our class is therefore not merely untested but **unrepresentable**; on-device calibration stands uncontested for 4–8 GB / CPU-first machines. (Also observed: gated HF repos 403 without auth — another adoption friction point for ridgepoint, not ours.) |
+| 10 | Has llama.cpp shipped budget enforcement since v0.5.0? (P2-F2) | **CLOSED same-day by pass 2** | Pass 2 verified (2026-09-27T13:00 UTC): v0.5.0 has `--n-gpu-layers` offload control, no `--budget` flag, no degradation record. No newer release exists as of this pass. Re-check at publication time. |
+| 11 | Is the 4–8 GB VRAM / 16–32 GB RAM class large enough? (P2-F3) | **CLOSED (claim holds)** | Steam Hardware Survey (Aug 2026): 8 GB VRAM = 25.32–25.74%, 16 GB = 25.90%; Tom's Hardware / TechRadar on the July data: *"just under half (47%) have a graphics card with 8GB or less"*. Plus the CPU-only class this box represents (`VRAM: 0.00 GB` from `fitsproof probe`). The addressable class is ~half of Steam, before counting iGPU/CPU-only hosts. |
+| 12 | Is "no single tool does all three" still true? (P2-F4) | **OBSERVED — claim NARROWED** | Re-ran the search with different terms (raw outputs below) and found **Grevix/aura** (4 stars, Rust, MIT/Apache-2.0, pushed 2026-09-03): *"hardware-aware memory-budget enforcement and inference orchestration for local LLMs"*, with pre-execution feasibility modelling, **cgroup v2 / Win32 Job Object enforcement**, a context-ladder degradation (4096→1024), and ollama model discovery. aura covers limb (2) of the claim — enforcement — more aggressively (kernel-level) than fitsproof does today. See "Narrowed claim" below. |
+
+Raw search output for item 12 (GitHub REST, 2026-09-27):
+
+```
+$ curl -s "https://api.github.com/search/repositories?q=llm+memory+budget+enforcement&per_page=8"
+total 10
+Emmimal/context-engine 197  A pure-Python context management layer for LLM systems...
+Grevix/aura 4  Hardware-aware memory-budget enforcement & LLM inference orchestration for low-R...
+ashcakeancient7671/aura 1  Run low-memory LLMs on consumer hardware with adaptive memory-budget enforcement
+...
+$ curl -s ".../search/repositories?q=%22gpu+memory%22+guard+llm+inference+oom&per_page=8"
+total 0
+$ curl -s ".../search/repositories?q=ollama+memory+limit+guard&per_page=8"
+total 0
+```
+
+### Narrowed claim (replaces pass 2's wording)
+
+Pass 2 claimed: no single tool does (1) on-device calibration,
+(2) budget enforcement, (3) proof harness. **aura does (2).** What no
+single tool — including aura — documents, as of 2026-09-27:
+
+1. **Calibration fitted on the user's own machine with a held-out split,
+   MAPE and bootstrap interval published.** aura's README reports measured
+   benchmarks (70-prompt suite, `Provenance: aura_measured`) but documents
+   no on-device calibration protocol with train/hold-out evaluation;
+   ridgepoint's calibration is offline, for A100/H100, and has no SKU for
+   this class (item 9).
+2. **A proof harness that asserts measured ≤ declared over ≥20
+   configurations with a margin distribution, as a repo test.** aura's own
+   README example reports a run that would fail such a harness, verbatim:
+   `Memory Budget  : 4.00 GB (Win32 Job Object Enforced)` /
+   `Peak RSS       : 4.92 GB`. Whether that is a measurement of a
+   different pool or a violation, a fitsproof-style harness is exactly
+   what would catch it — that asymmetry *is* the product.
+3. **Admission as an embeddable API** (`plan`/`admit` objects a service
+   can call before allocating) rather than only a CLI runner.
+
+COMPARISONS.md should gain an aura row (4 stars, 2026-09-03); not edited
+here because a parallel lane owns that artifact. aura is 4 stars and
+unverified — but if it ships calibration plus a zero-violation stress
+harness, this gap closes. Watch it at publication time.
+
+### Findings raised this pass (all in ADOPTION.md with raw output)
+
+| id | severity | finding | status |
+|---|---|---|---|
+| F-1 | major | Real-model peak over-predicted +64% (7.219 GB vs 4.4 GB observed): head_dim assumption (hidden/heads=320 vs gemma3's actual 256) and fp32 embed+unembed accounting (5.37 of 7.22 GB) | open — fix in cost model; observed 4.4 GB becomes the KAT |
+| F-2 | major | Refusal message names a non-fitting config as "nearest fitting" (plan.py DOES_NOT_FIT branch appends `degradations[-1]` unconditionally; at 3 GB it names an offload option that predicts 3.699 GB) | open — decision correct, wording misleading; needs a test that pins the wording only when the named config fits |
+| F-3 | minor | Probe bandwidth drifted 1.8× day-over-day (7.18 → 3.94–4.22 GB/s); run-to-run spread same day ~7% | open — operational rule documented (re-probe on load-profile change) |
+| F-4 | minor | CPU-roofline tok/s is meaningless for hybrid CPU/GPU engines (measured 12.38 tok/s vs sub-1 prediction for gemma3:4b at 44/56% CPU/GPU) | documented — never publish tok/s for a GPU-backed engine from the CPU profile |
+| F-5 | minor | `probe` reports `VRAM: 0.00 GB` on a box with a Quadro M2000 — GPU memory unmeasured in v0.1 | documented — v0.1 contract is RAM-only |
+
+Design decision recorded: `scripts/ollama_gate.py` treats DEGRADED as
+**refuse-by-default** (exit 2) when gating an external engine, because a
+fitsproof degradation cannot be applied to ollama and chaining on a
+degradation record would be a green light for a possible violation —
+the exact silent-mode-change class this repo exists to eliminate.
+
+### Falsification for Pass 3
+
+Real-world applicability is wrong if any of these holds. Status now:
+
+1. **A config the gate ADMITTED exceeds its budget in reality.**
+   NOT OBSERVED: predicted 7.219 GB ≥ observed 4.4 GB (gemma3:4b);
+   stress harness 0/25 violations at fixture scale. The conservative
+   direction is load-bearing — if a future calibration flips the error
+   to under-prediction, the core claim dies immediately.
+2. **A config the gate REFUSED would have fit.** NOT OBSERVED across
+   tested budgets {2, 3, 5, 6, 12} GB: refusals at 2–3 GB are correct
+   (actual footprint 4.4 GB), degradations at 5–6 GB are conservative
+   over-predictions, not refusals. The dangerous window — actual fit,
+   predicted exceed — manifests as DEGRADED, which strict mode refuses
+   to chain (ADOPTION §2c).
+3. **Prediction error >2× on a real model.** Observed error 1.64×
+   (over-predict) — inside 2×, but >20%: falsifier P1-F5 stands
+   OBSERVED (item 5). The adoption-blocker analysis in ADOPTION §5
+   names this as the single most likely reason a team would not adopt.
+4. **Adoption requires reading our source.** The recipe in ADOPTION §2
+   is copy-pasteable from a clone; the install is source-only, which is
+   the v0.2 MANDATE M1 gap (binary + SHA256 release). OPEN by design,
+   not by oversight.
+5. **A competitor closes the narrowed claim.** aura (4★) is the one to
+   watch; as of 2026-09-27 its README shows no held-out calibration
+   protocol and publishes a run whose peak RSS exceeds its stated
+   budget. Re-check its repo before publication.
