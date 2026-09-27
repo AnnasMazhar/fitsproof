@@ -25,6 +25,16 @@ Faults detected by each test:
     Fault: not checking degradations means the config is refused when it
     could be admitted with degradation.
 
+  test_refusal_never_names_a_non_fitting_config:
+    On DOES_NOT_FIT the message must not claim a "nearest fitting config"
+    (none exists by construction) and must name the option with the
+    SMALLEST predicted peak, not the last one enumerated.
+    Fault (docs/ADOPTION.md F-2): plan.py appended degradations[-1]
+    unconditionally, so a 0.001 GB refusal named an offload option
+    predicting 0.022 GB while int4_sym at 0.006 GB was nearer — and the
+    named option did not fit either, contradicting the [does not fit] tags
+    the CLI prints in the same output block.
+
   test_admit_fits_returns_admitted:
     FITS verdict -> AdmitRecord with status=ADMITTED.
     Fault: returning DEGRADED for a fitting config wastes resources.
@@ -151,6 +161,39 @@ def test_plan_names_binding_constraint() -> None:
     machine = make_machine()
     p = plan(REFERENCE_CONFIG, machine, context_len=64, budget_bytes=1)
     assert "GB" in p.binding_constraint or "bytes" in p.binding_constraint.lower()
+
+
+def test_refusal_never_names_a_non_fitting_config() -> None:
+    """
+    Fault (docs/ADOPTION.md F-2): a refusal that names a config which does
+    not fit as the "nearest fitting config". On the DOES_NOT_FIT path no
+    degradation fits by construction, so the claim is false; the old code
+    also named degradations[-1] (offload, 0.022 GB) instead of the true
+    nearest option (int4_sym, 0.006 GB), contradicting the [does not fit]
+    tags printed in the same CLI output block.
+
+    A stranger acting on the old message would pick the farthest option
+    and still OOM. The fix names the smallest-predicted-peak option and
+    states the gap above budget.
+    """
+    machine = make_machine()
+    p = plan(REFERENCE_CONFIG, machine, context_len=64, budget_bytes=1)
+    assert p.verdict == Verdict.DOES_NOT_FIT
+    assert p.degradations, "test needs degradation options to be meaningful"
+
+    nearest = min(p.degradations, key=lambda d: d.predicted_peak_bytes)
+    # Fault 1: claiming a fitting config when none fits.
+    assert "nearest fitting config" not in p.binding_constraint, (
+        f"refusal claims a fitting config on the DOES_NOT_FIT path: {p.binding_constraint}"
+    )
+    # Fault 2: naming an option that is not the nearest (old code named degradations[-1]).
+    assert nearest.description in p.binding_constraint, (
+        f"refusal must name the nearest option {nearest.description!r}: {p.binding_constraint}"
+    )
+    # Fault 3: the named option must be honestly reported as non-fitting.
+    assert not nearest.fits_budget
+    assert nearest.predicted_peak_bytes > p.budget_bytes
+    assert "above budget" in p.binding_constraint
 
 
 def test_plan_fits_with_degradation() -> None:

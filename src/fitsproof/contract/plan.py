@@ -75,6 +75,35 @@ class Plan:
     binding_constraint: str = ""
 
 
+def no_fit_reason(
+    predicted_peak: int, budget_bytes: int, degradations: list[DegradationStep]
+) -> str:
+    """
+    Refusal wording for the DOES_NOT_FIT verdict.
+
+    On this path no degradation fits the budget (that is what DOES_NOT_FIT
+    means), so the message must never claim a "nearest *fitting* config".
+    It names the option with the smallest predicted peak and states how far
+    above the budget it still is, so the user knows what to change next.
+
+    Fault detected (docs/ADOPTION.md F-2): the old message appended
+    degradations[-1] unconditionally — it named a config that did not fit
+    and was not even the nearest (an offload at 0.022 GB while int4_sym at
+    0.006 GB was nearer), directly contradicting the [does not fit] tags the
+    CLI prints underneath.
+    """
+    head = f"needs {predicted_peak / 1e9:.3f} GB, budget {budget_bytes / 1e9:.3f} GB; "
+    if not degradations:
+        return head + "no degradation options available"
+    nearest = min(degradations, key=lambda d: d.predicted_peak_bytes)
+    gap_gb = (nearest.predicted_peak_bytes - budget_bytes) / 1e9
+    return (
+        head
+        + f'no listed option fits — nearest is "{nearest.description}" at '
+        + f"{nearest.predicted_peak_bytes / 1e9:.3f} GB ({gap_gb:.3f} GB above budget)"
+    )
+
+
 def plan(
     cfg: ModelConfig,
     machine: MachineProfile,
@@ -195,11 +224,7 @@ def plan(
         binding = ""
     else:
         verdict = Verdict.DOES_NOT_FIT
-        binding = (
-            f"needs {predicted_peak / 1e9:.2f} GB, budget {budget_bytes / 1e9:.2f} GB; "
-            f"nearest fitting config is "
-            + (f"{degradations[-1].description}" if degradations else "none found")
-        )
+        binding = no_fit_reason(predicted_peak, budget_bytes, degradations)
 
     return Plan(
         verdict=verdict,
