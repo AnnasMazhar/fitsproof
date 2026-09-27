@@ -1,4 +1,3 @@
-src/fitsproof/
 src/fitsproof.egg-info/
 __pycache__/
 *.pyc
@@ -10,3 +9,5 @@ htmlcov/
 dist/
 *.egg-info/
 .mutmut-cache
+mutants/
+*.bak
