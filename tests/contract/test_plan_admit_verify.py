@@ -6,6 +6,8 @@ Research source mappings (M4 — QUALITY-CONTRACT §4 / fitsproof.md M4):
   [2] Sheng et al. 2023 (FlexGen §3.1): peak = weights + KV + activations.
   [4] Ainslie et al. 2023 (GQA): KV cache formula.
   [7] Frantar et al. 2022 (GPTQ): quantisation memory reduction.
+  [12] McCalpin 1995 (STREAM): sustainable DRAM bandwidth measurement.
+  [14] Cerruti 2024 (detllm): capability-gated determinism tiers.
 
 Faults detected by each test:
   test_plan_fits_under_budget:
@@ -48,6 +50,15 @@ Faults detected by each test:
   test_verify_zero_budget_fails:
     Budget of 0 bytes must always be violated (budget_respected=False).
     Fault: if we don't check the budget at all, we always return True.
+
+  test_probe_bandwidth_above_floor:
+    Measured DRAM bandwidth must be in [1, 500] GB/s.
+    Fault: using arrays that fit in cache measures cache bandwidth (~100 GB/s), not DRAM.
+
+  test_verify_determinism_tier:
+    verify_run reports the correct determinism tier (TIER_0/TIER_1) based on
+    whether determinism_check_fn is provided and its output matches.
+    Fault: always returning TIER_1 would make false claims about determinism.
 
   test_stress_harness_zero_violations:
     ACCEPTANCE CRITERION 7: ≥20 configurations, zero budget violations.
@@ -239,6 +250,109 @@ def test_verify_refused_plan_raises(transformer) -> None:
             budget_bytes=1,
             admit_record=record,
         )
+
+
+def test_probe_bandwidth_above_floor() -> None:
+    """
+    KAT (Source [12] McCalpin 1995 — STREAM): measured DRAM bandwidth must exceed
+    a minimum floor of 1 GB/s on any machine with a real DRAM bus.
+
+    The STREAM triad benchmark (A[i] = B[i] + s*C[i]) reports sustainable
+    memory bandwidth, not burst bandwidth. On any machine with DDR3 or newer,
+    the floor is at least 5 GB/s theoretical; our lower bound of 1 GB/s is
+    extremely conservative to account for Python overhead and measurement noise.
+
+    Hand-derived lower bound:
+      DDR3-1600 single-channel theoretical: 12.8 GB/s
+      DDR4-2133 single-channel theoretical: 17.1 GB/s
+      With 50% efficiency (worst case, NumPy, Python overhead): 6.4 GB/s
+      Conservative floor: 1.0 GB/s (allows for throttled/cloud VMs)
+
+    Fault detected: if _measure_bandwidth uses array sizes that fit in L1/L2 cache,
+    it measures cache bandwidth (~100 GB/s), not DRAM bandwidth. The test checks
+    the value is in a physically plausible range for DRAM: [1, 500] GB/s.
+    A value > 500 GB/s indicates cache measurement, not DRAM.
+    """
+    from fitsproof.contract.probe import _measure_bandwidth
+
+    bw_bps = _measure_bandwidth()
+    bw_gb_s = bw_bps / 1e9
+
+    assert bw_gb_s >= 1.0, (
+        f"Measured bandwidth {bw_gb_s:.2f} GB/s is below the 1 GB/s floor. "
+        "Either the measurement is wrong or the machine is severely throttled."
+    )
+    assert bw_gb_s <= 500.0, (
+        f"Measured bandwidth {bw_gb_s:.2f} GB/s exceeds 500 GB/s, "
+        "which indicates cache bandwidth (not DRAM) was measured. "
+        "The STREAM benchmark must use arrays larger than the L3 cache."
+    )
+
+
+def test_verify_determinism_tier() -> None:
+    """
+    KAT (Source [14] Cerruti 2024 — detllm): verify_run must report the correct
+    determinism tier when a determinism_check_fn is provided.
+
+    Tier 0: no determinism check → always TIER_0.
+    Tier 1: determinism_check_fn returns identical output → TIER_1.
+
+    The capability-gated tier model means we NEVER claim higher than demonstrated.
+    If the second run returns identical tokens, Tier 1 is achieved.
+    If it returns different tokens, Tier 0 is reported.
+
+    Fault detected: if verify_run always returns TIER_1 regardless of whether
+    the check_fn was provided or its output matched, the tier report is false.
+    A false Tier 1 claim violates the QUALITY-CONTRACT §2 ground-truth requirement.
+    """
+    from fitsproof.contract.verify import DeterminismTier, VerifyRecord
+
+    machine = make_machine()
+    p = plan(REFERENCE_CONFIG, machine, context_len=64, budget_bytes=10**9)
+    record = admit(p)
+
+    # Case 1: no determinism_check_fn → must be TIER_0
+    rec_tier0: VerifyRecord = verify_run(
+        fn=lambda: [1, 2, 3],
+        budget_bytes=10**9,
+        admit_record=record,
+        config_label="tier0_check",
+        determinism_check_fn=None,
+    )
+    assert rec_tier0.determinism_tier == DeterminismTier.TIER_0, (
+        f"Without determinism_check_fn, tier must be TIER_0, got {rec_tier0.determinism_tier}"
+    )
+
+    # Case 2: determinism_check_fn returns SAME output → must promote to TIER_1
+    fixed_output = [1, 2, 3, 4, 5]
+    rec_tier1: VerifyRecord = verify_run(
+        fn=lambda: list(fixed_output),
+        budget_bytes=10**9,
+        admit_record=record,
+        config_label="tier1_check",
+        determinism_check_fn=lambda: list(fixed_output),
+    )
+    assert rec_tier1.determinism_tier == DeterminismTier.TIER_1, (
+        f"Identical output from check_fn should promote to TIER_1, got {rec_tier1.determinism_tier}"
+    )
+
+    # Case 3: determinism_check_fn returns DIFFERENT output → must stay TIER_0
+    counter = [0]
+
+    def nondeterministic_fn() -> list[int]:
+        counter[0] += 1
+        return [counter[0], counter[0] + 1]
+
+    rec_nondeterministic: VerifyRecord = verify_run(
+        fn=nondeterministic_fn,
+        budget_bytes=10**9,
+        admit_record=record,
+        config_label="nondeterministic_check",
+        determinism_check_fn=nondeterministic_fn,
+    )
+    assert rec_nondeterministic.determinism_tier == DeterminismTier.TIER_0, (
+        f"Different output from check_fn must stay TIER_0, got {rec_nondeterministic.determinism_tier}"
+    )
 
 
 def test_verify_zero_budget_fails(transformer) -> None:

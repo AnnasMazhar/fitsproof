@@ -154,10 +154,19 @@ def check_traceability(
 def check_paper_traceability_table(repo_root: Path) -> list[tuple[Path, str]]:
     """
     Validate docs/PAPER-TRACEABILITY.md: every row marked IMPLEMENTED must have
-    non-empty 'Our implementation' and 'Experiment' columns.
+    non-empty 'Our implementation' and 'Experiment' columns, AND the referenced
+    test function must actually exist in the test file it names.
 
     Table format (Markdown pipe-delimited):
       | # | Paper | Mechanism | Our implementation (file:symbol) | Experiment (file::test) | ... | Status |
+
+    The Experiment column is expected to contain a reference of the form:
+      tests/path/to/test_file.py::test_function_name
+
+    This check verifies:
+      1. The cell is non-empty.
+      2. The referenced test file exists.
+      3. The referenced test function is defined in that file.
 
     Returns a list of (path, reason) pairs for failures.
     """
@@ -207,6 +216,44 @@ def check_paper_traceability_table(repo_root: Path) -> list[tuple[Path, str]]:
                     traceability_path,
                     f"Source {source_num}: 'Experiment' column is empty for a {status_col} row. "
                     f"Add a file::test reference or change status.",
+                )
+            )
+            continue  # no point checking existence of an empty reference
+
+        # Check that the referenced test function actually exists.
+        # Expected format: tests/path/file.py::test_function_name
+        # (may have a leading backtick from markdown formatting — strip it)
+        experiment_ref = experiment_col.strip("`").strip()
+        if "::" not in experiment_ref:
+            # Might be a file-only reference — acceptable, no function check
+            continue
+
+        file_part, func_part = experiment_ref.rsplit("::", 1)
+        test_file_path = repo_root / file_part
+
+        if not test_file_path.exists():
+            failures.append(
+                (
+                    traceability_path,
+                    f"Source {source_num}: Experiment references '{file_part}' "
+                    f"which does not exist in the repo.",
+                )
+            )
+            continue
+
+        # Check the function is defined in that file
+        source_text = test_file_path.read_text()
+        # Match `def func_name(` — handles both `def test_foo():` and `def test_foo(fixture):`
+        func_defined = re.search(
+            rf"^\s*def\s+{re.escape(func_part)}\s*\(", source_text, re.MULTILINE
+        )
+        if not func_defined:
+            failures.append(
+                (
+                    traceability_path,
+                    f"Source {source_num}: Experiment references "
+                    f"'{experiment_ref}' but '{func_part}' is not defined in '{file_part}'. "
+                    f"Ghost test reference — either add the test or correct the name.",
                 )
             )
 
