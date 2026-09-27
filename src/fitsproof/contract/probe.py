@@ -19,6 +19,7 @@ from __future__ import annotations
 import json
 import os
 import platform
+import resource
 import time
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
@@ -45,6 +46,7 @@ class MachineProfile:
     memory_bytes: int  # total RAM
     gpu_memory_bytes: int  # VRAM (0 if absent)
     cpu_count: int
+    process_baseline_bytes: int = 0  # live RSS before any model is loaded (interpreter + numpy)
     extra: dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
@@ -171,6 +173,35 @@ def _get_system_ram() -> int:
     return 0
 
 
+def _get_live_rss_bytes() -> int:
+    """
+    Return the *current* process RSS in bytes from /proc/self/status (Linux).
+
+    Unlike resource.getrusage().ru_maxrss, this reflects the live resident set
+    at the time of the call, not the process high-water mark since start.
+    Falls back to ru_maxrss on non-Linux platforms.
+
+    Used to measure the process baseline (interpreter + numpy) before any model
+    is loaded, so predictions can include this fixed cost.
+    """
+    try:
+        with open("/proc/self/status") as fh:
+            for line in fh:
+                if line.startswith("VmRSS:"):
+                    kb = int(line.split()[1])
+                    return kb * 1024
+    except (FileNotFoundError, ValueError, OSError):
+        pass
+    # Fallback: HWM (coarser but always available)
+    try:
+        usage = resource.getrusage(resource.RUSAGE_SELF)
+        if os.uname().sysname == "Linux":
+            return usage.ru_maxrss * 1024
+        return usage.ru_maxrss
+    except (OSError, AttributeError):
+        return 0
+
+
 def _get_vram_bytes() -> int:
     """
     Attempt to detect VRAM by reading /proc/driver/nvidia/gpus or nvidia-smi.
@@ -224,10 +255,18 @@ def probe(
     Measures are taken from the running machine — not from spec sheets.
     The profile is timestamped so stale profiles can be detected.
 
+    process_baseline_bytes is captured *before* the benchmark allocations so it
+    reflects interpreter + numpy import overhead only.  Predictions include this
+    value so that predicted_peak ≈ baseline + model_bytes rather than model_bytes
+    alone.
+
     Fault detected: a profile loaded from disk without checking the timestamp
     may reflect a different machine or hardware state; tests check that
     measured_at is populated and recent.
     """
+    # Capture baseline before benchmark arrays are allocated
+    baseline = _get_live_rss_bytes()
+
     bw = _measure_bandwidth(bandwidth_array_size, n_bandwidth_trials)
     gemm = _measure_gemm(n_trials=n_gemm_trials)
     ram = _get_system_ram()
@@ -242,6 +281,7 @@ def probe(
         memory_bytes=ram,
         gpu_memory_bytes=vram,
         cpu_count=os.cpu_count() or 1,
+        process_baseline_bytes=baseline,
     )
 
 

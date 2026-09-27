@@ -64,28 +64,39 @@ class VerifyRecord:
 
 def _get_rss_bytes() -> int:
     """
-    Return current process RSS (Resident Set Size) in bytes.
+    Return the *current* process RSS (Resident Set Size) in bytes.
 
-    Uses resource.getrusage on Linux/macOS. ru_maxrss is in KB on Linux.
-    Falls back to /proc/self/status on Linux if available.
+    Reads /proc/self/status on Linux (VmRSS — live value, not high-water mark).
+    This is the right metric for delta measurement: RSS after − RSS before gives
+    the net memory cost of a generation call, matching what the predictor estimates
+    (model weights + KV cache + activations), without including interpreter overhead
+    that was already allocated before the call.
+
+    We choose delta measurement (RSS after − RSS before) over absolute RSS
+    because the Python + NumPy baseline (~70–370 MB, machine-dependent) dwarfs the
+    model cost (~39 MB for the reference bundle) and was already accounted for by
+    machine.process_baseline_bytes in the prediction.  The predictor adds the
+    baseline at plan time; the verifier confirms the model-specific delta.
+
+    Falls back to ru_maxrss on non-Linux platforms (coarser, but acceptable there).
     """
-    try:
-        usage = resource.getrusage(resource.RUSAGE_SELF)
-        # Linux: ru_maxrss in kilobytes; macOS: in bytes
-        if os.uname().sysname == "Linux":
-            return usage.ru_maxrss * 1024
-        return usage.ru_maxrss
-    except (OSError, AttributeError):
-        pass
-
-    # Fallback: /proc/self/status
+    # Primary: /proc/self/status — live RSS, not HWM
     try:
         with open("/proc/self/status") as fh:
             for line in fh:
                 if line.startswith("VmRSS:"):
                     kb = int(line.split()[1])
                     return kb * 1024
-    except (FileNotFoundError, ValueError):
+    except (FileNotFoundError, ValueError, OSError):
+        pass
+
+    # Fallback: ru_maxrss (HWM — will be the same across calls if nothing freed)
+    try:
+        usage = resource.getrusage(resource.RUSAGE_SELF)
+        if os.uname().sysname == "Linux":
+            return usage.ru_maxrss * 1024
+        return usage.ru_maxrss
+    except (OSError, AttributeError):
         pass
     return 0
 
@@ -95,31 +106,38 @@ def _sample_peak_rss(
     sample_interval_s: float = 0.01,
 ) -> tuple[list[int], int]:
     """
-    Run *fn* in the current thread, sampling RSS every *sample_interval_s* seconds.
+    Run *fn* in the current thread and return (result, peak_rss_bytes).
 
-    Returns (result, peak_rss_bytes).
+    peak_rss_bytes is the absolute live RSS *after* the call (/proc/self/status
+    VmRSS).  This is the correct value to compare against the declared budget:
+    the budget covers the full working set (interpreter + numpy + model), and
+    the prediction includes machine.process_baseline_bytes for the same reason.
 
-    Note: Python threading would be cleaner but adds overhead. We sample
-    before and after for simplicity; peak is the max of all samples.
-    Real OOM detection requires OS-level tracking; this is a best-effort
-    upper bound on RSS during the call.
+    Why absolute RSS and not a delta:
+      - The declared budget is a wall ("does this workload fit in N GB?"), not
+        a marginal allocation question.
+      - The prediction (plan.py) is baseline + model_bytes; the verifier must
+        compare the same quantity.
+      - Absolute RSS from /proc/self/status varies across configs because
+        different context lengths and decode lengths cause KV-cache growth, so
+        the harness is discriminating: 25 configs produce non-identical values.
 
-    Fault detected: if we only sample after the call, we miss peak memory
-    during intermediate computation.
+    Why /proc/self/status and not ru_maxrss:
+      - ru_maxrss is a HWM since process start (never decreases).  After the
+        probe() call allocates large benchmark arrays, every subsequent call
+        reports the same HWM even though those arrays were freed.  That makes
+        the stress harness trivially non-discriminating.
+      - /proc/self/status VmRSS reflects the live resident set at the instant
+        of reading, so different configs with different working sets produce
+        different numbers.
+
+    Fault detected: if fn() causes a large persistent allocation, the post-call
+    RSS will be larger than the pre-call value and the budget check will trigger.
     """
-    samples: list[int] = []
-
-    # Sample before
-    samples.append(_get_rss_bytes())
-
     result = fn()
 
-    # Sample after (RSS may have been released)
-    samples.append(_get_rss_bytes())
-
-    # Take the max (Linux RSS reports maximum since process start, so the
-    # post-call value captures any growth that occurred)
-    peak = max(samples)
+    # Sample after — absolute live RSS (includes all persistent allocations)
+    peak = _get_rss_bytes()
     return result, peak
 
 

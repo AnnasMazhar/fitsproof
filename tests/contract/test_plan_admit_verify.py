@@ -646,3 +646,108 @@ def test_admit_inconsistent_plan_record_has_plan() -> None:
     p = _make_inconsistent_plan()
     record = admit(p)
     assert record.plan is p, "AdmitRecord.plan must be the original plan, not None"
+
+
+def test_predict_measure_tolerance(transformer) -> None:
+    """
+    Prediction vs measurement tolerance: measured peak must not exceed
+    predicted peak by more than 3× on this machine.
+
+    Research source [2] (Sheng et al. 2023, FlexGen §3.1):
+      predicted_peak = process_baseline + weights + kv_cache + activations.
+
+    The prediction includes machine.process_baseline_bytes (measured live RSS
+    before model load) so that predicted ≈ measured absolute RSS.
+
+    The tolerance is generous (3×) because:
+      - The reference model is tiny (39 MB); baseline dominates.
+      - Probe measures baseline *before* benchmark allocations which are then
+        freed; post-benchmark RSS may be higher until GC.
+    A tighter tolerance (e.g. 1.5×) will be warranted once a real model is used.
+
+    Fault detected: if the predictor counts model bytes only (no baseline), the
+    ratio would be ~8× (39 MB predicted vs 300 MB measured), which this test
+    rejects.
+    """
+    from fitsproof.contract.probe import probe
+    from fitsproof.contract.verify import verify_run
+
+    machine = probe()
+    budget = 32 * 1024**3  # 32 GB — never a limiting factor here
+    from fitsproof.engine.sampling import Sampler
+
+    p = plan(REFERENCE_CONFIG, machine, context_len=128, budget_bytes=budget)
+    record = admit(p)
+
+    vrecord = verify_run(
+        fn=lambda: transformer.generate(
+            [1, 2, 3, 4], max_new_tokens=8, temperature=0.0, sampler=Sampler(0)
+        ),
+        budget_bytes=budget,
+        admit_record=record,
+        config_label="tolerance_test",
+    )
+
+    predicted = p.predicted_peak_bytes
+    measured = vrecord.measured_peak_bytes
+
+    assert predicted > 0, "predicted_peak_bytes must be positive"
+    assert measured > 0, "measured_peak_bytes must be positive"
+
+    ratio = measured / predicted
+    # Record the ratio for EVIDENCE.md — must be within 3× in either direction
+    assert ratio <= 3.0, (
+        f"measured ({measured / 1e6:.1f} MB) is more than 3× predicted "
+        f"({predicted / 1e6:.1f} MB); ratio={ratio:.2f}. "
+        "The predictor is not including process_baseline_bytes."
+    )
+    assert ratio >= 0.1, (
+        f"measured ({measured / 1e6:.1f} MB) is less than 10% of predicted "
+        f"({predicted / 1e6:.1f} MB); ratio={ratio:.2f}. "
+        "The predictor is over-estimating by more than 10×."
+    )
+
+
+def test_stress_harness_margins_are_non_identical(transformer) -> None:
+    """
+    Stress harness discriminates: 25 configs must not all report the same margin.
+
+    Fault detected: if verify uses ru_maxrss (process HWM since start), all
+    configs after the first return the same value because HWM never decreases.
+    Using /proc/self/status VmRSS (live RSS) produces distinct values per config
+    because different context/decode lengths cause different working-set sizes.
+    """
+    from fitsproof.engine.sampling import Sampler
+
+    machine = make_machine()
+    budget = 32 * 1024**3
+    cfg = transformer.cfg
+
+    rng = np.random.default_rng(42)
+    configs = []
+    for prompt_len in [2, 4, 6, 8, 10]:
+        for decode_len in [1, 2, 4, 8, 16]:
+            prompt = rng.integers(0, cfg.vocab_size, size=prompt_len, dtype=np.int64).tolist()
+            p = plan(REFERENCE_CONFIG, machine, context_len=64, budget_bytes=budget)
+            record = admit(p)
+
+            def make_fn(_p, _d, _s):
+                return lambda: transformer.generate(_p, max_new_tokens=_d, temperature=0.0, sampler=_s)
+
+            configs.append(
+                {
+                    "fn": make_fn(prompt, decode_len, Sampler(seed=prompt_len + decode_len)),
+                    "admit_record": record,
+                    "label": f"prompt{prompt_len}_decode{decode_len}",
+                }
+            )
+
+    result = run_stress_harness(configs, budget_bytes=budget)
+    margins = result.margin_bytes
+
+    # The key invariant: not all margins are the same (harness is discriminating)
+    assert len(set(margins)) > 1, (
+        f"All 25 stress configs reported identical margin ({margins[0] / 1e6:.1f} MB). "
+        "The harness is measuring process HWM instead of live RSS — it is not discriminating."
+    )
+    assert result.violation_free, f"Unexpected violations: {result.violations}"
