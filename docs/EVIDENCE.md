@@ -84,31 +84,49 @@ Stress harness: 25 configs, 0 violations, 0 silent mode changes. Margin: min=390
 **Command:**
 ```
 $ .venv/bin/fitsproof stress
-ADMITTED: 0.073 GB predicted peak <= 4.000 GB budget (margin: 3927.1 MB)
-Stress harness: 25 configs, 0 violations, 0 silent mode changes. Margin: min=3908.4 MB, median=3908.6 MB, max=3912.0 MB.
+ADMITTED: 0.073 GB predicted peak <= 4.000 GB budget (margin: 3927.0 MB)
+Stress harness: 25 configs, 0 violations, 0 silent mode changes. Margin: min=3909.2 MB, median=3909.3 MB, max=3912.6 MB.
 ```
 
 **PASS.** 25 configurations (5 prompt × 5 decode lengths), zero violations, zero silent mode changes.
-Margins are non-identical (min ≠ median ≠ max) because verify.py now uses /proc/self/status VmRSS
+Margins are non-identical (min ≠ median ≠ max) because verify.py uses /proc/self/status VmRSS
 (live RSS, not ru_maxrss HWM) so different context/decode configs produce distinct measurements.
 
-**Tight budget test (0.1 GB — was 25 violations before v0.1.2):**
+---
+
+### Claim 3b: "Boundary honesty — admit warns and exits non-zero when within safety margin"
+
+**Problem (pre-fix):** `stress --budget-gb 0.08` admitted with predicted=73 MB < 80 MB, then
+reported 25 violations because measured RSS (~91 MB) exceeded the 80 MB budget. The admission
+and proof paths disagreed at the boundary.
+
+**Fix:** `admit()` returns NEAR_BOUNDARY (exit 1) when `budget - predicted_peak < 50 MB`
+(SAFETY_MARGIN_BYTES). The CLI exits 1 for NEAR_BOUNDARY so builds fail unless the caller
+handles it explicitly.
+
+**Command (boundary budget):**
 ```
-$ .venv/bin/fitsproof stress --budget-gb 0.1
-ADMITTED: 0.073 GB predicted peak <= 0.100 GB budget (margin: 27.5 MB)
-Stress harness: 25 configs, 0 violations, 0 silent mode changes. Margin: min=8.7 MB, median=9.0 MB, max=12.4 MB.
+$ .venv/bin/fitsproof stress --budget-gb 0.08; echo "exit: $?"
+WARNING (near boundary): 0.073 GB predicted peak <= 0.080 GB budget (margin: 7.0 MB < safety margin: 52 MB). Prediction error may exceed the remaining margin. Run `fitsproof verify` to measure actual RSS, or increase the budget.
+exit: 1
 ```
 
-**PASS.** Previously (v0.1.0) this reported 25 violations because prediction excluded process
-baseline (~34 MB), so 73 MB actual > 0.1 GB budget appeared to be a violation. With baseline
-included in prediction, 73 MB predicted < 100 MB budget → ADMITTED, and measured ~91 MB < 100 MB.
+**Command (clear budget — no warning):**
+```
+$ .venv/bin/fitsproof stress --budget-gb 4; echo "exit: $?"
+ADMITTED: 0.073 GB predicted peak <= 4.000 GB budget (margin: 3927.0 MB)
+Stress harness: 25 configs, 0 violations, 0 silent mode changes. Margin: min=3909.2 MB, median=3909.3 MB, max=3912.6 MB.
+exit: 0
+```
 
-**Underlying test:**
+**Boundary test:**
 ```
-$ .venv/bin/python -m pytest tests/contract/test_plan_admit_verify.py::test_stress_harness_zero_violations -v
-tests/contract/test_plan_admit_verify.py::test_stress_harness_zero_violations PASSED
-1 passed in 16.94s
+$ .venv/bin/python -m pytest tests/contract/test_plan_admit_verify.py::test_admit_near_boundary_returns_warning -v
+tests/contract/test_plan_admit_verify.py::test_admit_near_boundary_returns_warning PASSED
 ```
+
+**PASS.** Near-boundary configs warn and exit 1. Clear-budget configs are ADMITTED and exit 0.
+Safety margin documented in README Limitations section.
 
 ---
 
@@ -242,29 +260,33 @@ test_predict_measure_tolerance enforces ratio ≤ 3× in CI.
 $ .venv/bin/fitsproof pareto
 quant           ctx   peak_MB    tok/s   top1  pred_MB  dominated
 -----------------------------------------------------------------
-none             16     343.0     3.36  1.000     38.7         no
-none             32     343.0     2.70  1.000     38.8        yes
-none             64     343.0     2.28  1.000     39.0        yes
-none            128     343.0     2.84  1.000     39.3        yes
-none            256     343.0     1.81  1.000     40.1        yes
-int8_sym         16     343.0     2.50  0.984     10.3        yes
-int8_sym         32     343.0     2.52  0.984     10.3        yes
-int8_sym         64     343.0     2.21  0.984     10.3        yes
-int8_sym        128     343.0     1.16  0.984     10.4        yes
-int8_sym        256     343.0     1.20  0.984     10.6        yes
-int4_sym         16     343.0     1.44  0.754      5.5        yes
-int4_sym         32     343.0     1.19  0.754      5.6        yes
-int4_sym         64     343.0     1.82  0.754      5.6        yes
-int4_sym        128     343.0     1.19  0.754      5.6        yes
-int4_sym        256     343.0     1.63  0.754      5.7        yes
+none             16      87.8     4.47  1.000     38.7         no
+none             32      87.9     4.38  1.000     38.8        yes
+none             64      87.9     4.11  1.000     39.0        yes
+none            128      87.9     4.34  1.000     39.3        yes
+none            256      87.9     4.01  1.000     40.1        yes
+int8_sym         16      88.1     4.60  0.984     10.3        yes
+int8_sym         32      88.1     4.41  0.984     10.3        yes
+int8_sym         64      88.1     4.71  0.984     10.3         no
+int8_sym        128      88.1     4.57  0.984     10.4        yes
+int8_sym        256      88.1     4.63  0.984     10.6        yes
+int4_sym         16      88.1     4.59  0.754      5.5        yes
+int4_sym         32      88.1     4.32  0.754      5.6        yes
+int4_sym         64      88.1     4.68  0.754      5.6        yes
+int4_sym        128      88.1     4.65  0.754      5.6        yes
+int4_sym        256      88.1     4.63  0.754      5.7        yes
 Total configs: 15
-Non-dominated: 1
+Non-dominated: 2
 ```
 
-**PASS.** Pareto frontier computed; non-dominated configs identified. (Reference model is tiny —
-absolute RSS dominated by interpreter overhead for all configs, hence flat peak_MB column.)
-This command was broken in v0.1.0 (ImportError: cannot import name 'run_pareto_sweep') — fixed
-in v0.1.2 by adding run_pareto_sweep() to pareto.py and fixing attribute names in cli.py.
+**PASS.** `peak_MB` varies across configs (87.8–88.1 MB) because pareto.py now uses
+`_get_rss_bytes()` from `verify.py` (live /proc/self/status VmRSS, not ru_maxrss process HWM).
+The variation is small because the reference model is tiny (39 MB weights); the dominant cost is
+interpreter + numpy baseline (~48–49 MB), and different context lengths produce slightly different
+KV-cache resident sizes. The column is a real per-config measurement, not a static HWM.
+
+Previously (v0.1.2) pareto used `ru_maxrss` and printed 276.4 MB (the process HWM dominated by
+probe() benchmark arrays) on every row — a constant that is not a per-config measurement.
 
 ---
 
@@ -488,7 +510,7 @@ tests/engine/test_speculative.py ...
 tests/value/test_incumbent_gap.py .........
 tests/value/test_readme_snippets.py ..
 
-148 passed in 102.29s (0:01:42)
+160 passed in 400.22s (0:06:40)
 ```
 
 ---
@@ -500,7 +522,7 @@ $ .venv/bin/ruff check .
 All checks passed!
 
 $ .venv/bin/ruff format --check .
-37 files already formatted
+39 files already formatted
 ```
 
 ---

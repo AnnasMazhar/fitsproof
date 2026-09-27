@@ -1,5 +1,7 @@
 # fitsproof
 
+[![CI](https://github.com/AnnasMazhar/fitsproof/actions/workflows/ci.yml/badge.svg)](https://github.com/AnnasMazhar/fitsproof/actions/workflows/ci.yml)
+
 **Prove your local LLM fits in memory — or get a loud refusal instead of a silent OOM.**
 
 fitsproof is for people running LLMs on consumer hardware (4–8 GB VRAM / 16–32 GB RAM): a class
@@ -24,12 +26,12 @@ If this is useful, star the repo.
 ## Headline evidence
 
 `fitsproof stress` runs 25 configurations against a declared budget and fails the build on any
-violation or undocumented mode change. Real output:
+violation or undocumented mode change. Real output (budget: 4 GB, reference model ~73 MB):
 
 ```
 $ fitsproof stress
-ADMITTED: 0.039 GB predicted peak <= 4.000 GB budget (margin: 3961.0 MB)
-Stress harness: 25 configs, 0 violations, 0 silent mode changes. Margin: min=3698.3 MB, median=3698.3 MB, max=3698.3 MB.
+ADMITTED: 0.073 GB predicted peak <= 4.000 GB budget (margin: 3927.0 MB)
+Stress harness: 25 configs, 0 violations, 0 silent mode changes. Margin: min=3909.2 MB, median=3909.3 MB, max=3912.6 MB.
 ```
 
 ## Plug it in — four surfaces, every snippet below is executed by the test suite
@@ -227,6 +229,12 @@ These are honest. A repo with no stated limitations is not credible.
 
 - **RSS measurement is coarse.** Peak RSS on Linux is the high-water mark since
   process start. Allocations freed before the post-call sample may not be captured.
+
+- **Boundary safety margin.** `admit` returns NEAR_BOUNDARY (exit 1) when the
+  predicted peak is within 50 MB of the declared budget. This covers a ~25%
+  prediction overrun on a small model. Configurations flagged as NEAR_BOUNDARY
+  should be validated with `fitsproof verify` before use. Admission at a tight
+  budget does not guarantee the proof harness will pass.
 
 - **Speculative decoding equality only holds at temperature=0.** Probabilistic
   acceptance (temperature > 0) requires rejection sampling (Algorithm 1 of

@@ -196,7 +196,48 @@ def test_admit_does_not_fit_returns_refused() -> None:
     assert record.refusal_reason != ""
 
 
-def test_admit_degraded_has_non_none_degradation() -> None:
+def test_admit_near_boundary_returns_warning() -> None:
+    """
+    KAT: FITS plan whose margin < SAFETY_MARGIN_BYTES -> NEAR_BOUNDARY record.
+
+    Fault detected: if admit() returns ADMITTED for a near-boundary config,
+    the caller gets no signal that prediction error may cause a budget violation
+    at runtime.  The stress harness at --budget-gb 0.08 previously reported
+    25 violations because the predictor underestimated by ~25%; this test
+    ensures that such configs are flagged before execution.
+
+    Safety margin: SAFETY_MARGIN_BYTES = 50 MB.  Any config whose predicted
+    peak is within 50 MB of the declared budget receives a NEAR_BOUNDARY warning
+    and the CLI exits non-zero (exit 1), consistent with the admit/proof contract.
+    """
+    from fitsproof.contract.admit import SAFETY_MARGIN_BYTES
+
+    machine = make_machine()
+    # REFERENCE_CONFIG predicted_peak ≈ 73 MB.
+    # Set budget = predicted_peak + 10 MB  → margin = 10 MB < SAFETY_MARGIN_BYTES (50 MB).
+    p = plan(REFERENCE_CONFIG, machine, context_len=64, budget_bytes=10**9)
+    # We need the actual predicted_peak to set a tight budget:
+    predicted = p.predicted_peak_bytes
+    tight_budget = predicted + 10 * 1024 * 1024  # 10 MB margin — well within safety threshold
+
+    p2 = plan(REFERENCE_CONFIG, machine, context_len=64, budget_bytes=tight_budget)
+    assert p2.verdict == Verdict.FITS, f"Expected FITS verdict for tight budget, got {p2.verdict}"
+    assert (p2.budget_bytes - p2.predicted_peak_bytes) < SAFETY_MARGIN_BYTES, (
+        f"Test setup error: margin {(p2.budget_bytes - p2.predicted_peak_bytes) / 1e6:.1f} MB "
+        f"is not less than SAFETY_MARGIN_BYTES {SAFETY_MARGIN_BYTES / 1e6:.0f} MB"
+    )
+
+    record = admit(p2)
+    assert record.status == AdmitStatus.NEAR_BOUNDARY, (
+        f"Expected NEAR_BOUNDARY for tight budget, got {record.status}: {record.message}"
+    )
+    assert "WARNING" in record.message, (
+        f"NEAR_BOUNDARY message should say WARNING: {record.message!r}"
+    )
+    assert "margin" in record.message.lower(), (
+        f"NEAR_BOUNDARY message should mention margin: {record.message!r}"
+    )
+
     """
     KAT: DEGRADED record must specify which degradation was applied.
     Fault: applied_degradation=None means the caller doesn't know what changed.
@@ -394,7 +435,12 @@ def test_admit_never_raises(budget_gb: float) -> None:
     p = plan(REFERENCE_CONFIG, machine, context_len=64, budget_bytes=budget)
     record = admit(p)
     assert record is not None
-    assert record.status in (AdmitStatus.ADMITTED, AdmitStatus.DEGRADED, AdmitStatus.REFUSED)
+    assert record.status in (
+        AdmitStatus.ADMITTED,
+        AdmitStatus.NEAR_BOUNDARY,
+        AdmitStatus.DEGRADED,
+        AdmitStatus.REFUSED,
+    )
 
 
 # ---------------------------------------------------------------------------
