@@ -228,3 +228,53 @@ The predicted decode throughput from the roofline model for a 3.3 GB model on th
 This would be compared against actual ollama measured throughput when the integration test is run.
 The honest number at this model scale would likely show ~2-5x over-prediction from the cost model
 (NumPy overhead is not captured by the roofline for single-token inference).
+
+---
+
+## Fresh-clone install + test + lint (2026-09-27)
+
+Commands run from /tmp/fitsproof-verify (fresh clone of feat/v0.1).
+Python 3.13.12, pytest 8.3.5, ruff 0.11.13.
+
+```
+$ git clone /home/openclaw/portfolio/fitsproof /tmp/fitsproof-verify
+Cloning into '/tmp/fitsproof-verify'...
+done.
+
+$ cd /tmp/fitsproof-verify && git checkout feat/v0.1
+Already on 'feat/v0.1'
+Your branch is up to date with 'origin/feat/v0.1'.
+
+$ uv venv && uv pip install -e '.[dev]'
+Using CPython 3.13.12
+Creating virtual environment at: .venv
+   Building fitsproof @ file:///tmp/fitsproof-verify
+      Built fitsproof @ file:///tmp/fitsproof-verify
+Installed 26 packages in 102ms
+ + fitsproof==0.1.0 (from file:///tmp/fitsproof-verify)
+EXIT_INSTALL:0
+
+$ uv run pytest -q
+============================= test session starts ==============================
+platform linux -- Python 3.13.12, pytest-8.3.5, pluggy-1.6.0
+rootdir: /tmp/fitsproof-verify
+configfile: pyproject.toml
+testpaths: tests
+plugins: platformdirs-4.12.0, hypothesis-6.135.0, cov-6.1.0
+collected 88 items
+
+tests/contract/test_cost.py ..............                               [ 15%]
+tests/contract/test_plan_admit_verify.py .........................       [ 44%]
+tests/engine/test_attention.py ..............                            [ 60%]
+tests/engine/test_quant.py ..............                                [ 76%]
+tests/engine/test_sampling.py ............                               [ 89%]
+tests/engine/test_server.py ......                                       [ 96%]
+tests/engine/test_speculative.py ...                                     [100%]
+
+88 passed in 44.65s
+EXIT_PYTEST:0
+
+$ uv run ruff check .
+All checks passed!
+EXIT_RUFF:0
+```
