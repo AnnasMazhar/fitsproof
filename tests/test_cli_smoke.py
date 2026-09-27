@@ -12,8 +12,6 @@ import subprocess
 import sys
 import time
 
-import pytest
-
 
 def _run(*args: str, input: str | None = None, timeout: int = 120) -> subprocess.CompletedProcess:
     """Run fitsproof subcommand via the installed module entry point."""
@@ -132,7 +130,7 @@ def test_mcp_smoke() -> None:
     input_str = "\n".join(json.dumps(m) for m in messages) + "\n"
     r = _run("mcp", input=input_str, timeout=60)
     assert r.returncode == 0, f"mcp crashed: {r.stderr}"
-    lines = [l for l in r.stdout.splitlines() if l.strip()]
+    lines = [line for line in r.stdout.splitlines() if line.strip()]
     assert len(lines) >= 2, f"mcp returned too few lines: {r.stdout!r}"
     init_reply = json.loads(lines[0])
     assert init_reply["result"]["serverInfo"]["name"] == "fitsproof-mcp"
