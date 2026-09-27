@@ -97,7 +97,7 @@ $ .venv/bin/python scripts/ollama_gate.py gemma3:4b --budget-gb 3 --context 4096
 model:   gemma3:4b (4.3B, Q4_K_M -> int4_sym)
 shape:   34L x 2560h, heads 8/4, vocab 262145, ctx 4096
 budget:  3 GB
-REFUSED: needs 7.22 GB, budget 3.00 GB; nearest fitting config is Offload ~50% of layers to system RAM (CPU fallback for those layers)
+REFUSED: needs 7.219 GB, budget 3.000 GB; no listed option fits — nearest is "Offload ~50% of layers to system RAM (CPU fallback for those layers)" at 3.699 GB (0.699 GB above budget)
 EXIT:2
 ```
 
@@ -184,19 +184,33 @@ for budgets between the true footprint (4.4 GB) and the predicted peak
 (7.22 GB). Fix belongs to the cost model (implement/improve phase), with
 the KAT being exactly this observed 4.4 GB.
 
-### F-2 — Refusal wording names a config that does not fit (defect, open)
+### F-2 — Refusal wording names a config that does not fit (**FIXED**, improve pass c1-p09-improve-2)
+
+Before (this pass's original transcript, §2b above as first run):
 
 ```
 REFUSED: needs 7.22 GB, budget 3.00 GB; nearest fitting config is Offload ~50% of layers ...
 ```
 
-At 3 GB no degradation fits (the offload option predicts 3.699 GB), yet
-the message still offers it as the "nearest *fitting* config"
-(`plan.py` appends `degradations[-1].description` unconditionally on the
-DOES_NOT_FIT path). The decision is right; the message misleads. Left
-unfixed in this research pass — recorded as finding F-2 for the improve
-pass, with a test that pins the wording only when the named config
-actually fits.
+At 3 GB no degradation fits (the offload option predicts 3.699 GB), yet the message
+offered it as the "nearest *fitting* config" (`plan.py` appended `degradations[-1]`
+unconditionally on the DOES_NOT_FIT path) — and it was not even the nearest option.
+The decision was right; the message misled.
+
+Fixed in improve pass 2: `plan.no_fit_reason()` (src/fitsproof/contract/plan.py) is
+now used on the DOES_NOT_FIT path. It names the option with the smallest predicted
+peak and states the gap above budget, so the message can never contradict the
+`[does not fit]` tags the CLI prints underneath:
+
+```
+$ .venv/bin/fitsproof admit --budget-gb 0.001
+REFUSED: needs 0.042 GB, budget 0.001 GB; no listed option fits — nearest is "Use int4_sym quantisation instead of none" at 0.006 GB (0.005 GB above budget)
+```
+
+Pinned by `tests/contract/test_plan_admit_verify.py::
+test_refusal_never_names_a_non_fitting_config`, which fails on all three old faults
+(claiming a fitting config; naming the last option instead of the nearest; naming an
+option above budget without saying so).
 
 ### F-3 — Calibration drifts with machine state
 
@@ -274,13 +288,13 @@ This is a prediction-accuracy problem, not a positioning problem
 (MARKET-VERDICTS.md's gap still holds — see RESEARCH.md Pass 3 for the
 aura finding and the narrowed claim). It is fixable with exactly what
 the spec already demands: per-machine calibration with published held-out
-MAPE (currently 50.3% at reference scale, n_held_out=1), embedding and
+MAPE (currently 46.1% fresh / 50.3% on 2026-09-27 morning, n_held_out=1), embedding and
 head-dimension terms corrected against GGUF reality, and the observed
 4.4 GB footprint used as a known-answer test. Until that lands, the
 honest adoption advice is: **run the gate on ADMITTED-only paths
 (budgets ≥ predicted peak), treat DEGRADED as refuse (the gate's
-default), and treat the refusal message's "nearest fitting config" as
-advisory (F-2).**
+default), and read the refusal's "nearest" option as the closest
+*listed* option — since the F-2 fix it is never claimed to fit.**
 
 ---
 
@@ -291,9 +305,9 @@ advisory (F-2).**
 | L0 — try it | clone, `probe`, `plan` against a budget | works today (this document) |
 | L1 — gate the box | chain `ollama_gate.py && ollama run` | works today, strict mode |
 | L2 — CI admission | gate in CI before any model pull | works today (CPU-only, seconds) |
-| L3 — in-process guard | `@guard(budget=...)` in Python services | v0.2 MANDATE M2.3 |
-| L4 — agent-facing | MCP server so an agent asks before loading | v0.2 MANDATE M2.4 |
-| L5 — drop-in binary | single executable, SHA256 release | v0.2 MANDATE M1 |
+| L3 — in-process guard | `@guard(budget=...)` in Python services | works today (`fitsproof.client.guard`, tested) |
+| L4 — agent-facing | MCP server so an agent asks before loading | works today (`fitsproof mcp`, tested) |
+| L5 — drop-in binary | single executable, SHA256 release | v0.2 MANDATE M1 (not built yet) |
 
-L0–L2 are adopted from source on a Tuesday. L3–L5 are the v0.2 mandate;
-this pass does not claim them.
+L0–L4 are adopted from source on a Tuesday (L3/L4 landed in the v0.2 mandate pass and
+are exercised by the test suite). L5 is the remaining mandate item.

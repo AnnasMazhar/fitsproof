@@ -827,7 +827,9 @@ runs inference. detllm checks determinism. No single tool assembles the three-st
 llama.cpp, they see either a successful run or a CUDA OOM (no warning, no managed
 degradation, no margin report). With fitsproof, they see either `ADMITTED: 3.8 GB predicted
 ≤ 4.0 GB budget (margin: 200 MB)` followed by a verified measured peak, or `REFUSED:
-needs 4.3 GB, budget 4.0 GB; nearest fitting config is int4@2048`. The contract is explicit
+needs 4.300 GB, budget 4.000 GB; no listed option fits — nearest is "Use int4_sym
+quantisation instead of none" at 3.900 GB (0.100 GB above budget)` (wording since
+F-2 fix, improve pass c1-p09-improve-2). The contract is explicit
 and enforced; the outcome is documented before generation starts.
 
 **The target hardware class is specific:** 4–8 GB VRAM, 16–32 GB RAM. Every mature tool
@@ -938,7 +940,7 @@ harness, this gap closes. Watch it at publication time.
 | id | severity | finding | status |
 |---|---|---|---|
 | F-1 | major | Real-model peak over-predicted +64% (7.219 GB vs 4.4 GB observed): head_dim assumption (hidden/heads=320 vs gemma3's actual 256) and fp32 embed+unembed accounting (5.37 of 7.22 GB) | open — fix in cost model; observed 4.4 GB becomes the KAT |
-| F-2 | major | Refusal message names a non-fitting config as "nearest fitting" (plan.py DOES_NOT_FIT branch appends `degradations[-1]` unconditionally; at 3 GB it names an offload option that predicts 3.699 GB) | open — decision correct, wording misleading; needs a test that pins the wording only when the named config fits |
+| F-2 | major | Refusal message names a non-fitting config as "nearest fitting" (plan.py DOES_NOT_FIT branch appends `degradations[-1]` unconditionally; at 3 GB it names an offload option that predicts 3.699 GB) | **fixed** — improve pass c1-p09-improve-2: `plan.no_fit_reason()` names the smallest-predicted-peak option and states the gap above budget ("no listed option fits — nearest is ..."); test `test_refusal_never_names_a_non_fitting_config` pins all three faults |
 | F-3 | minor | Probe bandwidth drifted 1.8× day-over-day (7.18 → 3.94–4.22 GB/s); run-to-run spread same day ~7% | open — operational rule documented (re-probe on load-profile change) |
 | F-4 | minor | CPU-roofline tok/s is meaningless for hybrid CPU/GPU engines (measured 12.38 tok/s vs sub-1 prediction for gemma3:4b at 44/56% CPU/GPU) | documented — never publish tok/s for a GPU-backed engine from the CPU profile |
 | F-5 | minor | `probe` reports `VRAM: 0.00 GB` on a box with a Quadro M2000 — GPU memory unmeasured in v0.1 | documented — v0.1 contract is RAM-only |

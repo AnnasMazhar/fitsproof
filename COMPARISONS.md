@@ -25,6 +25,12 @@ Star counts and versions retrieved from the GitHub REST API and PyPI at
 | **hardware-aware-llm-runtime** (JohnScheuer) | 0 | 2026-06-25 | Hardware-calibrated roofline with empirical fitting; predicts optimal batch within ~1 | Throughput focus; no enforcement; no stress harness; inactive |
 | **llm-vram-calculator** (Shun-Calvin) | 1 | 2026-09-26 | Formula-based VRAM/TTFT/tok/s across 100+ models × 70+ GPUs | Formula-based, not calibrated; GPU-only; no enforcement |
 
+## Enforcement / orchestration
+
+| Tool | Stars | Last push | What it does better than fitsproof | What fitsproof adds |
+|---|---|---|---|---|
+| **aura** (Grevix/aura, Rust, MIT/Apache-2.0) | 4 | 2026-09-03 | Kernel-level budget enforcement (cgroup v2 / Win32 Job Object), context-ladder degradation, ollama model discovery — enforcement is more aggressive than fitsproof's in-process gate | No on-device calibration or held-out MAPE, no measured proof harness (its own README example reports 4.92 GB peak against a 4.00 GB budget), no embeddable `plan`/`admit` API, no OpenAI/MCP plugin surfaces |
+
 ## Determinism checking
 
 | Tool | Stars | Last push | What it does better than fitsproof | What fitsproof adds |
@@ -36,9 +42,14 @@ Star counts and versions retrieved from the GitHub REST API and PyPI at
 fitsproof's specific claim: **predict from on-device measurement + enforce with explicit
 degradation + prove with a stress harness**. No tool in the table above does all three.
 
+Narrowed after the pass-3 scan (docs/RESEARCH.md): aura already does enforcement
+(kernel-level). What remains unclaimed by anyone — including aura — is the combination of
+on-device calibration with a published held-out MAPE, a zero-violation stress harness as a
+repo test, and an embeddable admission API.
+
 Each ingredient exists: ridgepoint predicts (for other hardware). llama.cpp runs inference.
-detllm checks determinism. fitsproof assembles them into a single enforced contract:
-`probe → calibrate → plan → admit (enforce) → verify (prove)`.
+aura enforces (at the OS level). detllm checks determinism. fitsproof assembles them into a
+single enforced contract: `probe → calibrate → plan → admit (enforce) → verify (prove)`.
 
 Where each tool beats us (honest accounting):
 - **Speed:** llama.cpp, vLLM, KTransformers are orders of magnitude faster.

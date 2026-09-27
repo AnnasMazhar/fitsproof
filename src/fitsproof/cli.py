@@ -18,6 +18,8 @@ import argparse
 import math
 import sys
 
+from fitsproof import __version__
+
 
 def _budget_bytes(gb: float) -> int | None:
     """Convert --budget-gb to bytes; None if not a positive finite number."""
@@ -44,6 +46,13 @@ def main() -> int:
     parser = argparse.ArgumentParser(
         prog="fitsproof",
         description="Predicts, enforces, and proves an LLM inference resource contract.",
+    )
+    parser.add_argument(
+        "-V",
+        "--version",
+        action="version",
+        version=f"fitsproof {__version__}",
+        help="Print the fitsproof version and exit",
     )
     sub = parser.add_subparsers(dest="command")
 

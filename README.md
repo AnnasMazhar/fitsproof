@@ -32,6 +32,43 @@ ADMITTED: 0.039 GB predicted peak <= 4.000 GB budget (margin: 3961.0 MB)
 Stress harness: 25 configs, 0 violations, 0 silent mode changes. Margin: min=3698.3 MB, median=3698.3 MB, max=3698.3 MB.
 ```
 
+## Prediction accuracy — the benchmark, published even though it is unflattering
+
+The claim above says fitsproof *predicts* peak memory. How accurately? Measured on this
+machine, offline, against the in-repo reference model (reproduce:
+`python scripts/calibration_demo.py`):
+
+```
+$ python scripts/calibration_demo.py
+=== Calibration demo ===
+bandwidth: 1.92 GB/s
+gemm:      37.19 GFLOPS
+RAM:       33.5 GB
+bandwidth_utilisation: 0.0487
+MAPE (held-out):       46.1%
+CI (95%):              [46.1%, 46.1%]
+n_train=2, n_held_out=1
+```
+
+And against a real 4.3 GB model through ollama (raw transcripts in `docs/ADOPTION.md` §2):
+
+```
+predicted peak: 7.219 GB    ollama observed resident: 4.4 GB    error: +64% (over-prediction)
+```
+
+How to read this honestly:
+
+- **The error is one-sided, in the safe direction for a refusal gate.** fitsproof
+  over-predicts: if it admits a config, the real load fits with margin. The dangerous
+  direction — predicting a fit that then OOMs — has not been observed
+  (`docs/RESEARCH.md`, Pass 3 falsification check 1).
+- **It is not free.** A budget between the true footprint (4.4 GB) and the prediction
+  (7.22 GB) gets a *false degradation*. Held-out n is small (1) and the MAPE is large.
+  This is the top adoption risk — documented as finding F-1 in `docs/ADOPTION.md` §5,
+  not hidden.
+- Prediction is the least-proven of the three pillars. Enforcement (`admit`) and proof
+  (`stress`, `verify`) are measured directly; the prediction feeds them conservatively.
+
 ## Plug it in — four surfaces, every snippet below is executed by the test suite
 
 ### 1. Python client (`fitsproof.client`)
@@ -172,6 +209,7 @@ correctness-first runtime that runs offline with no GPU and no CUDA toolkit.
 ## CLI
 
 ```
+fitsproof --version  # print the package version (also -V)
 fitsproof probe    # measure this machine (bandwidth, GEMM, RAM/VRAM)
 fitsproof plan     # predict peak memory for a budget (--model <bundle> for a saved model)
 fitsproof admit    # admit / degrade loudly / refuse (exit 2 on refusal)
@@ -218,6 +256,13 @@ These are honest. A repo with no stated limitations is not credible.
   and NumPy GEMM measurements. It does not account for GPU memory hierarchy or
   compute rooflines.
 
+- **Prediction error is large and one-sided.** Held-out MAPE is ~46–50% at reference
+  scale (n_held_out=1), and on a real GGUF model (gemma3:4b) the peak is over-predicted
+  by +64% (7.22 GB predicted vs 4.4 GB observed): `head_dim` defaults to hidden/heads
+  and embeddings are accounted in fp32. Refusals stay safe (the error is conservative),
+  but budgets between the true and predicted footprint get false degradations.
+  Full analysis: `docs/ADOPTION.md` F-1.
+
 - **Contract covers memory, not latency SLOs.** fitsproof enforces a peak RSS budget;
   it does not guarantee latency targets (tok/s predictions are estimates).
 
@@ -248,9 +293,12 @@ See `COMPARISONS.md` for the full table with star counts and release dates. Shor
 | KTransformers | CPU/GPU hybrid MoE, AMX kernels, runs 671B on ~14 GB VRAM |
 | ridgepoint | Calibrated VRAM/roofline prediction for GPU (A100/H100) |
 | Strata | Consumer packaging, one-click install |
+| aura | Kernel-level (cgroup v2 / Win32 Job Object) budget enforcement for local LLMs |
 
-fitsproof's position: none of the above enforces a *resource contract* with a measured
-proof of compliance and explicit degradation on any configuration. That is the claim.
+fitsproof's position: aura enforces budgets at the OS level, but none of the above pairs
+enforcement with an on-device calibrated prediction (held-out MAPE published) and a
+*measured proof of compliance* — the stress harness asserting `measured <= budget` over
+25 configurations. That is the claim.
 
 ## Demo
 
