@@ -176,7 +176,9 @@ def _mape(predicted: np.ndarray, actual: np.ndarray) -> float:
     nonzero = actual != 0
     if not np.any(nonzero):
         return float("nan")
-    return float(np.mean(np.abs(actual[nonzero] - predicted[nonzero]) / np.abs(actual[nonzero])) * 100.0)
+    return float(
+        np.mean(np.abs(actual[nonzero] - predicted[nonzero]) / np.abs(actual[nonzero])) * 100.0
+    )
 
 
 def _bootstrap_mape_ci(
@@ -234,10 +236,9 @@ def calibrate(
     if n < 2:
         # Not enough data for a held-out split: fit everything, report on train
         util = _fit_bandwidth_utilisation(measurements, machine, cfg)
-        preds = np.array([
-            decode_tok_s(cfg, machine, m.quant, bandwidth_utilisation=util)
-            for m in measurements
-        ])
+        preds = np.array(
+            [decode_tok_s(cfg, machine, m.quant, bandwidth_utilisation=util) for m in measurements]
+        )
         actuals = np.array([m.measured_tok_s for m in measurements])
         mape = _mape(preds, actuals)
         return CalibrationResult(
@@ -260,10 +261,9 @@ def calibrate(
 
     util = _fit_bandwidth_utilisation(train_ms, machine, cfg)
 
-    preds_held = np.array([
-        decode_tok_s(cfg, machine, m.quant, bandwidth_utilisation=util)
-        for m in held_ms
-    ])
+    preds_held = np.array(
+        [decode_tok_s(cfg, machine, m.quant, bandwidth_utilisation=util) for m in held_ms]
+    )
     actuals_held = np.array([m.measured_tok_s for m in held_ms])
 
     mape = _mape(preds_held, actuals_held)

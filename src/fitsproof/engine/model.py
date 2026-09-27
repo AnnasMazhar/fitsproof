@@ -36,11 +36,11 @@ class ModelConfig:
     vocab_size: int
     hidden_size: int
     num_layers: int
-    num_heads: int        # query heads
-    num_kv_heads: int     # key/value heads; must divide num_heads evenly
+    num_heads: int  # query heads
+    num_kv_heads: int  # key/value heads; must divide num_heads evenly
     intermediate_size: int
     max_seq_len: int
-    dtype: str            # "float32" or "float16"
+    dtype: str  # "float32" or "float16"
     rope_theta: float = 10000.0
     rms_norm_eps: float = 1e-5
 

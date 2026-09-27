@@ -97,9 +97,7 @@ class _Handler(BaseHTTPRequestHandler):
         sampler = Sampler(seed=seed)
 
         if stream:
-            self._stream_completion(
-                transformer, cfg, prompt_ids, max_tokens, temperature, sampler
-            )
+            self._stream_completion(transformer, cfg, prompt_ids, max_tokens, temperature, sampler)
         else:
             tokens = transformer.generate(
                 prompt_ids,
@@ -170,9 +168,7 @@ class _Handler(BaseHTTPRequestHandler):
                 "object": "chat.completion.chunk",
                 "created": created,
                 "model": "fitsproof-reference",
-                "choices": [
-                    {"index": 0, "delta": {"content": char}, "finish_reason": None}
-                ],
+                "choices": [{"index": 0, "delta": {"content": char}, "finish_reason": None}],
             }
             send_chunk(json.dumps(delta))
 

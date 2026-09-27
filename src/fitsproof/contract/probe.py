@@ -39,11 +39,11 @@ class MachineProfile:
 
     hostname: str
     platform_str: str
-    measured_at: float          # Unix timestamp
+    measured_at: float  # Unix timestamp
     memory_bandwidth_bps: float  # bytes/second, streaming triad
-    gemm_throughput_flops: float # FLOPS for representative matmul shape
-    memory_bytes: int            # total RAM
-    gpu_memory_bytes: int        # VRAM (0 if absent)
+    gemm_throughput_flops: float  # FLOPS for representative matmul shape
+    memory_bytes: int  # total RAM
+    gpu_memory_bytes: int  # VRAM (0 if absent)
     cpu_count: int
     extra: dict[str, Any] = field(default_factory=dict)
 
@@ -194,7 +194,11 @@ def _get_vram_bytes() -> int:
                             parts = line.split(":")
                             if len(parts) == 2:
                                 val = parts[1].strip().split()[0]
-                                unit = parts[1].strip().split()[1].upper() if len(parts[1].strip().split()) > 1 else "MB"
+                                unit = (
+                                    parts[1].strip().split()[1].upper()
+                                    if len(parts[1].strip().split()) > 1
+                                    else "MB"
+                                )
                                 mb = int(val)
                                 if unit == "GB":
                                     return mb * 1024 * 1024 * 1024

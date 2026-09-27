@@ -33,9 +33,9 @@ from fitsproof.contract.admit import AdmitRecord, AdmitStatus
 
 
 class DeterminismTier(int, Enum):
-    TIER_0 = 0   # artifact reproducibility
-    TIER_1 = 1   # run-to-run output repeatability
-    TIER_2 = 2   # Tier 1 + logprob equality
+    TIER_0 = 0  # artifact reproducibility
+    TIER_1 = 1  # run-to-run output repeatability
+    TIER_2 = 2  # Tier 1 + logprob equality
 
 
 @dataclass

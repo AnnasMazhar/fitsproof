@@ -76,7 +76,7 @@ def apply_rope(x: np.ndarray, freqs: np.ndarray, offset: int = 0) -> np.ndarray:
     sin_vals = pos_freqs[..., 1]  # (seq_len, half)
 
     x_even = x[..., 0::2]  # (..., seq_len, half)
-    x_odd = x[..., 1::2]   # (..., seq_len, half)
+    x_odd = x[..., 1::2]  # (..., seq_len, half)
 
     out_even = x_even * cos_vals - x_odd * sin_vals
     out_odd = x_even * sin_vals + x_odd * cos_vals
@@ -281,9 +281,7 @@ class KVCache:
         self.dtype = dtype
         self.seq_len: int = 0
         # One entry per layer: list of (k_tensor, v_tensor)
-        self._cache: list[tuple[np.ndarray, np.ndarray] | None] = [
-            None
-        ] * cfg.num_layers
+        self._cache: list[tuple[np.ndarray, np.ndarray] | None] = [None] * cfg.num_layers
 
     def append(
         self,

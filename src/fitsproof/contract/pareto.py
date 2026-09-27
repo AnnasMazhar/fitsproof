@@ -126,6 +126,7 @@ def sweep(
             # Apply quant to the embedding as a representative weight
             try:
                 from fitsproof.engine.quant import QuantMode
+
                 qmode: QuantMode = quant  # type: ignore
                 qw = quantize(fp32_weights["embed"], qmode)
                 dequant = dequantize(qw)
@@ -140,7 +141,7 @@ def sweep(
             sampler = Sampler(seed=42)
             t0 = time.perf_counter()
             _tokens = transformer.generate(
-                prompt_ids[:min(8, len(prompt_ids))],
+                prompt_ids[: min(8, len(prompt_ids))],
                 max_new_tokens=n_decode_tokens,
                 sampler=sampler,
                 temperature=0.0,
@@ -239,9 +240,9 @@ def _emit_svg(points: list[ParetoPoint], path: Path) -> None:
     lines = [
         f'<svg xmlns="http://www.w3.org/2000/svg" width="{W}" height="{H}">',
         f'<rect width="{W}" height="{H}" fill="white"/>',
-        f'<text x="{W//2}" y="20" text-anchor="middle" font-size="14">Pareto Frontier: tok/s vs peak_MB</text>',
-        f'<text x="{W//2}" y="{H-10}" text-anchor="middle" font-size="11">tok/s</text>',
-        f'<text x="12" y="{H//2}" text-anchor="middle" font-size="11" transform="rotate(-90,12,{H//2})">peak MB</text>',
+        f'<text x="{W // 2}" y="20" text-anchor="middle" font-size="14">Pareto Frontier: tok/s vs peak_MB</text>',
+        f'<text x="{W // 2}" y="{H - 10}" text-anchor="middle" font-size="11">tok/s</text>',
+        f'<text x="12" y="{H // 2}" text-anchor="middle" font-size="11" transform="rotate(-90,12,{H // 2})">peak MB</text>',
     ]
 
     for p in points:
@@ -250,7 +251,7 @@ def _emit_svg(points: list[ParetoPoint], path: Path) -> None:
         color = "red" if not p.pareto_dominated else "lightgray"
         lines.append(
             f'<circle cx="{cx:.1f}" cy="{cy:.1f}" r="5" fill="{color}" stroke="black" stroke-width="0.5">'
-            f'<title>{p.quant} ctx={p.context_len} {p.measured_tok_s:.2f} tok/s {p.measured_peak_bytes/1e6:.1f} MB</title>'
+            f"<title>{p.quant} ctx={p.context_len} {p.measured_tok_s:.2f} tok/s {p.measured_peak_bytes / 1e6:.1f} MB</title>"
             f"</circle>"
         )
 

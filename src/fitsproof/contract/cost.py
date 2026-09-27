@@ -60,12 +60,12 @@ class CostEstimate:
     Fields ending _ci are 95% confidence intervals (lower, upper) added by calibrate.
     """
 
-    weight_bytes: int          # model weight storage
-    kv_cache_bytes: int        # KV cache for full context window
-    activation_bytes: int      # peak activation buffer (one batch, one layer)
-    total_peak_bytes: int      # weight + kv_cache + activation (conservative sum)
-    predicted_tok_s: float     # decode throughput (tokens/second)
-    predicted_ttft_s: float    # time to first token (seconds), prefill
+    weight_bytes: int  # model weight storage
+    kv_cache_bytes: int  # KV cache for full context window
+    activation_bytes: int  # peak activation buffer (one batch, one layer)
+    total_peak_bytes: int  # weight + kv_cache + activation (conservative sum)
+    predicted_tok_s: float  # decode throughput (tokens/second)
+    predicted_ttft_s: float  # time to first token (seconds), prefill
     arithmetic_intensity: float  # FLOPS/byte for decode step
 
 
@@ -100,7 +100,7 @@ def weight_bytes(cfg: ModelConfig, quant: str = "none") -> int:
         h * hd * d  # Q: (n_heads*head_dim, hidden)
         + kv_h * hd * d  # K
         + kv_h * hd * d  # V
-        + d * h * hd     # O
+        + d * h * hd  # O
     ) * bytes_per_element
 
     # Per-layer FFN (gate + up + down)

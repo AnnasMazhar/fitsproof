@@ -34,7 +34,7 @@ def rms_norm(x: np.ndarray, weight: np.ndarray, eps: float = 1e-5) -> np.ndarray
     Fault detected: using std instead of RMS incorrectly subtracts the mean
     before normalisation; tested with a vector where mean != 0.
     """
-    rms = np.sqrt(np.mean(x ** 2, axis=-1, keepdims=True) + eps)
+    rms = np.sqrt(np.mean(x**2, axis=-1, keepdims=True) + eps)
     return (x / rms) * weight
 
 
@@ -63,7 +63,7 @@ def swiglu_ffn(
     function non-trivially (no negative values pass through).
     """
     gate = x @ gate_w.T  # (..., intermediate)
-    up = x @ up_w.T      # (..., intermediate)
+    up = x @ up_w.T  # (..., intermediate)
     # SiLU: z * sigmoid(z)
     silu_gate = gate * (1.0 / (1.0 + np.exp(-gate)))
     return (silu_gate * up) @ down_w.T  # (..., hidden)

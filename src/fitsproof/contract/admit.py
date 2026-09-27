@@ -110,7 +110,5 @@ def admit(plan: Plan) -> AdmitRecord:
             plan=plan,
             applied_degradation=None,
             refusal_reason=plan.binding_constraint,
-            message=(
-                f"REFUSED: {plan.binding_constraint}"
-            ),
+            message=(f"REFUSED: {plan.binding_constraint}"),
         )

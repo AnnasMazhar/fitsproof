@@ -156,6 +156,7 @@ def plan(
     w = weight_bytes(cfg, quant)
     kv = kv_cache_bytes(cfg, context_len, quant)
     from fitsproof.contract.cost import activation_bytes
+
     act = activation_bytes(cfg)
     # Offload half layers: saves ~50% of attention+FFN weight bytes
     offload_saving_factor = 0.5
@@ -182,11 +183,7 @@ def plan(
         binding = (
             f"needs {predicted_peak / 1e9:.2f} GB, budget {budget_bytes / 1e9:.2f} GB; "
             f"nearest fitting config is "
-            + (
-                f"{degradations[-1].description}"
-                if degradations
-                else "none found"
-            )
+            + (f"{degradations[-1].description}" if degradations else "none found")
         )
 
     return Plan(

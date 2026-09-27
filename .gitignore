@@ -11,3 +11,5 @@ dist/
 .mutmut-cache
 mutants/
 *.bak
+.hypothesis/
+uv.lock

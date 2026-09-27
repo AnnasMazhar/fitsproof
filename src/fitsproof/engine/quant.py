@@ -30,8 +30,8 @@ class QuantizedWeight:
     against analytically-derived dequantised values.
     """
 
-    data: np.ndarray       # quantised integers, dtype int8 or int8 (int4 packed into int8)
-    scales: np.ndarray     # per-output-channel scale, shape (out_channels,)
+    data: np.ndarray  # quantised integers, dtype int8 or int8 (int4 packed into int8)
+    scales: np.ndarray  # per-output-channel scale, shape (out_channels,)
     zero_points: np.ndarray | None  # None for symmetric
     mode: QuantMode
     original_shape: tuple[int, ...]
@@ -104,8 +104,10 @@ def _int8_asym_quant(w: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarray]
     zero_points = np.round(-min_vals / scales).astype(np.int32)
     # Quantise: q = clip(round(w/scale) + zp, 0, 255)
     quantised = (
-        np.round(flat / scales[:, np.newaxis]) + zero_points[:, np.newaxis].astype(np.float32)
-    ).clip(0, 255).astype(np.uint8)
+        (np.round(flat / scales[:, np.newaxis]) + zero_points[:, np.newaxis].astype(np.float32))
+        .clip(0, 255)
+        .astype(np.uint8)
+    )
     # Store uint8 as int8 bit pattern
     quantised_int8 = quantised.view(np.int8)
     return quantised_int8.reshape(w.shape), scales, zero_points
@@ -214,16 +216,23 @@ def quantize(w: np.ndarray, mode: QuantMode) -> QuantizedWeight:
 
     if mode == "int8_sym":
         data, scales = _int8_sym_quant(w)
-        return QuantizedWeight(data=data, scales=scales, zero_points=None,
-                               mode=mode, original_shape=original_shape)
+        return QuantizedWeight(
+            data=data, scales=scales, zero_points=None, mode=mode, original_shape=original_shape
+        )
     elif mode == "int8_asym":
         data, scales, zero_points = _int8_asym_quant(w)
-        return QuantizedWeight(data=data, scales=scales, zero_points=zero_points,
-                               mode=mode, original_shape=original_shape)
+        return QuantizedWeight(
+            data=data,
+            scales=scales,
+            zero_points=zero_points,
+            mode=mode,
+            original_shape=original_shape,
+        )
     elif mode == "int4_sym":
         data, scales = _int4_sym_quant(w)
-        return QuantizedWeight(data=data, scales=scales, zero_points=None,
-                               mode=mode, original_shape=original_shape)
+        return QuantizedWeight(
+            data=data, scales=scales, zero_points=None, mode=mode, original_shape=original_shape
+        )
     elif mode == "int4_asym":
         raise NotImplementedError("int4_asym not implemented in v0.1")
     else:
@@ -281,9 +290,9 @@ def memory_reduction_factor(mode: QuantMode) -> float:
     Tested against analytically known values: int8 should return 0.25.
     """
     if mode in ("int8_sym", "int8_asym"):
-        return 8.0 / 32.0   # 0.25
+        return 8.0 / 32.0  # 0.25
     elif mode in ("int4_sym", "int4_asym"):
-        return 4.0 / 32.0   # 0.125
+        return 4.0 / 32.0  # 0.125
     else:
         raise ValueError(f"Unknown mode: {mode!r}")
 
@@ -300,11 +309,7 @@ def top1_agreement(w_orig: np.ndarray, w_quant_dequant: np.ndarray) -> float:
     Returns a float in [0, 1]. Tested against known cases in test_quant.py.
     """
     if w_orig.shape != w_quant_dequant.shape:
-        raise ValueError(
-            f"Shape mismatch: {w_orig.shape} vs {w_quant_dequant.shape}"
-        )
+        raise ValueError(f"Shape mismatch: {w_orig.shape} vs {w_quant_dequant.shape}")
     flat_orig = w_orig.reshape(w_orig.shape[0], -1)
     flat_quant = w_quant_dequant.reshape(w_quant_dequant.shape[0], -1)
-    return float(
-        np.mean(np.argmax(flat_orig, axis=1) == np.argmax(flat_quant, axis=1))
-    )
+    return float(np.mean(np.argmax(flat_orig, axis=1) == np.argmax(flat_quant, axis=1)))
