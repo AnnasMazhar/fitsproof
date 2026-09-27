@@ -3,7 +3,9 @@
 All links verified to resolve at the time of writing (2026-09-27).
 Pass 1 (2026-09-26): sources 1–15, ground truth. Updated with 7 new sources and
 extended falsification in pass 1 (2026-09-27).
-Each citation is attached to the specific claim it supports.
+Pass 2 (2026-09-27): ecosystem scan, comparison table, gap analysis.
+Star counts retrieved via GitHub REST API at 2026-09-27T13:00 UTC. Version dates from
+GitHub releases API and PyPI. Each citation is attached to the specific claim it supports.
 
 ---
 
@@ -615,3 +617,246 @@ measured proof that peak memory stayed within the declared contract.
    own measured peak. We expect the transfer to fail (different memory technology,
    different PCIe generation, different DRAM channels) — but this is an empirical claim,
    not a derivation, and must be tested.
+
+---
+
+## Pass 2 — Ecosystem and Competition
+
+### Methodology
+
+Star counts and version dates were retrieved from the GitHub REST API
+(`api.github.com/repos/{owner}/{repo}` and `/releases/latest`) and from the PyPI JSON
+API (`pypi.org/pypi/{name}/json`). All figures are as of 2026-09-27T13:00 UTC and are
+raw API values, not estimates. The llama.cpp repo was accessed via its numeric ID
+(612354784) because the ggerganov→ggml-org rename returns a permanent redirect on the
+named-path endpoint.
+
+Nine tools were evaluated across two categories: (A) inference engines that overlap the
+execution layer, and (B) prediction / sizing tools that overlap the contract layer. A
+third micro-category (determinism checking) is covered by detllm.
+
+---
+
+### Category A — Inference engines
+
+#### 1. llama.cpp
+- **Repo:** https://github.com/ggml-org/llama.cpp (formerly ggerganov/llama.cpp)
+- **Stars:** 129,661 (2026-09-27)
+- **Latest release:** v0.5.0, published 2026-09-23
+- **Language:** C/C++, Python bindings
+- **Approach:** GGML tensor library, CPU-first with optional GPU offload; GGUF quantised
+  models, broad model coverage (LLaMA, Mistral, Phi, Gemma, etc.), 2–8 bit k-quants.
+- **What it does well:** mature (3+ years), lowest-friction path to CPU inference, broad
+  quant support (Q2_K through Q8_0), `-ot` / `--cpu-moe` layer-level offload, runs
+  everywhere without a GPU toolkit.
+- **Gap it leaves:** documented silent failure modes: OOM produces a raw CUDA error
+  with no preceding warning or degradation path; AMD fallback to CPU at 0.3 tok/s is
+  silent (no log line indicating mode). No user-declared memory budget. No calibrated
+  peak-memory prediction from on-device measurement. No stress harness asserting measured
+  RSS ≤ declared limit.
+- **What fitsproof does differently:** enforces an explicit budget declared by the user;
+  any runtime mode change (GPU→CPU) emits a record naming what changed and why; a stress
+  harness asserts zero budget violations across ≥20 configurations.
+
+#### 2. vLLM
+- **Repo:** https://github.com/vllm-project/vllm
+- **Stars:** 92,766 (2026-09-27)
+- **Latest release:** v0.30.0, published 2026-09-22
+- **Language:** Python / CUDA
+- **Approach:** PagedAttention for GPU memory efficiency, continuous batching, tensor
+  parallelism, targets A100/H100/A10G class hardware.
+- **What it does well:** highest single-node GPU throughput in the open ecosystem, full
+  OpenAI-compatible API, production serving, broad model coverage.
+- **Gap it leaves:** targets ≥40 GB GPU memory; has no mode for the 4–8 GB VRAM / 16–32 GB
+  RAM class. Does not enforce a user-declared budget. `VLLM_BATCH_INVARIANT=1` achieves
+  determinism with a documented performance trade-off (confirmed from vLLM docs); the flag
+  is not the default, so most deployments are non-deterministic. No calibration from
+  on-device measurement.
+- **What fitsproof does differently:** CPU-first with explicit budget enforcement targeting
+  the hardware class vLLM does not serve; calibration is per-machine, not per-GPU-model.
+
+#### 3. KTransformers
+- **Repo:** https://github.com/kvcache-ai/ktransformers
+- **Stars:** 19,538 (2026-09-27)
+- **Latest release:** v0.7.1, published 2026-09-15
+- **Language:** Python / C++ / CUDA
+- **Approach:** CPU/GPU hybrid for sparse MoE models; hot layers (attention, KV cache)
+  on GPU, expert matrices in DRAM with Intel AMX kernels; Expert Deferral to maximise
+  CPU utilisation. From SOSP 2025 paper (DOI: 10.1145/3731569.3764843).
+- **What it does well:** runs DeepSeek-V3/R1 (671B) with ~14 GB VRAM + 128 GB RAM;
+  1.25–4.09× decode over llama.cpp; AMX doubles FLOP/cycle vs AVX-512 for the GEMM
+  shape that dominates expert load.
+- **Gap it leaves:** requires Intel Sapphire Rapids (AMX); requires CUDA/ROCm; hardware
+  minimum is 128 GB RAM — does not serve the 16–32 GB class at all. No resource contract
+  layer: does not predict peak memory from on-device calibration, does not enforce a
+  declared budget, and does not emit a degradation record on mode transitions.
+- **What fitsproof does differently:** designed for the hardware class KTransformers
+  explicitly excludes; adds the contract layer KTransformers omits.
+
+---
+
+### Category B — Prediction and sizing tools
+
+#### 4. ridgepoint
+- **PyPI:** https://pypi.org/project/ridgepoint/ (source: https://github.com/Isk4R1oT/ridgepoint)
+- **Stars:** 1 (GitHub, 2026-09-27)
+- **Latest release:** v0.1.2, uploaded 2026-09-08
+- **Approach:** analytical VRAM sizing with calibrated constants; KV cache formula
+  correct for both GQA and MLA attention types to the byte; roofline intervals (not
+  point estimates); each output field carries a `calibrated` flag indicating whether the
+  value came from a calibrated measurement or a formula. Calibrated to ~1% against real
+  vLLM on A100/H100.
+- **What it does well:** the most accurate open prediction tool for the A100/H100 class;
+  MLA support (DeepSeek-style); per-field provenance (`calibrated` flag is a genuinely
+  useful design decision); intervals rather than point predictions.
+- **Gap it leaves:** calibration is offline, against A100/H100, not on the user's machine.
+  Prediction only — no budget enforcement, no degradation path, no RSS proof harness, no
+  stress harness. Does not serve the 4–8 GB VRAM class.
+- **What fitsproof does differently:** calibration is on-device (probe → calibrate →
+  MAPE on held-out configs from this machine); prediction is followed by enforcement (admit)
+  and proof (verify against measured RSS). The pipeline is: predict → enforce → prove.
+
+#### 5. pochenai/llm-inference-calculator
+- **Repo:** https://github.com/pochenai/llm-inference-calculator
+- **Stars:** 20 (2026-09-27)
+- **Last push:** 2026-09-09
+- **Approach:** two-phase roofline static performance model: prefill is compute-bound
+  (TTFT estimate), decode is bandwidth-bound (TPOT estimate), MoE expert coverage, layout
+  solver for multi-GPU configurations, speculative decoding throughput modelling.
+- **What it does well:** more rigorous than a simple `bytes / bandwidth` formula; models
+  MoE sparsity and speculative decoding's batch-size effect; instantaneous (no runtime
+  measurement needed).
+- **Gap it leaves:** static model, not calibrated to any real machine. No enforcement.
+  No RSS measurement. Targets multi-GPU data-centre configurations, not consumer hardware.
+- **What fitsproof does differently:** calibrates constants from measurements on the
+  user's actual hardware; enforces the resulting prediction as a contract.
+
+#### 6. Pluenet-Killian/llm-roofline
+- **Repo:** https://github.com/Pluenet-Killian/llm-roofline
+- **Stars:** 0 (2026-09-27)
+- **Last push:** 2026-06-20
+- **Approach:** decode throughput floor = bytes_per_token ÷ bandwidth, per GPU; roofline
+  chart generation.
+- **What it does well:** clean single-formula derivation; produces a readable chart.
+- **Gap it leaves:** derives only a lower-bound throughput floor; no peak memory
+  prediction, no enforcement, no calibration from measurement, inactive since June 2026.
+- **What fitsproof does differently:** adds the memory prediction and enforcement layers;
+  calibrates the bandwidth constant from real measurement rather than using a spec-sheet value.
+
+#### 7. JohnScheuer/hardware-aware-llm-runtime
+- **Repo:** https://github.com/JohnScheuer/hardware-aware-llm-runtime
+- **Stars:** 0 (2026-09-27)
+- **Last push:** 2026-06-25
+- **Approach:** hardware-calibrated roofline with empirical fitting and analytical optimal
+  batch size; predicts batch sweet spot within ~1.
+- **What it does well:** fits roofline constants from real measurements (not spec sheets),
+  finds compute/bandwidth crossover empirically, accounts for batch-size effects on
+  throughput.
+- **Gap it leaves:** focused on throughput optimisation (finding the optimal batch), not
+  memory budget enforcement. No degradation path. No stress harness. Inactive since June 2026.
+- **What fitsproof does differently:** priority is memory safety (enforced budget, measured
+  proof), not throughput optimisation. The calibration approach is similar in spirit but
+  fitsproof drives it through an enforcement gate.
+
+#### 8. Shun-Calvin/llm-vram-calculator
+- **Repo:** https://github.com/Shun-Calvin/llm-vram-calculator
+- **Stars:** 1 (2026-09-27)
+- **Last push:** 2026-09-26
+- **Approach:** VRAM/TTFT/tok/s across 100+ models × 70+ GPUs with a public API.
+- **What it does well:** widest model×GPU coverage of any tool in this list; useful for
+  rough hardware selection before purchase.
+- **Gap it leaves:** formula-based (not calibrated to any machine); GPU-only; no
+  enforcement, no degradation, no stress harness.
+- **What fitsproof does differently:** calibrates to the user's machine, enforces the
+  prediction as a contract, and proves compliance.
+
+---
+
+### Category C — Determinism checking
+
+#### 9. detllm
+- **Repo:** https://github.com/tommasocerruti/detllm
+- **Stars:** 20 (2026-09-27)
+- **Last push:** 2026-08-20
+- **Approach:** capability-gated determinism tiers: Tier 0 (artifact reproducibility),
+  Tier 1 (run-to-run output repeatability at fixed seed/batch), Tier 2 (Tier 1 + logprob
+  equality); repro packs. Always reports the tier actually achieved.
+- **What it does well:** clean framing of determinism as a tiered capability rather than
+  a binary; the `calibrated` vs `not-calibrated` style of honest reporting.
+- **Gap it leaves:** determinism reporting only — does not predict or enforce memory
+  budgets.
+- **What fitsproof does differently:** adopts the detllm tier model for the verify layer
+  (source 14 in the sources section); adds the contract enforcement on top.
+
+---
+
+### Comparison Table
+
+Verified star counts and release dates as of 2026-09-27T13:00 UTC (GitHub REST API).
+"Last activity" is the most recent push date from the API.
+
+| Tool | Stars | Last activity | Approach | What it does well | Gap it leaves | What fitsproof does differently |
+|---|---|---|---|---|---|---|
+| **llama.cpp** (ggml-org/llama.cpp) | 129,661 | 2026-09-27 (v0.5.0) | CPU/GPU inference, GGUF, k-quants | Mature, broad model support, fast CPU kernels, layer offload | Silent OOM; silent CPU fallback; no user budget; no calibrated prediction | Explicit budget declaration; loud degradation record; stress harness proving compliance |
+| **vLLM** (vllm-project/vllm) | 92,766 | 2026-09-27 (v0.30.0) | GPU serving, PagedAttention, continuous batching | Highest GPU throughput, production serving, 100+ models | Requires A100/H100 class; does not serve 4–8 GB VRAM; non-deterministic by default | CPU-first; 4–8 GB VRAM class; calibrated per-machine; deterministic by construction |
+| **KTransformers** (kvcache-ai/ktransformers) | 19,538 | 2026-09-23 (v0.7.1) | CPU/GPU hybrid MoE, AMX kernels | 671B on 14 GB VRAM; 1.25–4.09× decode over llama.cpp | Requires 128 GB RAM + AMX; no resource contract layer | Targets 16–32 GB RAM class; adds predict→enforce→prove pipeline |
+| **ridgepoint** (Isk4R1oT/ridgepoint, PyPI) | 1 | 2026-09-08 (v0.1.2) | Calibrated VRAM + roofline for A100/H100 | ~1% MAPE vs real vLLM; MLA-correct; per-field calibrated flag | Prediction only; offline calibration; no enforcement; no RSS harness | On-device calibration; enforcement gate; measured RSS proof |
+| **llm-inference-calculator** (pochenai) | 20 | 2026-09-09 | Two-phase roofline (prefill compute / decode bandwidth); MoE + spec-decoding | Rigorous two-phase model; MoE sparsity; spec-decoding throughput | No calibration; no enforcement; targets data-centre multi-GPU | On-device calibration; single-machine consumer target |
+| **llm-roofline** (Pluenet-Killian) | 0 | 2026-06-20 | Decode throughput floor = bytes/bandwidth per GPU | Simple clean derivation | Throughput floor only; no memory prediction; no enforcement; inactive | Memory contract + enforcement + RSS proof |
+| **hardware-aware-llm-runtime** (JohnScheuer) | 0 | 2026-06-25 | Hardware-calibrated roofline, empirical optimal batch | Empirical constant fitting; finds compute/bandwidth crossover | Throughput focus; no enforcement; no stress harness; inactive | Memory-safety focus; enforcement gate after calibration |
+| **llm-vram-calculator** (Shun-Calvin) | 1 | 2026-09-26 | Formula-based VRAM/tok/s for 100+ models × 70+ GPUs | Widest model×GPU coverage | Formula-based, not calibrated; GPU-only; no enforcement | On-device calibration; enforcement; proof harness |
+| **detllm** (tommasocerruti) | 20 | 2026-08-20 | Capability-gated determinism tier reporting | Honest tier framing; repro packs | Determinism only; no memory prediction or enforcement | Adopts detllm tier model; adds contract enforcement on top |
+
+---
+
+### The Gap We Are Claiming
+
+**Stated precisely:** no single tool in this list does all of the following on one machine:
+
+1. Calibrate prediction constants from measurements taken *on the user's actual hardware*
+   (not offline against A100/H100).
+2. Enforce a user-declared memory budget: admit, degrade, or refuse — loudly, never silently.
+3. Prove compliance: a stress harness asserts measured peak RSS never exceeded the declared
+   budget, and reports the margin.
+
+Each ingredient exists somewhere. ridgepoint calibrates (against other hardware). llama.cpp
+runs inference. detllm checks determinism. No single tool assembles the three-step pipeline:
+**probe → calibrate → plan → admit (enforce) → verify (prove)**.
+
+**How a user would notice the gap:** they set `--budget 4G` and run a 7B model. With
+llama.cpp, they see either a successful run or a CUDA OOM (no warning, no managed
+degradation, no margin report). With fitsproof, they see either `ADMITTED: 3.8 GB predicted
+≤ 4.0 GB budget (margin: 200 MB)` followed by a verified measured peak, or `REFUSED:
+needs 4.3 GB, budget 4.0 GB; nearest fitting config is int4@2048`. The contract is explicit
+and enforced; the outcome is documented before generation starts.
+
+**The target hardware class is specific:** 4–8 GB VRAM, 16–32 GB RAM. Every mature tool
+in the table (llama.cpp, vLLM, KTransformers) was designed for hardware above this range
+or does not address it at all. Strata (one-click consumer packaging, not open source)
+requires 12 GB+ VRAM. This hardware class is large — it covers most developer-grade
+workstations purchased before 2023 and the majority of non-gaming laptops with discrete GPUs.
+
+---
+
+### Falsification for Pass 2
+
+1. **If ridgepoint's A100/H100 calibration transfers to a Quadro M2000 with <5% MAPE:**
+   on-device calibration adds no value. This is empirically testable (run both; compare to
+   measured RSS). We do not know the answer; this is the honest uncertainty. The stress
+   harness in acceptance criterion 7 will surface a budget violation if ridgepoint's
+   transfer prediction is wrong and fitsproof's is right.
+
+2. **If llama.cpp ships explicit budget enforcement before this repo is published:** the
+   gap closes. The llama.cpp changelog should be checked at publication time. As of
+   2026-09-27 (v0.5.0), the `--n-gpu-layers` flag controls offload but there is no
+   `--budget` flag or degradation record in the CLI or API.
+
+3. **If the 4–8 GB VRAM / 16–32 GB RAM hardware class is smaller than claimed:** the
+   total addressable audience shrinks. The claim rests on market-share data for consumer
+   and workstation GPUs sold 2018–2022; this was not independently verified in pass 2.
+
+4. **If the "no single tool does all three" claim is wrong:** there is a tool in this space
+   that was not found in the scan. The scan covered the 9 tools named in MARKET-VERDICTS.md
+   plus a targeted search for "LLM memory budget enforcement" on GitHub; no additional
+   tools appeared. The adversarial reviewer should repeat the search with different query
+   terms.
