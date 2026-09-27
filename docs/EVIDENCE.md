@@ -7,7 +7,28 @@ Home directories redacted to `/build/`.
 
 ---
 
-## Machine Specification
+## Positioning Conflict Record (spec vs MARKET-VERDICTS)
+
+Per ITERATION-PROTOCOL: when the product spec conflicts with
+`/home/openclaw/portfolio/specs/MARKET-VERDICTS.md`, the verdicts file wins.
+
+**Conflict (recorded 2026-09-27, cycle 2 pass 1):** the v0.2 MANDATE's MISSION
+in `specs/fitsproof.md` states fitsproof "does three things no single existing
+tool does together". Cycle-1 pass-3 market research found that claim is false as
+written: **aura** (`github.com/Grevix/aura`, 4 stars as of 2026-09-27) enforces
+a per-process memory budget with peak-measurement + refusal — i.e. it covers the
+enforcement limb of the three-legged claim (RESEARCH.md cycle-1 pass 3,
+COMPARISONS.md aura row).
+
+**Resolution applied:** positioning follows MARKET-VERDICTS — fitsproof sells
+**the contract, never speed** (bound/predict/prove/refuse + audit records +
+plugin surfaces); the deepened comparison table (star counts refreshed
+2026-09-27 in RESEARCH.md) replaces the "no single tool does it" absolute. No
+marketing text, README claim, or release note may repeat the three-things
+absolute. The specs file below this register retains its original MISSION
+wording; this record, not the spec, is authoritative for external claims.
+
+---
 
 ```
 $ .venv/bin/fitsproof probe

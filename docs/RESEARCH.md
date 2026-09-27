@@ -4,6 +4,9 @@ All links verified to resolve at the time of writing (2026-09-27).
 Pass 1 (2026-09-26): sources 1–15, ground truth. Updated with 7 new sources and
 extended falsification in pass 1 (2026-09-27).
 Pass 2 (2026-09-27): ecosystem scan, comparison table, gap analysis.
+**Cycle 2 pass 1 (2026-09-27): ground truth for the v0.2 MANDATE surfaces —
+sources 23–34, deep treatment of 23/25/27/28/29, link re-verification, new
+falsification section. See "Cycle 2 — Pass 1" at the end of this file.**
 Star counts retrieved via GitHub REST API at 2026-09-27T13:00 UTC. Version dates from
 GitHub releases API and PyPI. Each citation is attached to the specific claim it supports.
 
@@ -978,3 +981,509 @@ Real-world applicability is wrong if any of these holds. Status now:
    watch; as of 2026-09-27 its README shows no held-out calibration
    protocol and publishes a run whose peak RSS exceeds its stated
    budget. Re-check its repo before publication.
+
+---
+
+## Cycle 2 — Pass 1 — GROUND TRUTH for the v0.2 MANDATE
+
+This pass grounds the v0.2 MANDATE surfaces (specs/fitsproof.md § M1–M4): the
+binary, the four plugin surfaces (OpenAI-compatible server, Python client, guard
+decorator, MCP server), and M4's requirement that tests cite specific source IDs.
+Sources 23–34 are new. Five (23, 25, 27, 28, 29) get the full treatment required
+by QUALITY-CONTRACT §3: exact method, equations with notation explained,
+assumptions, documented failure modes. All links re-checked with curl on
+2026-09-27 (raw output below).
+
+Note on one URL: `spec.modelcontextprotocol.io` fails TLS from this host
+(`curl: (35) TLS connect error ... unexpected eof`, two attempts); the canonical
+`https://modelcontextprotocol.io/specification/2025-03-26/` resolves (200) and is
+what this document cites. The old hostname appears in two docstrings
+(`src/fitsproof/mcp.py`, `tests/value/test_incumbent_gap.py`); both were updated
+this pass to the resolving URL so the adversarial citation audit cannot flag them.
+
+### 23. MCP Specification (protocol version 2025-03-26) — DEEP [drives M2.4]
+
+**Model Context Protocol, official specification.**
+https://modelcontextprotocol.io/specification/2025-03-26/
+(Sections read: Base Protocol/Transports, Server Features/Tools.)
+
+**Claim it supports:** the entire `fitsproof mcp` surface
+(`src/fitsproof/mcp.py`, tests in `tests/value/test_incumbent_gap.py`): JSON-RPC
+messages over the stdio transport, `initialize` / `tools/list` / `tools/call`,
+and the refusal protocol (`isError: true` on a REFUSED admit).
+
+**Exact method (transcribed from the spec):**
+```
+Transport (stdio): client launches the server as a subprocess; server reads
+  JSON-RPC from stdin, writes JSON-RPC to stdout.
+  "Messages are delimited by newlines, and MUST NOT contain embedded newlines."
+  "The server MUST NOT write anything to its stdout that is not a valid MCP
+   message." (logging goes to stderr)
+
+Tool call result:
+  { "jsonrpc": "2.0", "id": 2,
+    "result": { "content": [ { "type": "text", "text": "..." } ],
+                "isError": false } }
+
+Error split (spec's own words):
+  Protocol errors   -> standard JSON-RPC error objects (unknown tool,
+                       invalid arguments, server errors; e.g. -32602)
+  Tool execution errors -> reported IN the result with isError: true
+                       (API failures, invalid input, business-logic errors)
+```
+
+**Assumptions the method requires:**
+- Exactly one JSON message per line on stdout; any stray `print()` from library
+  code corrupts the stream for the whole session.
+- The client (agent) treats `isError` as the only in-band success/failure signal
+  for a tool result; a non-protocol error cannot be conveyed any other way.
+
+**Documented failure modes (per the spec itself):**
+- stdout pollution: a server that logs to stdout violates the transport rule and
+  breaks the client's framing — the reason `mcp.py` writes JSON only.
+- Errors on notifications are undetectable: JSON-RPC notifications carry no
+  `id`, so the caller "would not be aware of any errors" (JSON-RPC spec §4.1,
+  source 24). fitsproof's tools are requests, never notifications, for this reason.
+- If `admit` returned `isError: false` on REFUSED, an agent would read a
+  refusal as success. This is the fault `test_incumbent_gap.py` pins.
+
+### 24. JSON-RPC 2.0 Specification
+
+**JSON-RPC Working Group.** https://www.jsonrpc.org/specification
+(Updated 2013-01-04; the wire format MCP builds on.)
+
+**Claim it supports:** the message envelope and error codes in `mcp.py`
+(`"jsonrpc": "2.0"`, request/notification/response distinction, `-32601` /
+`-32602` error codes for unknown tool / invalid params).
+
+**Key rules extracted:**
+```
+Notification := Request object without an "id" member.
+  "The Server MUST NOT reply to a Notification, including those that are
+   within a batch request."
+Error codes: -32601 Method not found, -32602 Invalid params,
+             -32603 Internal error.
+```
+
+**Failure mode relevant to us:** notifications are unconfirmable by definition —
+any fitsproof call that must be able to fail loudly (plan/admit) is issued as a
+request with an `id`.
+
+### 25. Server-Sent Events (WHATWG HTML Living Standard) — DEEP [drives M2.1]
+
+**WHATWG HTML Standard, § "Server-sent events".**
+https://html.spec.whatwg.org/multipage/server-sent-events.html
+
+**Claim it supports:** `src/fitsproof/engine/server.py` streaming response
+format and the fault `test_completion_streaming_returns_chunks` detects
+("returning the full response as a single chunk is not real SSE streaming").
+
+**Exact method (transcribed):**
+```
+MIME type: text/event-stream, always decoded as UTF-8 (no other charset).
+
+ABNF (spec's grammar, notation: [] = optional, * = zero-or-more,
+      / = alternation, (... grouping)):
+  stream = [ bom ] * event
+  event  = *( comment / field ) line-terminator
+  field  = event-type / data / id / retry        ; each line "name[: value]"
+
+Dispatch: events are dispatched on a blank line. "If the data buffer is an
+  empty string, set the data buffer and the event type buffer to the empty
+  string and return." (an empty data buffer discards the event)
+EOF: "If the file ends in the middle of an event, before the final empty
+  line, the incomplete event is not dispatched."
+```
+
+**Assumptions:**
+- Line terminator is CR, LF, or CRLF; field names are compared literally (no
+  case folding).
+- The server flushes each event promptly. The spec documents the risk
+  explicitly: "block buffering or line buffering with different expected line
+  endings can cause delays in event dispatch" — line buffering with LF is safe.
+
+**Documented failure modes:**
+- Buffered-then-flushed-at-end responses satisfy the byte format but are not
+  streaming; the spec's own buffering paragraph is why the test asserts
+  *multiple* chunks arrive (counted), not just a `data:` prefix.
+- An event without a terminating blank line is silently dropped at EOF — the
+  server must terminate the final chunk and send the blank line, or the last
+  token never reaches the client.
+
+### 26. OpenAI Chat Completions API (official OpenAPI description)
+
+**OpenAI, openai-openapi repository (openapi.yaml).**
+https://github.com/openai/openai-openapi
+
+**Claim it supports:** the non-streaming and streaming response shapes served
+by `server.py` (`choices[0].message.content`; streaming chunks with
+`object: "chat.completion.chunk"`, `choices[0].delta`, `finish_reason:
+"stop"`, terminated by `data: [DONE]`). Verified by grep against the canonical
+file this pass (raw output below).
+
+**Failure mode:** an SDK client validates `object`/`delta`/`finish_reason`;
+omitting the `data: [DONE]` sentinel or emitting `finish_reason` on every chunk
+breaks streaming clients that wait for the terminator or for `stop`.
+
+### 27. MAPE — Mean Absolute Percentage Error — DEEP [drives calibrate.py, M4 KAT]
+
+**Hyndman, R. J., Koehler, A. B. (2006).** Another look at measures of
+forecast accuracy. *International Journal of Forecasting*, 22(4), 679–688.
+DOI: 10.1016/j.ijforecast.2006.03.001
+https://doi.org/10.1016/j.ijforecast.2006.03.001
+(Abstract verified via RePEc this pass: https://ideas.repec.org/a/eee/intfor/v22y2006i4p679-688.html)
+
+**Claim it supports:** `_mape()` in `src/fitsproof/contract/calibrate.py` —
+the headline calibration metric (`mape_held_out`), and falsifiers P1-F5/P1-F6.
+
+**Exact equation (notation explained):**
+```
+MAPE = (100 / n) * SUM_{i=1..n} ( |y_i - ŷ_i| / |y_i| )
+
+  y_i    = actual value   (measured tok/s on held-out config i)
+  ŷ_i    = predicted value (decode_tok_s from the cost model, config i)
+  n      = number of held-out configurations
+  returns a percentage: 50.3 means 50.3% mean absolute relative error
+```
+Division is by the ACTUAL, never by the prediction (a swap inverts the error
+direction — the fault the KAT in `calibrate` tests detects).
+
+**Assumptions:**
+- `y_i != 0` for all i. Our implementation masks zero actuals
+  (`nonzero = actual != 0`) and returns `NaN` only if ALL are zero.
+- Relative error is meaningful to average across configs of different scale —
+  true here because every config is measured in the same unit (tok/s) on one
+  machine, and we deliberately do not mix machines in one calibration.
+
+**Documented failure modes (per the literature):**
+- Degeneracy at zero: the paper's own finding is that many accuracy measures
+  "are degenerate in commonly occurring situations" (abstract, verified) —
+  percentage error is undefined/infinite when the actual is zero. Dropping zero
+  actuals (our mask) biases the reported MAPE *downward* if zero-measurement
+  configs are the hardest ones; this must be re-checked when
+  `collect_measurements` grows (closure procedure for P1-F6).
+- Asymmetry: over-prediction is penalised without bound (ŷ → ∞ ⇒ error → ∞),
+  under-prediction is capped at 100% (ŷ = 0 ⇒ |y−0|/|y| = 1). For a budget gate
+  this asymmetry is *desirable* — over-promising throughput is the worse error —
+  but it means MAPE is not a symmetric confidence measure.
+- Our measured 50.3% MAPE (n_held_out=1, EVIDENCE.md §6) is the published,
+  honest number; the falsifier fired and is recorded, not hidden.
+
+### 28. Bootstrap percentile confidence interval — DEEP [drives calibrate.py CI]
+
+**Efron, B. (1979).** Bootstrap Methods: Another Look at the Jackknife.
+*The Annals of Statistics*, 7(1), 1–26. DOI: 10.1214/aos/1176344552
+https://doi.org/10.1214/aos/1176344552
+(Full text resolves: projecteuclid.org, 200.)
+
+**Claim it supports:** `_bootstrap_mape_ci()` in
+`src/fitsproof/contract/calibrate.py` — the `ci_lower`/`ci_upper` fields of
+`CalibrationResult` and falsifier P1-F6 ("prediction interval coverage below
+80%").
+
+**Exact method (notation explained):**
+```
+F̂_n = empirical distribution of the held-out pairs:
+      F̂_n = (1/n) * SUM_{i=1..n} δ_{x_i}
+      (δ_x = point mass at x; x_i = (ŷ_i, y_i) pair — pairs are resampled
+       JOINTLY, preserving the predicted↔actual pairing)
+
+For b = 1..B  (B = 1000 in _bootstrap_mape_ci, seed fixed at 42):
+      draw x*_1, ..., x*_n iid from F̂_n  (with replacement)
+      θ*_b = MAPE(ŷ*, y*)                  (the statistic T)
+
+95% percentile interval:
+      CI = [ Q_{0.025}(θ*), Q_{0.975}(θ*) ]
+      (Q_p = p-quantile of the B bootstrap replicates; alpha = 0.05)
+```
+
+**Assumptions:**
+- Held-out configs are i.i.d. draws from the config distribution we care
+  about. With a fixed 67/33 split of a small config list this is an
+  approximation — configs are permutations of one list, not a random sample
+  from a population.
+- n is large enough that F̂_n approximates F. For n ≥ 2 the code resamples; for
+  `n < 2` it returns the degenerate interval `[m, m]` — matching the method's
+  own breakdown point, not hiding it.
+
+**Documented failure modes:**
+- Small-n percentile intervals undercover: with n = 1 (our current state,
+  P1-F6 OPEN) the interval collapses to a point and carries no coverage
+  guarantee; the closure procedure (n_held_out ≥ 10, then check coverage) is
+  already written in the pass-3 closure table.
+- Resampling (ŷ, y) independently instead of in pairs would destroy the
+  prediction↔actual relationship and produce a nonsense interval; the
+  implementation draws one index vector per replicate — the correct pairing.
+- Quantile resolution: with B = 1000 replicates the 2.5% tail is estimated
+  from ~25 samples; adequate for a reported interval, not for inference.
+
+### 29. getrusage(2) / ru_maxrss — peak-RSS semantics — DEEP [drives verify.py, M3(d)]
+
+**Linux man-pages project.** getrusage(2).
+https://man7.org/linux/man-pages/man2/getrusage.2.html
+
+**Claim it supports:** `_get_rss_bytes()` in
+`src/fitsproof/contract/verify.py` and `contract/pareto.py` — the instrument
+behind `measured_peak_bytes`, the stress harness (M3(d)), and README
+Limitations ("RSS is the high-water mark since process start").
+
+**Exact method (transcribed from the man page):**
+```
+ru_maxrss (since Linux 2.6.32) = "the maximum resident set size used (in KiB)"
+peak_bytes = ru_maxrss * 1024        # Linux   (our code, verify.py:76)
+peak_bytes = ru_maxrss               # macOS   (bytes — platform branch)
+RUSAGE_SELF = statistics for the calling process,
+              "the sum of resources used by all threads in the process"
+```
+
+**Assumptions:**
+- RSS is a faithful proxy for the budget-relevant footprint. It includes
+  shared-library pages mapped into the process and excludes kernel-side
+  allocations on our behalf — a budget expressed in RSS is a budget on the
+  process image, not on total system memory pressure.
+- The harness samples after generation completes, so the reported peak is the
+  process-lifetime high-water mark, not a per-call window.
+
+**Documented failure modes:**
+- No reset: the man page defines ru_maxrss as a maximum over the process
+  lifetime with no reset operation. In a long-running `fitsproof serve`
+  process, a peak from request N is permanently attributed to request N+1 —
+  measured ≥ budget can be a *stale* peak, never a missed one (error direction
+  is conservative: it can only over-report). This is the instrument-floor
+  finding P1-F3 (347 MB flat across all stress configs, EVIDENCE.md §10).
+- Unit skew: Linux KiB vs macOS bytes — the platform branch is load-bearing;
+  dropping the `* 1024` under-reports by 1024× on Linux. Unit KAT lives in
+  `tests/contract/test_plan_admit_verify.py`.
+
+### 30. Linux cgroup v2 memory controller [grounds the aura comparison]
+
+**Linux kernel documentation.** Control Group v2 — memory controller.
+https://docs.kernel.org/admin-guide/cgroup-v2.html
+
+**Claim it supports:** (a) why fitsproof's in-process RSS gate is not the same
+instrument as OS-level enforcement, (b) the aura row in COMPARISONS.md.
+
+**Semantics extracted:**
+```
+memory.max   = hard limit; "If a cgroup's memory usage reaches this limit and
+               can't be reduced, the OOM killer is invoked in the cgroup...
+               the usage may go over the limit temporarily."
+memory.peak  = max usage since cgroup creation or last reset (resettable by
+               writing to the file) — a per-cgroup high-water mark.
+Accounted:    userland memory (page cache + anonymous), kernel data structures
+              (dentries, inodes), TCP socket buffers.
+```
+
+**Failure mode relevant to positioning:** cgroup accounting ≠ process RSS (it
+adds page cache and kernel structures), so an aura-style enforcement can show
+`peak > budget` measured in one unit while the process's own RSS stayed under
+in the other — precisely the ambiguity in aura's published 4.92 GB peak vs
+4.00 GB budget example. The units of a budget must be declared with it;
+fitsproof's budget is explicitly RSS bytes.
+
+### 31. PyInstaller — one-file mode [drives M1]
+
+**PyInstaller documentation, "What To Generate".**
+https://pyinstaller.readthedocs.io/en/stable/usage.html
+
+**Claim it supports:** the M1 delivery surface (single standalone executable,
+no Python/venv required) in the release workflow
+(`.github/workflows/release.yml`).
+
+**Facts extracted:** `-F, --onefile` builds a one-file bundled executable;
+onefile mode runs by unpacking to a temporary directory at startup (the docs
+describe splash-screen behaviour as indicating "application activity and
+progress during extraction to the temporary directory").
+
+**Documented failure modes:** startup pays an extraction cost; hidden imports
+must be declared or the bundle fails at runtime (why the CI clean-job smoke
+test — `fitsproof probe` from the downloaded artifact — is the evidence, not
+the build succeeding).
+
+### 32. RFC 9110 — HTTP Semantics [drives M2.1]
+
+**IETF RFC 9110.** https://www.rfc-editor.org/rfc/rfc9110.html
+
+**Claim it supports:** status-code usage in `server.py` (200 / 400 invalid JSON
+/ 404 unknown path, `application/json` responses). The contract refusal path
+maps to 4xx-family semantics rather than a silent 200.
+
+### 33. Nucleus (top-p) Sampling [closes a citation gap in the engine]
+
+**Holtzman, A., Buys, J., Du, L., et al. (2019).** The Curious Case of Neural
+Text Degeneration. arXiv:1904.09751. https://arxiv.org/abs/1904.09751
+
+**Claim it supports:** `top_p_sample()` in `src/fitsproof/engine/sampling.py`
+(the module docstring already cited this arXiv ID; it was missing from
+RESEARCH.md's source list until this pass — the traceability gap M4 exists to
+catch).
+
+**Method:** sort token probabilities descending, take the smallest set whose
+cumulative probability ≥ p, renormalise over that set, sample. Documented
+failure modes: with p → 1 the nucleus degenerates to the full vocabulary (no
+truncation); greedy/beam decoding itself produces repetitive text (the paper's
+central finding — decoding objective alone changes output quality). Sampling is
+stochastic: fitsproof seeds it explicitly (Tier-1 determinism claim, sources
+17/19) and uses temperature=0 in all calibration measurements.
+
+### 34. Mutation testing — survey [grounds the ≥70% kill gate]
+
+**Jia, J., Harman, M. (2011).** An Analysis and Survey of the Development of
+Mutation Testing. *IEEE Transactions on Software Engineering*, 37(9).
+DOI: 10.1109/TSE.2010.62 (resolves: 202 via doi.org, metadata confirmed via
+Crossref: title, TSE, 2011-09.)
+
+**Claim it supports:** the QUALITY-CONTRACT §5.3 / ITERATION-PROTOCOL pass-12
+gate (≥70% mutants killed) and the interpretation of
+`reports/mutation-c1.json`.
+
+**Method:** inject syntactic mutants (operator/boolean/return mutations) into
+source; a mutant is *killed* when at least one test fails; score =
+killed / total. **Documented failure mode:** equivalent mutants — mutants
+behaving identically to the original — cannot be killed by any test and
+depress the score; the survey's treatment is why every surviving mutant must be
+either given a killing test or argued equivalent. Honest current state:
+cycle 1's mutation run recorded `rc: 124` (1800 s timeout during mutant
+generation, `killed: null`) — no score exists yet; the gate is not claimed met.
+
+### Link verification — raw output (2026-09-27, curl over every URL in this file)
+
+```
+# link check 2026-09-27 (curl -sL -o /dev/null -w '%{http_code}' -A Mozilla/5.0 --max-time 25)
+200 https://api.github.com/search/repositories?q=llm+memory+budget+enforcement&per_page=8
+200 https://arxiv.org/abs/1706.03762
+200 https://arxiv.org/abs/1904.09751
+200 https://arxiv.org/abs/1910.07467
+200 https://arxiv.org/abs/2001.08361
+200 https://arxiv.org/abs/2002.05202
+200 https://arxiv.org/abs/2104.09864
+200 https://arxiv.org/abs/2210.17323
+200 https://arxiv.org/abs/2211.17192
+200 https://arxiv.org/abs/2303.06865
+200 https://arxiv.org/abs/2305.13245
+200 https://arxiv.org/abs/2306.00978
+200 https://arxiv.org/abs/2306.15595
+200 https://arxiv.org/abs/2309.06180
+200 https://arxiv.org/abs/2312.12456
+200 https://arxiv.org/abs/2506.09501
+200 https://arxiv.org/abs/2601.17768
+200 https://arxiv.org/abs/2606.00279
+403 https://dl.acm.org/doi/10.1145/1498765.1498785
+200 https://docs.kernel.org/admin-guide/cgroup-v2.html
+200 https://doi.org/10.1016/j.ijforecast.2006.03.001
+200 https://doi.org/10.1214/aos/1176344552
+200 https://github.com/ggerganov/llama.cpp/pull/1684
+200 https://github.com/ggml-org/llama.cpp
+200 https://github.com/Isk4R1oT/ridgepoint
+200 https://github.com/JohnScheuer/hardware-aware-llm-runtime
+200 https://github.com/kvcache-ai/ktransformers
+200 https://github.com/openai/openai-openapi
+200 https://github.com/Pluenet-Killian/llm-roofline
+200 https://github.com/pochenai/llm-inference-calculator
+200 https://github.com/Shun-Calvin/llm-vram-calculator
+200 https://github.com/tommasocerruti/detllm
+200 https://github.com/vllm-project/vllm
+200 https://html.spec.whatwg.org/multipage/server-sent-events.html
+200 https://ideas.repec.org/a/eee/intfor/v22y2006i4p679-688.html
+200 https://madsys.cs.tsinghua.edu.cn/publication/ktransformers-unleashing-the-full-potential-of-cpu/gpu-hybrid-inference-for-moe-models/
+200 https://man7.org/linux/man-pages/man2/getrusage.2.html
+200 https://modelcontextprotocol.io/specification/2025-03-26/
+200 https://pyinstaller.readthedocs.io/en/stable/usage.html
+200 https://pypi.org/project/ridgepoint/
+200 https://pypi.org/project/ridgepoint/0.1.1/
+200 https://raw.githubusercontent.com/openai/openai-openapi/master/openapi.yaml
+200 https://www.cs.virginia.edu/stream/ref.html
+200 https://www.jsonrpc.org/specification
+200 https://www.rfc-editor.org/rfc/rfc9110.html
+# canonical-vs-old-host check:
+200 https://modelcontextprotocol.io/specification/2025-03-26/
+000 https://spec.modelcontextprotocol.io/specification/2025-03-26/ (error: )
+# Crossref check for the 403 (dl.acm.org is bot-blocked to curl):
+crossref-200 10.1145/1498765.1498785 | Roofline | Communications of the ACM | [2009, 4]
+```
+
+### Star-count refresh (raw GitHub REST output, 2026-09-27 ~18:45 UTC)
+
+Cycle-1 pass 2 recorded counts at 13:00 UTC; re-fetched this pass for the
+named tools (raw):
+
+```
+$ curl -s https://api.github.com/repos/<owner>/<repo>   # one call per row
+ggml-org/llama.cpp |stars 129690 |push 2026-09-27T18:36:21Z |lic MIT
+vllm-project/vllm |stars 92788 |push 2026-09-27T17:48:55Z |lic Apache-2.0
+kvcache-ai/ktransformers |stars 19540 |push 2026-09-23T05:07:33Z |lic Apache-2.0
+Isk4R1oT/ridgepoint |stars 1 |push 2026-09-08T18:40:09Z |lic MIT
+pochenai/llm-inference-calculator |stars 20 |push 2026-09-09T15:58:07Z |lic None
+Pluenet-Killian/llm-roofline |stars 0 |push 2026-06-20T19:26:33Z |lic MIT
+JohnScheuer/hardware-aware-llm-runtime |stars 0 |push 2026-06-25T09:50:23Z |lic MIT
+Shun-Calvin/llm-vram-calculator |stars 1 |push 2026-09-26T06:38:02Z |lic MIT
+tommasocerruti/detllm |stars 20 |push 2026-08-20T21:07:45Z |lic Apache-2.0
+Grevix/aura |stars 4 |push 2026-09-03T17:50:25Z |lic Apache-2.0
+modelcontextprotocol/modelcontextprotocol |stars 9320 |push 2026-09-24T20:40:42Z
+```
+Deltas vs the 13:00 UTC table: llama.cpp +29, vLLM +22, KTransformers +2;
+ranking and conclusions unchanged. Comparison-table deepening beyond this
+refresh is pass 2's job per ITERATION-PROTOCOL.
+
+### OpenAI spec shape check — raw output
+
+```
+$ curl -sL https://raw.githubusercontent.com/openai/openai-openapi/master/openapi.yaml | grep -n "chat.completion.chunk\|\[DONE\]"
+2834: {"id":"chatcmpl-123","object":"chat.completion.chunk",... "choices":[{"index":0,"delta":{"role":"assistant","content":""},"logprobs":null,"finish_reason":null}]}
+2840: {"id":"chatcmpl-123","object":"chat.completion.chunk",... "choices":[{"index":0,"delta":{},"logprobs":null,"finish_reason":"stop"}]}
+23140: data: [DONE]
+```
+
+### Alternatives considered — additions for this pass
+
+| Approach | Why rejected |
+|---|---|
+| Enforcing budgets via cgroup v2 from inside fitsproof | requires privileges the target class (user laptops) does not grant; cgroup accounting ≠ RSS (source 30), so the declared unit would differ from the enforced unit. In-process RSS gate + declared-degradation records keep one consistent unit. |
+| Reporting a bootstrap CI from training configurations | the interval would describe fit residual, not generalisation; source 28's method is applied to held-out pairs only — fitting on held-out is the exact fault the calibrate tests name. |
+| Streaming responses as HTTP chunked JSON lines instead of SSE | the OpenAI SDK (source 26) and EventSource consumers expect `data:` framing; a non-SSE format breaks the "swap `base_url` and it works unchanged" M2.1 promise. |
+| Sampled RSS (poll in a thread) instead of ru_maxrss | polling can miss peaks between samples (unsound for a proof); ru_maxrss is kernel-maintained and can only over-report (source 29). Trade: stale peaks in long-lived processes, accepted and documented (P1-F3). |
+
+### Falsification for Cycle 2 — Pass 1
+
+What observation would prove this pass's ground truth (and with it the v0.2
+MANDATE design) wrong:
+
+1. **An MCP client fails to complete a `tools/call` round-trip against
+   `fitsproof mcp` while following the 2025-03-26 spec** (framing error, missing
+   `initialize`, malformed result envelope). Not observed: the in-repo
+   round-trip test passes; but the in-repo client is *ours* — an independent
+   client (e.g. an official SDK) run in pass 3 or the adversarial pass is the
+   real test. If it fails, M2.4's "an agent can consult the contract" is false
+   as specified and the server must be fixed, not the spec reinterpreted.
+2. **A streaming client (openai SDK or raw EventSource) sees the whole response
+   in one chunk, or never sees the final event.** Not observed: the multi-chunk
+   test counts chunks; if a client under buffering sees one chunk, the spec's
+   own buffering warning (source 25) was right about *our* server and M2.1's
+   "real chunked SSE" claim is false.
+3. **Held-out measurements containing zero tok/s become common enough that the
+   MAPE zero-mask changes the reported number materially** (>5 points vs the
+   unmasked definition). Not observed (no zero held-out actuals yet). Would
+   mean the headline calibration metric is biased by its own mask → report both
+   masked and unmasked, per source 27's degeneracy finding.
+4. **Bootstrap interval coverage measured over ≥10 held-out configs falls
+   below 80%.** Not yet observable (n_held_out = 1, P1-F6 OPEN). This falsifies
+   the interval fields of every Plan — the contract would be publishing
+   uncertainty numbers that do not cover.
+5. **A config admitted by `verify` shows ru_maxrss attributable to an earlier
+   request in the same process, and the *current* request actually exceeded its
+   budget below the stale peak.** Structurally possible (source 29: no reset)
+   and *undetectable by the current instrument* — if observed, the proof harness
+   must move to per-call measurement (fresh process or cgroup memory.peak) or
+   the M3(d) claim must be narrowed to "process-lifetime peak". This is the
+   strongest open threat to the "proves it" limb, and it is named here rather
+   than left for the reviewer to find.
+6. **PyInstaller onefile artifact fails `fitsproof probe` in the clean CI job**
+   on a machine without Python (hidden import or extraction failure). Would
+   falsify M1 ("a wheel-only story does not satisfy this") — the evidence bar
+   is the clean-job run, not a green build.
+
+None of 1–6 has been observed as a pass yet; 4 and 5 are structurally OPEN by
+design (need data / a better instrument), and both closure procedures are
+stated above. The conflict with the product spec's "three things no single
+existing tool does together" (aura covers the enforcement limb) is recorded in
+`docs/EVIDENCE.md` per the positioning rule; MARKET-VERDICTS wording wins.

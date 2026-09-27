@@ -9,7 +9,7 @@ Exposes three tools that an agent can call before deciding to load a model:
 Transport: stdout/stdin JSONRPC (MCP stdio transport) — the `fitsproof mcp` CLI subcommand
 starts this server and the calling agent connects to the process stdio.
 
-Protocol reference: https://spec.modelcontextprotocol.io/specification/2025-03-26/
+Protocol reference: https://modelcontextprotocol.io/specification/2025-03-26/ (Research source 23)
 This implements the minimal subset required for tools: initialize, tools/list, tools/call.
 
 Fault detected: a server that returns a tools/call response without checking whether the
