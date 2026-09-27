@@ -732,7 +732,9 @@ def test_stress_harness_margins_are_non_identical(transformer) -> None:
             record = admit(p)
 
             def make_fn(_p, _d, _s):
-                return lambda: transformer.generate(_p, max_new_tokens=_d, temperature=0.0, sampler=_s)
+                return lambda: transformer.generate(
+                    _p, max_new_tokens=_d, temperature=0.0, sampler=_s
+                )
 
             configs.append(
                 {

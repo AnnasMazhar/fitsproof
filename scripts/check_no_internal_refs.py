@@ -26,14 +26,12 @@ from pathlib import Path
 # Patterns that must never appear in committed files.
 # Each pattern is a regex; any match is a violation.
 FORBIDDEN_PATTERNS: list[re.Pattern[str]] = [
-    re.compile(r"/home/[a-zA-Z0-9_\-]+/"),   # /home/<username>/
-    re.compile(r"/Users/[a-zA-Z0-9_\-]+/"),   # macOS /Users/<username>/
+    re.compile(r"/home/[a-zA-Z0-9_\-]+/"),  # /home/<username>/
+    re.compile(r"/Users/[a-zA-Z0-9_\-]+/"),  # macOS /Users/<username>/
 ]
 
 # File extensions to check
-CHECKED_EXTENSIONS = {
-    ".py", ".json", ".toml", ".md", ".txt", ".yml", ".yaml", ".sh", ".rst"
-}
+CHECKED_EXTENSIONS = {".py", ".json", ".toml", ".md", ".txt", ".yml", ".yaml", ".sh", ".rst"}
 
 # Directories to check (relative to repo root)
 CHECKED_DIRS = [
@@ -91,9 +89,7 @@ def main() -> int:
         for path, lineno, line in violations:
             rel = path.relative_to(root)
             print(f"  {rel}:{lineno}: {line}")
-        print(
-            "\nReplace host paths with /build/ (see existing reports/ for the pattern)."
-        )
+        print("\nReplace host paths with /build/ (see existing reports/ for the pattern).")
         return 1
 
     print(f"OK: no internal path references found in {', '.join(CHECKED_DIRS)}.")
