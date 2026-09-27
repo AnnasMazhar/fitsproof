@@ -125,8 +125,16 @@ jobs:
           gh release create "$GITHUB_REF_NAME" artifacts/* \
             --title "$GITHUB_REF_NAME" --generate-notes
 
+  # Publishing to PyPI is OPT-IN. It stays skipped until a trusted publisher exists for this repo on
+  # PyPI (PyPI → project → Publishing → add publisher: repository=AnnasMazhar/fitsproof,
+  # workflow=release.yml, environment=pypi). Until that exists the job fails with
+  # `invalid-publisher`, which turns every tag red for a pure configuration reason.
+  # Enable it by setting the repository variable PYPI_PUBLISH=true (Settings → Secrets and
+  # variables → Actions → Variables). The wheel and sdist are still attached to the GitHub Release
+  # either way, so a release is installable without PyPI.
   publish-pypi:
     name: Publish to PyPI (trusted publishing — OIDC)
+    if: vars.PYPI_PUBLISH == 'true'
     needs: [build, smoke-binary, smoke-wheel]
     runs-on: ubuntu-latest
     environment: pypi
