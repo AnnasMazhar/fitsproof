@@ -396,3 +396,220 @@ New in this pass:
 Missing (M1 — binary): CI-built standalone executable requires GitHub Actions CI
 with a release job and PyInstaller. Not implementable in-repo without CI secrets.
 Recorded as deferred to cycle 2.
+---
+
+## v0.2 MANDATE pass 2 — implement-2 (2026-09-27)
+
+### Full test suite
+$ .venv/bin/python -m pytest -q
+
+tests/adversarial/test_byzantine_inputs.py ............................. [ 19%]
+....................                                                     [ 33%]
+tests/contract/test_cost.py ..............                               [ 42%]
+tests/contract/test_plan_admit_verify.py .........................       [ 59%]
+tests/engine/test_attention.py ..............                            [ 68%]
+tests/engine/test_quant.py ..............                                [ 78%]
+tests/engine/test_sampling.py ............                               [ 86%]
+tests/engine/test_server.py ......                                       [ 90%]
+tests/engine/test_speculative.py ...                                     [ 92%]
+tests/value/test_incumbent_gap.py .........                              [ 98%]
+tests/value/test_readme_snippets.py ..                                   [100%]
+
+============================= 148 passed in 50.57s =============================
+
+### ruff + format + traceability (CI gates)
+$ .venv/bin/ruff check .
+All checks passed!
+$ .venv/bin/ruff format --check .
+37 files already formatted
+$ .venv/bin/python scripts/check_research_traceability.py
+TRACEABILITY OK (core only): all core test files cite valid research sources. Checked 22 source IDs from RESEARCH.md.
+
+### Adversarial / byzantine suite (new this pass)
+$ .venv/bin/python -m pytest tests/adversarial -v
+============================= test session starts ==============================
+platform linux -- Python 3.11.15, pytest-8.3.5, pluggy-1.6.0 -- /home/openclaw/portfolio/fitsproof/.venv/bin/python
+cachedir: .pytest_cache
+hypothesis profile 'default'
+rootdir: /home/openclaw/portfolio/fitsproof
+configfile: pyproject.toml
+plugins: cov-6.1.0, hypothesis-6.135.0, platformdirs-4.12.0
+collecting ... collected 49 items
+
+tests/adversarial/test_byzantine_inputs.py::test_quantize_rejects_nan_weights PASSED [  2%]
+tests/adversarial/test_byzantine_inputs.py::test_quantize_rejects_inf_weights PASSED [  4%]
+tests/adversarial/test_byzantine_inputs.py::test_int8_asym_constant_row_no_int32_overflow PASSED [  6%]
+tests/adversarial/test_byzantine_inputs.py::test_int4_asym_constant_row_no_int32_overflow PASSED [  8%]
+tests/adversarial/test_byzantine_inputs.py::test_int4_asym_known_answer PASSED [ 10%]
+tests/adversarial/test_byzantine_inputs.py::test_plan_rejects_unknown_quant PASSED [ 12%]
+tests/adversarial/test_byzantine_inputs.py::test_plan_rejects_non_positive_or_non_finite_budget[0] PASSED [ 14%]
+tests/adversarial/test_byzantine_inputs.py::test_plan_rejects_non_positive_or_non_finite_budget[-1] PASSED [ 16%]
+tests/adversarial/test_byzantine_inputs.py::test_plan_rejects_non_positive_or_non_finite_budget[-1000000000] PASSED [ 18%]
+tests/adversarial/test_byzantine_inputs.py::test_plan_rejects_non_positive_or_non_finite_budget[nan] PASSED [ 20%]
+tests/adversarial/test_byzantine_inputs.py::test_plan_rejects_non_positive_or_non_finite_budget[inf] PASSED [ 22%]
+tests/adversarial/test_byzantine_inputs.py::test_plan_rejects_non_positive_or_non_finite_budget[-inf] PASSED [ 24%]
+tests/adversarial/test_byzantine_inputs.py::test_plan_rejects_bad_context_len[0] PASSED [ 26%]
+tests/adversarial/test_byzantine_inputs.py::test_plan_rejects_bad_context_len[-5] PASSED [ 28%]
+tests/adversarial/test_byzantine_inputs.py::test_plan_rejects_bad_context_len[1.5] PASSED [ 30%]
+tests/adversarial/test_byzantine_inputs.py::test_plan_rejects_bad_context_len[True] PASSED [ 32%]
+tests/adversarial/test_byzantine_inputs.py::test_plan_rejects_bad_context_len[64] PASSED [ 34%]
+tests/adversarial/test_byzantine_inputs.py::test_plan_rejects_bad_context_len[None] PASSED [ 36%]
+tests/adversarial/test_byzantine_inputs.py::test_plan_survives_huge_context PASSED [ 38%]
+tests/adversarial/test_byzantine_inputs.py::test_parse_budget_rejects_hostile_strings[(1+1)GB] PASSED [ 40%]
+tests/adversarial/test_byzantine_inputs.py::test_parse_budget_rejects_hostile_strings[4GB; rm -rf /] PASSED [ 42%]
+tests/adversarial/test_byzantine_inputs.py::test_parse_budget_rejects_hostile_strings[] PASSED [ 44%]
+tests/adversarial/test_byzantine_inputs.py::test_parse_budget_rejects_hostile_strings[   ] PASSED [ 46%]
+tests/adversarial/test_byzantine_inputs.py::test_parse_budget_rejects_hostile_strings[NaN] PASSED [ 48%]
+tests/adversarial/test_byzantine_inputs.py::test_parse_budget_rejects_hostile_strings[nanGiB] PASSED [ 51%]
+tests/adversarial/test_byzantine_inputs.py::test_parse_budget_rejects_hostile_strings[inf] PASSED [ 53%]
+tests/adversarial/test_byzantine_inputs.py::test_parse_budget_rejects_hostile_strings[InfinityMB] PASSED [ 55%]
+tests/adversarial/test_byzantine_inputs.py::test_parse_budget_rejects_hostile_strings[-4GiB] PASSED [ 57%]
+tests/adversarial/test_byzantine_inputs.py::test_parse_budget_rejects_hostile_strings[__import__('os')] PASSED [ 59%]
+tests/adversarial/test_byzantine_inputs.py::test_parse_budget_control_accepts_valid[4GiB-4294967296] PASSED [ 61%]
+tests/adversarial/test_byzantine_inputs.py::test_parse_budget_control_accepts_valid[512MiB-536870912] PASSED [ 63%]
+tests/adversarial/test_byzantine_inputs.py::test_parse_budget_control_accepts_valid[4096-4096] PASSED [ 65%]
+tests/adversarial/test_byzantine_inputs.py::test_parse_budget_control_accepts_valid[8589934592-8589934592] PASSED [ 67%]
+tests/adversarial/test_byzantine_inputs.py::test_parse_budget_control_accepts_valid[\uff14GiB-4294967296] PASSED [ 69%]
+tests/adversarial/test_byzantine_inputs.py::test_parse_budget_rejects_non_finite_numbers[nan] PASSED [ 71%]
+tests/adversarial/test_byzantine_inputs.py::test_parse_budget_rejects_non_finite_numbers[inf] PASSED [ 73%]
+tests/adversarial/test_byzantine_inputs.py::test_parse_budget_rejects_non_finite_numbers[-inf] PASSED [ 75%]
+tests/adversarial/test_byzantine_inputs.py::test_parse_budget_rejects_non_finite_numbers[0] PASSED [ 77%]
+tests/adversarial/test_byzantine_inputs.py::test_parse_budget_rejects_non_finite_numbers[-1] PASSED [ 79%]
+tests/adversarial/test_byzantine_inputs.py::test_guard_hostile_budget_never_allocates PASSED [ 81%]
+tests/adversarial/test_byzantine_inputs.py::test_guard_refusal_raises_does_not_fit PASSED [ 83%]
+tests/adversarial/test_byzantine_inputs.py::test_cli_hostile_args_fail_closed[argv0] PASSED [ 85%]
+tests/adversarial/test_byzantine_inputs.py::test_cli_hostile_args_fail_closed[argv1] PASSED [ 87%]
+tests/adversarial/test_byzantine_inputs.py::test_cli_hostile_args_fail_closed[argv2] PASSED [ 89%]
+tests/adversarial/test_byzantine_inputs.py::test_cli_hostile_args_fail_closed[argv3] PASSED [ 91%]
+tests/adversarial/test_byzantine_inputs.py::test_cli_hostile_args_fail_closed[argv4] PASSED [ 93%]
+tests/adversarial/test_byzantine_inputs.py::test_cli_hostile_args_fail_closed[argv5] PASSED [ 95%]
+tests/adversarial/test_byzantine_inputs.py::test_server_refuses_request_over_budget PASSED [ 97%]
+tests/adversarial/test_byzantine_inputs.py::test_server_completion_carries_admission_record PASSED [100%]
+
+============================== 49 passed in 5.45s ==============================
+
+### README snippet executor (M2: every README python block runs)
+$ .venv/bin/python -m pytest tests/value/test_readme_snippets.py -v
+============================= test session starts ==============================
+platform linux -- Python 3.11.15, pytest-8.3.5, pluggy-1.6.0 -- /home/openclaw/portfolio/fitsproof/.venv/bin/python
+cachedir: .pytest_cache
+hypothesis profile 'default'
+rootdir: /home/openclaw/portfolio/fitsproof
+configfile: pyproject.toml
+plugins: cov-6.1.0, hypothesis-6.135.0, platformdirs-4.12.0
+collecting ... collected 2 items
+
+tests/value/test_readme_snippets.py::test_readme_declares_all_four_plugin_surfaces PASSED [ 50%]
+tests/value/test_readme_snippets.py::test_readme_python_snippets_execute PASSED [100%]
+
+============================== 2 passed in 3.30s ===============================
+
+### Hostile CLI argv — fail closed, no traceback
+$ .venv/bin/fitsproof admit --budget-gb nan; echo exit=$?
+ERROR: --budget-gb must be a positive finite number, got nan
+exit=2
+$ .venv/bin/fitsproof admit --quant int2; echo exit=$?
+ERROR: unknown quant 'int2'; valid: float16, float32, int4_asym, int4_sym, int8_asym, int8_sym, none
+exit=2
+$ .venv/bin/fitsproof admit --context -5; echo exit=$?
+ERROR: context_len must be a positive integer, got -5
+exit=2
+
+### serve alias (M1 binary surface: fitsproof serve)
+$ .venv/bin/fitsproof serve --help
+usage: fitsproof server [-h] [--host HOST] [--port PORT]
+                        [--budget-gb BUDGET_GB]
+
+options:
+  -h, --help            show this help message and exit
+  --host HOST
+  --port PORT
+  --budget-gb BUDGET_GB
+                        Memory budget enforced on every request
+
+### stress harness (headline evidence)
+$ .venv/bin/fitsproof stress
+ADMITTED: 0.039 GB predicted peak <= 4.000 GB budget (margin: 3961.0 MB)
+Stress harness: 25 configs, 0 violations, 0 silent mode changes. Margin: min=3697.8 MB, median=3697.8 MB, max=3697.8 MB.
+exit=0
+
+### docs/demo.sh (end-to-end demo, real run)
+$ PATH="$PWD/.venv/bin:$PATH" bash docs/demo.sh
+=== 1. probe: characterise this machine ===
+Probing machine...
+  bandwidth:  4.25 GB/s
+  gemm:       328.45 GFLOPS
+  RAM:        33.55 GB
+  VRAM:       0.00 GB
+
+=== 2. admit: config fits a 4 GB budget ===
+ADMITTED: 0.042 GB predicted peak <= 4.000 GB budget (margin: 3958.3 MB)
+
+=== 3. admit: config cannot fit — refused, loudly (exit 2) ===
+REFUSED: needs 0.04 GB, budget 0.00 GB; nearest fitting config is Offload ~50% of layers to system RAM (CPU fallback for those layers)
+Degradation options:
+  [does not fit] Use int8_sym quantisation instead of none -> 0.011 GB
+  [does not fit] Use int4_sym quantisation instead of none -> 0.006 GB
+  [does not fit] Reduce context to 256 tokens (1/2 of 512) -> 0.040 GB
+  [does not fit] Reduce context to 128 tokens (1/4 of 512) -> 0.039 GB
+  [does not fit] Reduce context to 64 tokens (1/8 of 512) -> 0.039 GB
+  [does not fit] Offload ~50% of layers to system RAM (CPU fallback for those layers) -> 0.022 GB
+(exit code: 2)
+
+=== 4. stress: >=20 configs, zero budget violations, zero silent mode changes ===
+ADMITTED: 0.039 GB predicted peak <= 4.000 GB budget (margin: 3961.0 MB)
+Stress harness: 25 configs, 0 violations, 0 silent mode changes. Margin: min=3698.2 MB, median=3698.2 MB, max=3698.2 MB.
+exit=0
+
+### Wheel build + install on a clean venv (pip-installable)
+$ uv build
+Successfully built dist/fitsproof-0.1.0.tar.gz
+Successfully built dist/fitsproof-0.1.0-py3-none-any.whl
+$ uv pip install --python /tmp/fp-wheel dist/fitsproof-0.1.0-py3-none-any.whl
+         If this is intentional, set `export UV_LINK_MODE=copy` or use `--link-mode=copy` to suppress this warning.
+Installed 1 package in 3ms
+ ~ fitsproof==0.1.0 (from file:///home/openclaw/portfolio/fitsproof/dist/fitsproof-0.1.0-py3-none-any.whl)
+$ /tmp/fp-wheel/bin/fitsproof plan --budget-gb 4
+ADMITTED: 0.042 GB predicted peak <= 4.000 GB budget (margin: 3958.3 MB)
+$ /tmp/fp-wheel/bin/fitsproof admit --budget-gb 0.001; echo exit=$?
+REFUSED: needs 0.04 GB, budget 0.00 GB; nearest fitting config is Offload ~50% of layers to system RAM (CPU fallback for those layers)
+Degradation options:
+exit=2
+
+### Release workflow (not yet executed — requires push + v* tag)
+$ python -c yaml.safe_load(...)
+release.yml: valid YAML
+146 .github/workflows/release.yml
+
+### Launch surfaces present
+-rw-rw-r-- 1 openclaw openclaw 3731 Sep 27 13:34 COMPARISONS.md
+-rw-rw-r-- 1 openclaw openclaw 1897 Sep 27 14:54 CONTRIBUTING.md
+-rwxrwxr-x 1 openclaw openclaw 1306 Sep 27 14:55 docs/demo.sh
+-rw-rw-r-- 1 openclaw openclaw  389 Sep 27 14:54 launch/topics.txt
+topics (non-comment): 16
+19
+266 README.md
+40:# SURFACE: client
+59:# SURFACE: guard
+79:# SURFACE: server
+131:# SURFACE: mcp
+
+### Status notes (honest)
+
+- **M1 (binary):** `.github/workflows/release.yml` defines the full path — PyInstaller
+  one-file build, SHA256SUMS, a *clean job* that downloads the artifact and runs
+  `fitsproof probe` / `fitsproof plan` / refusal-exit-2 from it, a wheel-install clean
+  job, a GitHub Release attaching everything, and PyPI publish via trusted publishing
+  (OIDC, gated on the `pypi` environment). It is valid YAML (checked above) but has NOT
+  been executed: this pass may not push, and a tag is required. Executing it is a
+  push-and-tag action for the orchestrator, not an in-repo change.
+- **M2:** all four surfaces present with README snippets executed by
+  `tests/value/test_readme_snippets.py`; the HTTP response now carries the admission
+  record and refuses with 503 over budget (tests in tests/adversarial).
+- **COMPARISONS.md / launch/topics.txt / CONTRIBUTING.md / docs/demo.sh:** topics and
+  CONTRIBUTING and demo.sh written this pass; COMPARISONS.md already existed from a
+  parallel lane (2026-09-27T13:00 UTC star counts) and was verified against
+  MARKET-VERDICTS.md, not rewritten.
+- **Defect fixed while closing the gap:** `int4_asym` was a NotImplementedError stub
+  while the cost model priced it and the CLI accepted it; the asymmetric zero-point
+  also overflowed int32 on constant rows. Both now implemented and tested.

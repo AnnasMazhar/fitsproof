@@ -13,3 +13,4 @@ mutants/
 *.bak
 .hypothesis/
 uv.lock
+src/fitsproof/engine/_reference_model/
