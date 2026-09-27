@@ -2,8 +2,16 @@
 """
 scripts/check_research_traceability.py — M4: enforce that core tests cite research sources.
 
-Exits non-zero if any test file under tests/contract/ or tests/value/ does not contain
-a reference to a source ID from docs/RESEARCH.md in its module docstring.
+Two checks are performed:
+
+1. PAPER-TRACEABILITY.md check: every row marked "IMPLEMENTED" in
+   docs/PAPER-TRACEABILITY.md must have a non-empty "Our implementation" column
+   and a non-empty "Experiment" column. A row with placeholder text or empty cells
+   fails this check.
+
+2. Test-citation check: every test file under tests/contract/ and tests/value/
+   must contain a reference to a source ID from docs/RESEARCH.md in its module
+   docstring. This ensures tests are anchored to a cited paper.
 
 Wire into CI:
   - python scripts/check_research_traceability.py
@@ -19,8 +27,8 @@ Usage:
   --strict: also require tests in tests/engine/ to cite sources.
 
 Exit codes:
-  0 — all core test files have traceable source citations
-  1 — one or more core test files are missing citations
+  0 — all checks pass
+  1 — one or more checks fail
 """
 
 from __future__ import annotations
@@ -143,6 +151,68 @@ def check_traceability(
     return failures
 
 
+def check_paper_traceability_table(repo_root: Path) -> list[tuple[Path, str]]:
+    """
+    Validate docs/PAPER-TRACEABILITY.md: every row marked IMPLEMENTED must have
+    non-empty 'Our implementation' and 'Experiment' columns.
+
+    Table format (Markdown pipe-delimited):
+      | # | Paper | Mechanism | Our implementation (file:symbol) | Experiment (file::test) | ... | Status |
+
+    Returns a list of (path, reason) pairs for failures.
+    """
+    traceability_path = repo_root / "docs" / "PAPER-TRACEABILITY.md"
+    if not traceability_path.exists():
+        return [(traceability_path, "docs/PAPER-TRACEABILITY.md not found")]
+
+    content = traceability_path.read_text()
+    failures: list[tuple[Path, str]] = []
+
+    # Find table rows: lines with | that contain IMPLEMENTED or PARTIAL
+    for lineno, line in enumerate(content.splitlines(), 1):
+        if "| IMPLEMENTED" not in line and "| PARTIAL" not in line:
+            continue
+        # Parse pipe-delimited columns
+        parts = [p.strip() for p in line.strip().strip("|").split("|")]
+        # Expected columns: #, Paper, Mechanism, Implementation, Experiment, Claim, Status
+        if len(parts) < 7:
+            failures.append(
+                (
+                    traceability_path,
+                    f"Line {lineno}: row has {len(parts)} columns (expected ≥7): {line[:80]}",
+                )
+            )
+            continue
+        source_num = parts[0]
+        impl_col = parts[3]  # "Our implementation (file:symbol)"
+        experiment_col = parts[4]  # "Experiment (file::test)"
+        status_col = parts[6]
+
+        if status_col not in {"IMPLEMENTED", "PARTIAL"}:
+            continue  # skip rows with other statuses
+
+        empty_markers = {"", "—", "-", "N/A", "TODO", "TBD"}
+
+        if impl_col in empty_markers:
+            failures.append(
+                (
+                    traceability_path,
+                    f"Source {source_num}: 'Our implementation' column is empty for a {status_col} row. "
+                    f"Add a file:symbol reference or change status.",
+                )
+            )
+        if experiment_col in empty_markers:
+            failures.append(
+                (
+                    traceability_path,
+                    f"Source {source_num}: 'Experiment' column is empty for a {status_col} row. "
+                    f"Add a file::test reference or change status.",
+                )
+            )
+
+    return failures
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(
         description="Check that core test files cite research sources from RESEARCH.md."
@@ -161,6 +231,23 @@ def main() -> int:
     args = parser.parse_args()
 
     repo_root = args.root or Path(__file__).parent.parent
+
+    # Check 1: PAPER-TRACEABILITY.md table completeness
+    table_failures = check_paper_traceability_table(repo_root)
+    if table_failures:
+        print("TRACEABILITY CHECK FAILED — docs/PAPER-TRACEABILITY.md has incomplete rows:\n")
+        for path, reason in table_failures:
+            rel = path.relative_to(repo_root) if path.is_relative_to(repo_root) else path
+            print(f"  {rel}")
+            print(f"    {reason}\n")
+        print(
+            "Every IMPLEMENTED row in PAPER-TRACEABILITY.md must name a file:symbol "
+            "implementation and a file::test experiment. "
+            "Papers with no implementation or test must be removed from the bibliography."
+        )
+        return 1
+
+    # Check 2: test-file citation check
     failures = check_traceability(repo_root, strict=args.strict)
 
     if failures:
@@ -182,7 +269,8 @@ def main() -> int:
     mode = "(strict)" if args.strict else "(core only)"
     print(
         f"TRACEABILITY OK {mode}: all core test files cite valid research sources. "
-        f"Checked {len(valid_ids)} source IDs from RESEARCH.md."
+        f"Checked {len(valid_ids)} source IDs from RESEARCH.md. "
+        f"PAPER-TRACEABILITY.md table validated ({sum(1 for line in (repo_root / 'docs' / 'PAPER-TRACEABILITY.md').read_text().splitlines() if '| IMPLEMENTED' in line)} IMPLEMENTED rows)."
     )
     return 0
 
