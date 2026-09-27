@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "fitsproof"
-version = "0.1.0"
+version = "0.1.1"
 description = "Proves your local LLM fits in memory — or refuses loudly instead of a silent OOM."
 readme = "README.md"
 license = { file = "LICENSE" }
