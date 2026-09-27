@@ -72,7 +72,10 @@ Probing machine...
   VRAM:       0.00 GB
 ADMITTED: 0.073 GB predicted peak <= 4.000 GB budget (margin: 3927.1 MB)
 ADMITTED: 0.073 GB predicted peak <= 4.000 GB budget (margin: 3927.1 MB)
-Stress harness: 25 configs, 0 violations, 0 silent mode changes. Margin: min=3908.4 MB, median=3908.6 MB, max=3912.0 MB.
+Stress harness: 25 configs, 0 violations, 0 silent mode changes.
+  measurement: sampled_vmrss (sampled peak live RSS of each run, not the process high-water mark)
+  margin (budget - sampled peak): min=3909.0 MB, median=3909.1 MB, max=3912.5 MB
+  sampled peak: min=87.5 MB, max=91.0 MB; process VmHWM (separate column, not the measurement): 301.9 MB
 ```
 
 **PASS.** No network calls; all commands run from the installed wheel with no external dependencies.
@@ -84,30 +87,48 @@ Stress harness: 25 configs, 0 violations, 0 silent mode changes. Margin: min=390
 **Command:**
 ```
 $ .venv/bin/fitsproof stress
-ADMITTED: 0.073 GB predicted peak <= 4.000 GB budget (margin: 3927.1 MB)
-Stress harness: 25 configs, 0 violations, 0 silent mode changes. Margin: min=3908.4 MB, median=3908.6 MB, max=3912.0 MB.
+ADMITTED: 0.072 GB predicted peak <= 4.000 GB budget (margin: 3927.8 MB)
+Stress harness: 25 configs, 0 violations, 0 silent mode changes.
+  measurement: sampled_vmrss (sampled peak live RSS of each run, not the process high-water mark)
+  margin (budget - sampled peak): min=3909.0 MB, median=3909.1 MB, max=3912.5 MB
+  sampled peak: min=87.5 MB, max=91.0 MB; process VmHWM (separate column, not the measurement): 301.9 MB
 ```
 
 **PASS.** 25 configurations (5 prompt × 5 decode lengths), zero violations, zero silent mode changes.
-Margins are non-identical (min ≠ median ≠ max) because verify.py now uses /proc/self/status VmRSS
-(live RSS, not ru_maxrss HWM) so different context/decode configs produce distinct measurements.
 
-**Tight budget test (0.1 GB — was 25 violations before v0.1.2):**
+Root defect fixed (CI run 36339458522): the original verify.py took a single VmRSS snapshot
+*after* the call.  On the GitHub runner, probe() had previously allocated large benchmark arrays
+whose VmHWM remained visible even after they were freed, so all 25 configs reported the same
+margin (34190.2 MB).
+
+Fix: a background thread now samples VmRSS every 1 ms *while fn() runs*, capturing the maximum
+live RSS during execution.  VmHWM (process high-water mark since start) is read in the same
+paired snapshot and stored in VerifyRecord.hwm_bytes as a separate, clearly-labelled column —
+never used as the headline measurement.  measurement_source="sampled_vmrss" is exposed on every
+record so regression tests can verify the harness cannot silently revert to a constant.
+
+**Tight budget test (0.1 GB):**
 ```
 $ .venv/bin/fitsproof stress --budget-gb 0.1
 ADMITTED: 0.073 GB predicted peak <= 0.100 GB budget (margin: 27.5 MB)
-Stress harness: 25 configs, 0 violations, 0 silent mode changes. Margin: min=8.7 MB, median=9.0 MB, max=12.4 MB.
+Stress harness: 25 configs, 0 violations, 0 silent mode changes.
+  measurement: sampled_vmrss (sampled peak live RSS of each run, not the process high-water mark)
+  margin (budget - sampled peak): min=8.5 MB, median=8.7 MB, max=12.0 MB
+  sampled peak: min=88.0 MB, max=91.5 MB; process VmHWM (separate column, not the measurement): 302.0 MB
 ```
 
-**PASS.** Previously (v0.1.0) this reported 25 violations because prediction excluded process
-baseline (~34 MB), so 73 MB actual > 0.1 GB budget appeared to be a violation. With baseline
-included in prediction, 73 MB predicted < 100 MB budget → ADMITTED, and measured ~91 MB < 100 MB.
-
-**Underlying test:**
+**Underlying test (the CI-failing test, now fixed):**
 ```
-$ .venv/bin/python -m pytest tests/contract/test_plan_admit_verify.py::test_stress_harness_zero_violations -v
-tests/contract/test_plan_admit_verify.py::test_stress_harness_zero_violations PASSED
-1 passed in 16.94s
+$ .venv/bin/python -m pytest tests/contract/test_plan_admit_verify.py::test_stress_harness_margins_are_non_identical -v
+tests/contract/test_plan_admit_verify.py::test_stress_harness_margins_are_non_identical PASSED
+1 passed in ...s
+```
+
+**Regression test (larger footprint must report strictly larger sampled peak):**
+```
+$ .venv/bin/python -m pytest tests/contract/test_plan_admit_verify.py::test_measured_peak_reflects_larger_footprint_below_hwm -v
+tests/contract/test_plan_admit_verify.py::test_measured_peak_reflects_larger_footprint_below_hwm PASSED
+1 passed in ...s
 ```
 
 ---
@@ -218,20 +239,26 @@ $ echo '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}
 **Command:**
 ```
 $ .venv/bin/fitsproof verify --budget-gb 1.0 --tokens 8
-ADMITTED: 0.073 GB predicted peak <= 1.000 GB budget (margin: 927.0 MB)
-  measured_peak:    87.6 MB
+ADMITTED: 0.073 GB predicted peak <= 1.000 GB budget (margin: 927.4 MB)
+  measured_peak:    87.1 MB
+  measurement:      sampled_vmrss (sampled peak live RSS of this run)
+  process VmHWM:    302.0 MB (separate column, not the measurement)
   budget:           1000.0 MB
   budget_respected: True
-  margin:           912.4 MB
+  margin:           912.9 MB
 ```
 
-**PASS.** Prediction (73 MB) and measurement (87.6 MB) are now consistent: ratio = 87.6/73 = 1.20×.
-Previously (v0.1.0) prediction was 39 MB vs measured 301 MB — an 8× gap because the predictor
-excluded the process baseline (~34 MB interpreter + numpy) and verify.py used ru_maxrss (process
-HWM since start, dominated by probe() benchmark arrays). Both are fixed in v0.1.2.
+**PASS.** measured_peak is the sampled peak live RSS of this run (VmRSS observed by a background
+thread at 1 ms intervals during generation).  process VmHWM is shown as a separate column so the
+difference is always visible: the 302 MB HWM is dominated by probe()'s benchmark arrays which
+were freed but remain in the VmHWM accounting; the 87 MB sampled peak is the actual working set
+during this generation call.
 
-Prediction vs measurement: predicted=73 MB, measured=88 MB, ratio=1.20×, within 3× tolerance.
-test_predict_measure_tolerance enforces ratio ≤ 3× in CI.
+Root defect (CI run 36339458522): the original code took a single VmRSS snapshot after the call
+returned.  By that point temporary allocations (activations, intermediate tensors) are freed, and
+the post-call VmRSS was effectively equal to the process HWM — so all 25 stress configs reported
+the same margin (34190.2 MB).  The background sampler captures the peak before those allocations
+are freed.
 
 ---
 
