@@ -1,6 +1,12 @@
 """
 Tests for fitsproof.contract.plan, fitsproof.contract.admit, fitsproof.contract.verify.
 
+Research source mappings (M4 — QUALITY-CONTRACT §4 / fitsproof.md M4):
+  [1] Williams et al. 2009 (Roofline): bandwidth-bound decode throughput formula.
+  [2] Sheng et al. 2023 (FlexGen §3.1): peak = weights + KV + activations.
+  [4] Ainslie et al. 2023 (GQA): KV cache formula.
+  [7] Frantar et al. 2022 (GPTQ): quantisation memory reduction.
+
 Faults detected by each test:
   test_plan_fits_under_budget:
     A config whose predicted_peak < budget must return Verdict.FITS.

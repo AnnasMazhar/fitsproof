@@ -1,6 +1,12 @@
 """
 Tests for fitsproof.contract.cost and fitsproof.contract.probe.
 
+Research source mappings (M4 — QUALITY-CONTRACT §4 / fitsproof.md M4):
+  [1] Williams et al. 2009 (Roofline): decode_tok_s = bandwidth / weight_bytes.
+  [2] Sheng et al. 2023 (FlexGen §3.1): single-batch decode bandwidth-bound.
+  [4] Ainslie et al. 2023 (GQA): KV cache size = 2*n_layers*n_kv_heads*seq*head_dim*bytes.
+  [7] Frantar et al. 2022 (GPTQ): int8 halves, int4 quarters weight bytes vs float32.
+
 Faults detected by each test:
   test_weight_bytes_reference_model:
     Hand-computed weight_bytes for REFERENCE_CONFIG (float32). If any

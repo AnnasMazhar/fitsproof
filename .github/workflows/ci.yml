@@ -35,5 +35,8 @@ jobs:
       - name: Format check (ruff format)
         run: ruff format --check .
 
+      - name: Research traceability check
+        run: python scripts/check_research_traceability.py
+
       - name: Test (pytest)
         run: pytest -q
