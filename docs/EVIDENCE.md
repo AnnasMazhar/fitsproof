@@ -1,9 +1,65 @@
 # EVIDENCE — fitsproof v0.1 Claim Register
 
-Raw terminal output only. All commands run on 2026-09-27.
+Raw terminal output only. All commands run on 2026-09-27/28.
 Machine: x86-64, no CUDA toolkit, 31 GB RAM, 4 GB M2000 GPU (VRAM unusable without
 CUDA — CPU path is the honest target). Python 3.11.15.
 Home directories redacted to `/build/`.
+
+---
+
+## Cycle 2, Pass 5 — Fresh test run (2026-09-28)
+
+```
+$ .venv/bin/python -m pytest -q
+======================= 164 passed in 111.79s (0:01:51) ========================
+```
+
+Changes from cycle 1 (156 tests):
+- +8 tests: 8 new cycle-2 adversarial tests in test_byzantine_inputs.py covering
+  verify_run refused-record bypass, plan verdict immutability after mutation,
+  degradation chain completeness, MCP plan/admit error propagation, client metrics
+  positivity, guard multi-call consistency, stress harness violation exit code.
+
+```
+$ .venv/bin/ruff check . && .venv/bin/ruff format --check .
+All checks passed!
+39 files already formatted
+
+$ .venv/bin/python scripts/check_research_traceability.py
+TRACEABILITY OK (core only): all core test files cite valid research sources.
+Checked 34 source IDs from RESEARCH.md. PAPER-TRACEABILITY.md table validated (15 IMPLEMENTED rows).
+```
+
+Stress harness (cycle 2 — per-config RSS delta, not lifetime HWM):
+```
+$ .venv/bin/fitsproof stress
+ADMITTED: 0.039 GB predicted peak <= 4.000 GB budget (margin: 3961.0 MB)
+Stress harness: 25 configs, 0 violations, 0 silent mode changes. Margin: min=3909.2 MB, median=3912.4 MB, max=3912.8 MB.
+```
+
+The margin distribution is now a real distribution (min ≠ median ≠ max), not a
+single number repeated 25 times. This is the ADV-04 fix: per-config VmRSS delta
+rather than process-lifetime ru_maxrss.
+
+Probe:
+```
+$ .venv/bin/fitsproof probe
+Probing machine...
+  bandwidth:  7.12 GB/s
+  gemm:       328.76 GFLOPS
+  RAM:        33.55 GB
+  VRAM:       0.00 GB
+```
+
+ADV-01..05 fix status (all closed in commit 1e8dbcc):
+- ADV-01 (blocker): FlexGen §3.1 mis-attribution fixed — cost.py cites Williams et al. 2009 (source 1).
+- ADV-02 (blocker): GPTQ per-channel→per-group corrected in RESEARCH.md source 7.
+- ADV-03 (blocker): mode_changed_silently now detectable — test_verify_mode_changed_silently_detectable passes.
+- ADV-04 (major): per-config RSS delta via /proc/self/status VmRSS — margin distribution is now non-degenerate.
+- ADV-05 (major): speculative draft uses seed=999 (different from target seed=42) — equality property is genuinely at risk.
+- ADV-08 (minor): README Limitations RSS bullet updated — now correctly states per-config delta, not lifetime HWM.
+
+---
 
 ---
 

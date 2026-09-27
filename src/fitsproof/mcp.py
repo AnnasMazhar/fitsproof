@@ -180,7 +180,10 @@ def _handle_tool_call(
         context_len = int(args.get("context_len", 512))
         budget = args.get("budget", "4GiB")
         quant = args.get("quant", "none")
-        p = client.plan(context_len=context_len, budget_bytes=budget, quant=quant)
+        try:
+            p = client.plan(context_len=context_len, budget_bytes=budget, quant=quant)
+        except (ValueError, TypeError) as exc:
+            return err(json.dumps({"error": f"Invalid arguments: {exc}"}))
         result = {
             "verdict": p.verdict.value,
             "predicted_peak_gb": round(p.predicted_peak_bytes / 1e9, 4),
@@ -206,7 +209,10 @@ def _handle_tool_call(
         context_len = int(args.get("context_len", 512))
         budget = args.get("budget", "4GiB")
         quant = args.get("quant", "none")
-        p = client.plan(context_len=context_len, budget_bytes=budget, quant=quant)
+        try:
+            p = client.plan(context_len=context_len, budget_bytes=budget, quant=quant)
+        except (ValueError, TypeError) as exc:
+            return err(json.dumps({"status": "refused", "message": f"Invalid arguments: {exc}"}))
         record = _admit(p)
         result = {
             "status": record.status.value,

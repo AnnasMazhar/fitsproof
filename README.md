@@ -270,8 +270,11 @@ These are honest. A repo with no stated limitations is not credible.
   streaming adds to the bandwidth cost. The current formula is accurate for the
   reference model and short contexts; it underpredicts decode time at very long contexts.
 
-- **RSS measurement is coarse.** Peak RSS on Linux is the high-water mark since
-  process start. Allocations freed before the post-call sample may not be captured.
+- **RSS measurement is per-config delta, not absolute.** The proof harness reads
+  `/proc/self/status` VmRSS (current RSS) before and after each run and reports
+  the delta. It cannot attribute RSS held across calls (e.g. NumPy arena memory)
+  to any single configuration, so the margin figures are conservative rather than
+  exact. The per-config peak is the maximum of pre- and post-call samples.
 
 - **Speculative decoding equality only holds at temperature=0.** Probabilistic
   acceptance (temperature > 0) requires rejection sampling (Algorithm 1 of
