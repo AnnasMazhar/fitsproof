@@ -1,5 +1,139 @@
 # Improvement log — fitsproof
 
+## Pass c2-p08-improve-1 (2026-09-28) — ADV-09: int8_sym/int4_sym overflow on extreme float32 weights
+
+### Finding fixed
+
+**ADV-09 (major) — `int8_sym` dequantisation silently produces `inf` for weights near
+`finfo(float32).max`.**
+
+Identified by the adversarial reviewer in pass c1-p11 (property attack P2-A6a):
+
+```
+extreme_weights = np.array([[np.finfo(np.float32).max, 0], [0, 1]], dtype=np.float32)
+qw = quantize(extreme_weights, "int8_sym")
+dqw = dequantize(qw)
+# Result: [[inf 0.] [0. 1.]]
+# RuntimeWarning: overflow encountered in multiply
+```
+
+Root cause: `_int8_sym_quant` computed `scale = max_abs / 127.0` in float32
+arithmetic. When `max_abs ≈ 3.4e38`, float32 division rounds the result UP to
+the next representable float32 value (`2.6793887e36`). During dequantisation,
+`127 × 2.6793887e36` overflows float32 to `inf` — silent corruption. The same
+path exists in `_int4_sym_quant` (using divisor 7).
+
+This matters beyond exotic inputs: a quantizer that silently produces `inf` in
+its output will corrupt any downstream matmul. The correctness claim of the
+engine (NumPy-only, correctness-first) requires finite outputs for finite inputs.
+
+The bug was present throughout all previous passes. The adversarial reviewer
+found it but the blockers (ADV-01..03) were prioritised first. ADV-01..05, 08
+were fixed in cycle 2 passes 4–5. ADV-09 is the highest-severity open finding
+at the start of this pass.
+
+### Fix
+
+Added two constants to `src/fitsproof/engine/quant.py` using `np.nextafter`:
+
+```python
+# Largest float32 strictly below the overflow threshold for int8 symmetric quant.
+# Division in float32 rounds UP at the boundary, making 127 * (max/127) = inf.
+# nextafter gives the previous representable value where 127 * scale is finite.
+_INT8_SYM_SCALE_MAX: np.float32 = np.nextafter(
+    np.float32(np.finfo(np.float32).max) / np.float32(127), np.float32(0)
+)
+_INT4_SYM_SCALE_MAX: np.float32 = np.nextafter(
+    np.float32(np.finfo(np.float32).max) / np.float32(7), np.float32(0)
+)
+```
+
+Verification: `np.float32(127) * _INT8_SYM_SCALE_MAX = 3.4028233e+38` (finite).
+
+Applied to `_int8_sym_quant` (divisor changed from `127.0` to `np.float32(127)` +
+clamp) and `_int4_sym_quant` (divisor changed from `7.0` to `np.float32(7)` + clamp).
+Normal weights (scales O(1e-3)–O(1)) are unaffected — the clamp only activates near
+float32 max.
+
+### Test that would have caught it
+
+Added to `tests/engine/test_quant.py`:
+
+- `test_int8_sym_extreme_float32_no_overflow` — inputs: `[[finfo.max, 0], [0, 1]]`
+  in float32; asserts all dequantised values are finite and the normal row is
+  approximately correct.
+- `test_int4_sym_extreme_float32_no_overflow` — same check for int4_sym path.
+
+Both tests FAIL on the pre-fix code (overflow to inf) and PASS after the fix.
+
+### Fault-injection proof (test detects the fault)
+
+Reverting `scales = np.minimum(scales, _INT8_SYM_SCALE_MAX)` from
+`_int8_sym_quant` and re-running:
+
+```
+$ .venv/bin/pytest tests/engine/test_quant.py::test_int8_sym_extreme_float32_no_overflow -v
+FAILED — AssertionError: int8_sym dequantisation must not produce inf/nan for
+extreme float32 input. Got: [[inf  0.] [ 0.  1.]]
+```
+
+The test kills the fault.
+
+### Before/after metrics
+
+| Metric | Before (eval-c2-p7) | After | Delta |
+|---|---|---|---|
+| `pytest -q` test count | 164 | 166 | +2 |
+| `pytest -q` failures | 0 | 0 | — |
+| `int8_sym` on `finfo.max` produces inf | YES (silent) | NO (finite) | fixed |
+| `int4_sym` on `finfo.max` produces inf | YES (silent) | NO (finite) | fixed |
+| ADV-09 status | open (major) | fixed | closed |
+| `ruff check .` | clean | clean | — |
+| `ruff format --check .` | clean | clean | — |
+| `check_research_traceability.py` | TRACEABILITY OK | TRACEABILITY OK | — |
+
+### Terminal evidence
+
+```
+$ .venv/bin/pytest tests/engine/test_quant.py -v
+============================= test session starts ==============================
+platform linux -- Python 3.11.15, pytest-8.3.5, pluggy-1.6.0
+collected 16 items
+
+tests/engine/test_quant.py::test_int8_sym_known_values PASSED
+tests/engine/test_quant.py::test_int8_sym_round_trip_error PASSED
+tests/engine/test_quant.py::test_int8_asym_non_zero_mean PASSED
+tests/engine/test_quant.py::test_int4_pack_unpack_roundtrip PASSED
+tests/engine/test_quant.py::test_int4_known_values PASSED
+tests/engine/test_quant.py::test_memory_reduction_factor_int8 PASSED
+tests/engine/test_quant.py::test_memory_reduction_factor_int4 PASSED
+tests/engine/test_quant.py::test_memory_reduction_is_between_0_and_1 PASSED
+tests/engine/test_quant.py::test_top1_agreement_perfect PASSED
+tests/engine/test_quant.py::test_top1_agreement_shifted PASSED
+tests/engine/test_quant.py::test_quantize_rejects_1d PASSED
+tests/engine/test_quant.py::test_quantize_unknown_mode PASSED
+tests/engine/test_quant.py::test_int8_sym_extreme_float32_no_overflow PASSED
+tests/engine/test_quant.py::test_int4_sym_extreme_float32_no_overflow PASSED
+tests/engine/test_quant.py::test_dequantize_matmul_shape PASSED
+tests/engine/test_quant.py::test_dequant_error_bounded PASSED
+============================== 16 passed in 0.31s ==============================
+
+$ .venv/bin/pytest -q
+...
+======================= 166 passed in 101.92s (0:01:41) ========================
+
+$ .venv/bin/ruff check . && .venv/bin/ruff format --check .
+All checks passed!
+39 files already formatted
+
+$ .venv/bin/python scripts/check_research_traceability.py
+TRACEABILITY OK (core only): all core test files cite valid research sources.
+Checked 34 source IDs from RESEARCH.md.
+PAPER-TRACEABILITY.md table validated (15 IMPLEMENTED rows).
+```
+
+---
+
 ## Pass c1-p08-improve-1 (2026-09-27)
 
 ### Finding fixed

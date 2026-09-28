@@ -20,6 +20,23 @@ import numpy as np
 
 QuantMode = Literal["int8_sym", "int8_asym", "int4_sym", "int4_asym"]
 
+# ADV-09 fix: maximum safe per-channel scale for int8 symmetric quantisation.
+# The dequantised value is q * scale where q ∈ [-127, 127].
+# To keep q * scale within float32 range (max ≈ 3.4e38), we need:
+#   scale <= finfo(float32).max / 127
+# However, floating-point division rounds UP at the float32 boundary, so
+# finfo(float32).max / 127 (in either float32 or float64) rounds to a value s
+# such that 127 * s = inf (float32 overflow). We use np.nextafter(..., 0) to
+# get the largest float32 that is strictly BELOW the overflow threshold.
+_INT8_SYM_SCALE_MAX: np.float32 = np.nextafter(
+    np.float32(np.finfo(np.float32).max) / np.float32(127), np.float32(0)
+)
+
+# Same bound for int4 symmetric (q ∈ [-7, 7]).
+_INT4_SYM_SCALE_MAX: np.float32 = np.nextafter(
+    np.float32(np.finfo(np.float32).max) / np.float32(7), np.float32(0)
+)
+
 
 @dataclass
 class QuantizedWeight:
@@ -55,6 +72,11 @@ def _int8_sym_quant(w: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
     Returns (quantised, scales).
     Fault detected: using 128 instead of 127 clips the range asymmetrically;
     tested with a known-value weight and exact expected output.
+
+    ADV-09 fix: scales are clamped to _INT8_SYM_SCALE_MAX so that the
+    dequantised value (q * scale, q in [-127, 127]) never overflows float32.
+    Without clamping, max_abs = finfo(float32).max yields scale ≈ 2.68e36,
+    and 127 * 2.68e36 overflows float32 to inf silently.
     """
     assert w.ndim >= 1
     # Treat last dim as input; first dim as output channels
@@ -63,7 +85,12 @@ def _int8_sym_quant(w: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
     # Per-channel max absolute value
     max_abs = np.abs(flat).max(axis=1)
     max_abs = np.where(max_abs == 0, 1e-8, max_abs)  # avoid division by zero
-    scales = max_abs / 127.0
+    scales = max_abs / np.float32(127)
+    # Clamp scale so that q * scale (q = ±127) stays within float32 range.
+    # Division by 127 in float32 rounds UP at the float32 boundary, making
+    # 127 * scale = inf (ADV-09). _INT8_SYM_SCALE_MAX is the largest float32
+    # strictly below that overflow threshold (computed via nextafter).
+    scales = np.minimum(scales, _INT8_SYM_SCALE_MAX)
     quantised = np.round(flat / scales[:, np.newaxis]).clip(-127, 127).astype(np.int8)
     return quantised.reshape(w.shape), scales
 
@@ -173,7 +200,9 @@ def _int4_sym_quant(w: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
         flat = np.pad(flat, ((0, 0), (0, 1)))
     max_abs = np.abs(flat).max(axis=1)
     max_abs = np.where(max_abs == 0, 1e-8, max_abs)
-    scales = max_abs / 7.0
+    scales = max_abs / np.float32(7)
+    # ADV-09 fix: clamp scale so q * scale (q = ±7) stays within float32 range.
+    scales = np.minimum(scales, _INT4_SYM_SCALE_MAX)
     quantised = np.round(flat / scales[:, np.newaxis]).clip(-7, 7).astype(np.int8)
     packed = _int4_pack(quantised)
     return packed, scales

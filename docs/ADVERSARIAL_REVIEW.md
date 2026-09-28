@@ -600,7 +600,7 @@ cannot prevent a caller who explicitly unwraps it. See ADV-11.
 | ADV-06 | minor | calibration_demo numbers load-dependent | §1 C3 pass 1 | open |
 | ADV-07 | minor | ACM link 403s automation | §2a pass 1 | limitation |
 | ADV-08 | minor | README RSS limitation self-contradicts | pass 1 | open |
-| ADV-09 | major | int8_sym dequantisation overflows to inf for float32-max weights | §5 P2-A6a | **new — pass 2** |
+| ADV-09 | major | int8_sym dequantisation overflows to inf for float32-max weights | §5 P2-A6a | **fixed (c2-p08)** — _INT8_SYM_SCALE_MAX = nextafter(finfo.max/127, 0) clamps scale; same fix for int4_sym. Tests: test_int8_sym_extreme_float32_no_overflow, test_int4_sym_extreme_float32_no_overflow |
 | ADV-10 | minor | Server budget is per-request, not global; concurrent requests not tracked | §5 P2-A7 | **new — pass 2, limitation** |
 | ADV-11 | minor | @guard decorator bypassable via __wrapped__ | §5 P2-A8 | **new — pass 2, limitation (Python stdlib)** |
 
