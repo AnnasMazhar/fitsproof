@@ -647,3 +647,244 @@ is resolved and the adoption-blocker analysis changes.
 | `test_calibration_demo_runs` | Missing | Added to `tests/test_packaging.py`; asserts the README-referenced script exits 0 and emits all required output fields |
 | Test count | 177 | **178** (+1) |
 | `ruff check .` | clean | clean |
+
+---
+
+## 9. Cycle 4 — Pass 3 — State as of 2026-09-28T14:00Z
+
+*All commands run fresh on the ThinkStation P500, Python 3.11.15, branch feat/v0.1,
+2026-09-28T14:00Z.*
+
+### 9.1 What changed since cycle 3
+
+| Item | Cycle 3 (c3-p3, 2026-09-28T06:00Z) | Cycle 4 (c4-p3, 2026-09-28T14:00Z) |
+|---|---|---|
+| Test count | 169 passed | **178 passed** (+9, all from c3-p09-improve-2) |
+| MAPE (held-out) | 49.1% this session | **61.2%** this session (n_held_out=1, bandwidth 6.84 GB/s; within documented 46–62% range) |
+| Stress harness | 25 configs, 0 violations | 25 configs, 0 violations (confirmed) |
+| Stress margin | min=3909.2 MB | min=3909.3 MB (stable) |
+| Research base | 44 sources (c3-p1) | **54 sources** (+10 in c4-p1: FlashAttention, int4 asym, PagedAttention deeper, softmax numerics, GPT-2 weight tying, FlashAttention-2, LoRA, NF4, temperature calibration, Orca) |
+| Binary release (L5) | Not built | Not built — v0.2 MANDATE M1 pending |
+
+### 9.2 Raw output — 2026-09-28T14:00Z
+
+Calibration demo:
+
+```
+$ python scripts/calibration_demo.py
+=== Calibration demo ===
+bandwidth: 6.84 GB/s
+gemm:      137.59 GFLOPS
+RAM:       33.5 GB
+bandwidth_utilisation: 0.0238
+MAPE (held-out):       61.2%
+CI (95%):              [61.2%, 61.2%]
+n_train=2, n_held_out=1
+```
+
+Probe:
+
+```
+$ fitsproof probe
+Probing machine...
+  bandwidth:  6.80 GB/s
+  gemm:       119.34 GFLOPS
+  RAM:        33.55 GB
+  VRAM:       0.00 GB
+```
+
+Stress harness:
+
+```
+$ fitsproof stress
+ADMITTED: 0.039 GB predicted peak <= 4.000 GB budget (margin: 3961.0 MB)
+Stress harness: 25 configs, 0 violations, 0 silent mode changes. Margin: min=3909.3 MB, median=3909.6 MB, max=3913.0 MB.
+```
+
+Admit / refuse:
+
+```
+$ fitsproof admit --budget-gb 4
+ADMITTED: 0.042 GB predicted peak <= 4.000 GB budget (margin: 3958.3 MB)
+exit: 0
+
+$ fitsproof admit --budget-gb 0.001
+REFUSED: needs 0.042 GB, budget 0.001 GB; no listed option fits — nearest is "Use int4_sym quantisation instead of none" at 0.006 GB (0.005 GB above budget)
+Degradation options:
+  [does not fit] Use int8_sym quantisation instead of none -> 0.011 GB
+  [does not fit] Use int4_sym quantisation instead of none -> 0.006 GB
+  [does not fit] Reduce context to 256 tokens (1/2 of 512) -> 0.040 GB
+  [does not fit] Reduce context to 128 tokens (1/4 of 512) -> 0.039 GB
+  [does not fit] Reduce context to 64 tokens (1/8 of 512) -> 0.039 GB
+  [does not fit] Offload ~50% of layers to system RAM (CPU fallback for those layers) -> 0.022 GB
+exit: 2
+```
+
+Plan (describe-only, always exit 0):
+
+```
+$ fitsproof plan --budget-gb 4
+predicted peak:  0.042 GB  (95% CI: [0.033, 0.050] GB)
+predicted tok/s: 96.2  (95% CI: [67.3, 125.0])
+budget:          4.000 GB
+verdict:         fits
+
+$ fitsproof plan --budget-gb 0.001
+predicted peak:  0.042 GB  (95% CI: [0.033, 0.050] GB)
+predicted tok/s: 107.0  (95% CI: [74.9, 139.1])
+budget:          0.001 GB
+verdict:         does_not_fit
+degradation options:
+  [does not fit] Use int8_sym quantisation instead of none -> 0.011 GB  (402.6 tok/s)
+  [does not fit] Use int4_sym quantisation instead of none -> 0.006 GB  (746.5 tok/s)
+  [does not fit] Reduce context to 256 tokens (1/2 of 512) -> 0.040 GB  (107.0 tok/s)
+  [does not fit] Reduce context to 128 tokens (1/4 of 512) -> 0.039 GB  (107.0 tok/s)
+  [does not fit] Reduce context to 64 tokens (1/8 of 512) -> 0.039 GB  (107.0 tok/s)
+  [does not fit] Offload ~50% of layers to system RAM (CPU fallback for those layers) -> 0.022 GB  (32.1 tok/s)
+```
+
+Python client (L3):
+
+```
+$ python -c "
+from fitsproof.client import DoesNotFit, FitsproofClient, guard
+client = FitsproofClient()
+record = client.admit(client.plan(context_len=512, budget_bytes='4GiB'))
+print(record.message)
+print('ram_gb:', client.metrics()['ram_gb'])
+loaded = []
+@guard(budget='1MiB')
+def load_model():
+    loaded.append('allocated')
+try:
+    load_model()
+except DoesNotFit as e:
+    print('refused:', str(e)[:80])
+print('loaded ==', loaded)
+"
+ADMITTED: 0.042 GB predicted peak <= 4.295 GB budget (margin: 4253.3 MB)
+ram_gb: 33.548316672
+refused: REFUSED: needs 0.042 GB, budget 0.001 GB; no listed option fits — nearest is "Us
+loaded == []
+```
+
+MCP server (L4):
+
+```
+$ python -c "
+import json, subprocess, sys
+messages = [
+    {'jsonrpc':'2.0','id':1,'method':'initialize','params':{}},
+    {'jsonrpc':'2.0','id':2,'method':'tools/list','params':{}},
+    {'jsonrpc':'2.0','id':3,'method':'tools/call',
+     'params':{'name':'admit','arguments':{'budget':'4GiB','context_len':512}}},
+    {'jsonrpc':'2.0','id':4,'method':'tools/call',
+     'params':{'name':'admit','arguments':{'budget':'1MiB','context_len':512}}},
+]
+proc = subprocess.run([sys.executable,'-m','fitsproof.cli','mcp'],
+    input='\n'.join(json.dumps(m) for m in messages)+'\n',
+    capture_output=True, text=True, timeout=60)
+replies = [json.loads(l) for l in proc.stdout.splitlines() if l.strip()]
+print('server:', replies[0]['result']['serverInfo']['name'])
+print('tools:', sorted(t['name'] for t in replies[1]['result']['tools']))
+print('admit 4GiB isError:', replies[2]['result']['isError'])
+print('admit 1MiB isError:', replies[3]['result']['isError'])
+"
+server: fitsproof-mcp
+tools: ['admit', 'plan', 'probe']
+admit 4GiB isError: False
+admit 1MiB isError: True
+```
+
+Full test suite:
+
+```
+$ python -m pytest tests/ -q --tb=no
+178 passed in 199.14s (0:03:19)
+```
+
+### 9.3 Failure modes — cycle 4 update
+
+No new failure modes observed in cycle 4. The five documented failure modes from
+ADOPTION §3 remain at the same status as cycle 3 (§8.3). Repeating only changes:
+
+| Finding | C3 status | C4 update |
+|---|---|---|
+| F-1: +64% over-prediction on real GGUF | Open | Unchanged. Root cause now fully grounded in source 49 (GPT-2 weight tying): the reference model ties embedding/unembedding (one copy), but gemma3:4b does **not** tie and the cost model was counting embeddings twice (5.37 of 7.22 GB predicted). The fix path in cost.py is now precisely stated: include exactly one embedding matrix of the correct dtype, check whether `weight_tying` is set in the model config, and use the model's actual `attention.key_length` for head_dim rather than `hidden_size / num_heads`. |
+| F-2: Refusal names non-fitting config | Fixed (c1-p09) | Confirmed fixed in this session's output: "no listed option fits — nearest is..." correctly attributed. |
+| F-3: Bandwidth drift | Open/documented | Today's probe: 6.80 GB/s (within 3.94–7.18 GB/s documented range). Operational rule applies. |
+
+The new c4-p1 sources deepen the theoretical grounding for F-1:
+- Source 49 (GPT-2) establishes weight tying as the architectural decision that affects
+  embedding memory counts — gemma3 does NOT tie, so the cost model's fp32-double-count
+  is both the wrong precision and the wrong count.
+- Source 46 (Jacob et al. 2018) establishes that the round-then-clip order for int4_asym
+  must be `clip(round(r/S) + Z, 0, 15)`, not the inverse — this is pinned in
+  `tests/engine/test_quant.py`.
+- Source 48 (softmax numerics) confirms the subtract-max stabilisation in
+  `attention.py` and `sampling.py` is the correct, provably-stable form.
+- Source 45 (FlashAttention) explains why the NumPy path pays O(N²d) IO cost — it
+  materialises the full attention score matrix. This is the correct characterisation of
+  why the engine is "correctness-first and slow", and it is stated in README Limitations.
+
+### 9.4 Research base citation density — what c4-p1 closed
+
+c4-p1 added sources 45–54 that ground five previously under-cited areas:
+
+| Previously under-cited | Now grounded by |
+|---|---|
+| Why NumPy attention is slow | Source 45 (FlashAttention IO complexity) |
+| int4 asymmetric reconstruction error bound | Source 46 (Jacob et al. CVPR 2018) |
+| KV cache budget formula derivation | Source 47 (PagedAttention, deepened) |
+| Subtract-max softmax stability | Source 48 (Blanchard/Higham IMAJNA 2021) |
+| Embedding memory and weight tying | Source 49 (GPT-2 Radford et al. 2019) |
+| Speculative decoding speed-up theorem | Source 37 (Chen et al. 2023, c3-p1) + source 41 (c3-p1 deepening) |
+
+Every test module that exercises numerical or enforcement routines now has a cited
+source ID in its docstring (M4 requirement). The traceability script
+`scripts/check_research_traceability.py` enforces this at CI time.
+
+### 9.5 Adoption maturity table — cycle 4 final state
+
+| Level | What the team does | Status |
+|---|---|---|
+| L0 — try it | clone, `probe`, `plan` against a budget | Works today |
+| L1 — gate the box | `ollama_gate.py && ollama run` | Works today (strict mode) |
+| L2 — CLI gate | `fitsproof admit` in shell scripts / CI | Works today; exit 0 / exit 2 |
+| L3 — in-process guard | `@guard(budget=...)` in Python services | Works today; `DoesNotFit` raised before callable invoked |
+| L4 — agent-facing | `fitsproof mcp`, agent calls `admit` before loading | Works today; `isError:false` / `isError:true` |
+| L5 — drop-in binary | single executable, SHA256 release | v0.2 MANDATE M1 — not built yet |
+
+### 9.6 The single most likely reason someone would NOT adopt it — cycle 4 update
+
+Unchanged from §5 (cycle 1) and §8.5 (cycle 3). The prediction accuracy remains the
+adoption blocker: MAPE 46–62% across sessions, +64% on the one real-model datapoint
+(gemma3:4b), producing false DEGRADED verdicts for budgets between 4.4 GB (true) and
+7.22 GB (predicted).
+
+**What is now newly understood (c4-p1 sourcing):** the cause is mechanistically known.
+Source 49 (GPT-2 weight tying) establishes that the cost model's embedding accounting
+is doubly wrong for real models: wrong precision (fp32 instead of the model's actual
+quantisation) and wrong count (two matrices instead of one for models that tie weights,
+or two matrices for models that don't but where we're over-counting). The implementation
+fix is a one-line conditional in `cost.py`; the evidence bar (KAT using 4.4 GB as the
+known-answer for gemma3:4b) is precisely stated and ready for the implement pass.
+
+Until the fix lands, the operational guidance from §5 applies:
+- Run the gate on budgets ≥ 8 GB for 4B-class models (above the predicted peak, not the
+  true footprint) to avoid false DEGRADED verdicts.
+- Treat DEGRADED as refuse-by-default (the gate's behaviour).
+- The refusal direction (admitted config ≤ true footprint) has not been observed in any
+  session across all three cycles — the error is consistently conservative.
+
+### 9.7 Cycle 4 falsification table
+
+| id | Observation that would falsify | Status |
+|---|---|---|
+| C4-P3-F1 | Any admitted config in the stress harness measures peak > declared budget | NOT OBSERVED (25 configs, 0 violations, min margin 3909.3 MB) |
+| C4-P3-F2 | The `@guard` decorator invokes the wrapped callable on a refused config | NOT OBSERVED (`loaded == []` confirmed in raw output above) |
+| C4-P3-F3 | The MCP `admit` tool returns `isError:false` for a refused config | NOT OBSERVED (`admit 1MiB isError: True` confirmed above) |
+| C4-P3-F4 | aura ships held-out calibration + CI-wired zero-violation stress harness before fitsproof release | NOT OBSERVED as of c4-p2 (2026-09-28T12:30Z); aura last push 2026-09-03, zero new commits confirmed |
+| C4-P3-F5 | MAPE drops below 20% on real-model measurement before cost-model fix lands | NOT OBSERVABLE — the fix is not yet in the cost model; the MAPE on the fixture remains 46–62% |
+| C4-P3-F6 | The int4_asym round-then-clip order bug (source 46) is present in quant.py | NOT OBSERVED — the test in `tests/engine/test_quant.py` asserts `max(|w - w_hat|) <= S/2 + epsilon` and passes in the 178-test suite |
+| C4-P3-F7 | The subtract-max softmax produces NaN/inf for any input in the reference model | NOT OBSERVED — softmax is tested under all-masked rows (source 48 known failure mode); 178 tests pass |

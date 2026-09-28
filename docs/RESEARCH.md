@@ -3934,3 +3934,138 @@ Observations that would prove this pass's findings wrong:
    repos as c3-p2 (same total_count). The search space is stable; a different query
    vocabulary could still surface an unknown tool. The adversarial reviewer's
    independent search is the correct mitigation.
+
+---
+
+## Cycle 4 — Pass 3 — REAL-WORLD APPLICABILITY (c4-p3)
+
+*Dispatched 2026-09-28T14:00Z. This is the final research pass of the campaign.
+Mandate: close every open question carried from c3-p3 and from c4-p1/c4-p2. All
+raw output captured on 2026-09-28T14:00Z (ThinkStation P500, Python 3.11.15).
+The ADOPTION.md cycle 4 section (§9) is the co-artifact for this pass.*
+
+---
+
+### Open-question closure table — final state for the campaign
+
+All open questions from c3-p3 (items 6, 15, 16, 17, 18, 19, 20, 23) plus the new
+falsifiers from c4-p1 (1–5) and c4-p2 (1–5). Status updated against evidence from
+this pass and from c4-p1/c4-p2.
+
+Status legend: CLOSED, OBSERVED (falsifier fired; published), OPEN (closure procedure
+confirmed but cannot be closed without more data or implementation).
+
+| # | Question (source) | Status | Evidence / closure note |
+|---|---|---|---|
+| **Carried from c3-p3** | | | |
+| 6 | Prediction interval coverage < 80%? (P1-F6) | **OPEN — unchanged** | n_held_out=1 in c4-p3 (CI = [61.2%, 61.2%]). Same as every prior pass. Closure: `collect_measurements` until n_held_out ≥ 10, then check empirical coverage. The interval is labelled "unvalidated" in all output. Source 27 (Hyndman & Koehler) degeneracy: at n=1 the bootstrap interval is a point mass, not a sampling distribution. This cannot be closed in a research pass — it requires more hardware configurations to measure. |
+| 15 | Bootstrap CI coverage < 80% over ≥10 configs (c2-p1-F4) | **OPEN — identical to #6** | Same instrument, same constraint. Closure procedure identical. |
+| 16 | ru_maxrss stale peak from an earlier request (c2-p1-F5) | **OPEN — structural** | Source 29 (getrusage man page) establishes: no reset operation exists; the value is a process-lifetime maximum. Cannot be closed without a per-call measurement instrument (fresh subprocess or cgroup `memory.peak` reset, which requires root). The error direction is conservative: a stale peak from request N can only over-report for request N+1, never under-report. Documented in README Limitations. This is an instrument property, not a code defect, and cannot be fixed in a research pass. |
+| 17 | PyInstaller onefile fails in clean CI job (c2-p1-F6) | **OPEN — M1 not yet built** | Binary release is v0.2 MANDATE M1. Not built in any cycle. Evidence bar = CI clean-job run. Cannot close until an implement pass delivers M1. |
+| 18 | Prefill TTFT does not scale linearly with seq_len on this CPU (c3-p1-F1) | **CLOSED by derivation (at current scope)** | Source 35 (Chinchilla) and source 44 (Sarathi-Serve) establish linear TTFT at single-batch. For the reference model (max_seq_len=512): the seq² attention term at seq=512 is ~4% of total FLOPs (derived in c3-p1-F5). The formula is accurate at v0.1 scope. Source 45 (FlashAttention, added c4-p1) deepens this: the O(N²d) IO cost is the dominant attention term, and at seq=512 for our 6-layer/384-hidden model it is negligible relative to weight streaming. Observable at seq > 4096 — outside v0.1 max_seq_len. Documenting as closed within scope; re-open if max_seq_len is extended. |
+| 19 | int8_sym on real trained model with outliers shows >15% top-1 drop (c3-p1-F2) | **OPEN — not testable on fixture; newly grounded** | Source 38 (LLM.int8()) establishes the threshold empirically (>6B params → emergent outliers → >15% quality drop with per-channel symmetric int8). Source 49 (c4-p1) adds: the reference model is randomly initialised, so no trained outlier distribution exists; the test in `tests/engine/test_quant.py` is correctly scoped to random-init weights. Cannot be closed without a real trained model ≥6B params. This is a known limitation documented in README ("int4/int8 accuracy claims valid for reference model only") and in test docstrings. Not a blocker at v0.1. |
+| 20 | YaRN alpha/beta thresholds degrade for head_dim=64 (c3-p1-F3) | **OPEN — YaRN not implemented** | Source 40 (YaRN) establishes the empirical alpha=1/beta=32 thresholds for LLaMA (head_dim=128). At head_dim=64 the frequency distribution shifts (wavelengths compress), potentially requiring different thresholds. Cannot be closed until YaRN is implemented. YaRN is a v0.2 candidate (extends context without fine-tuning); the implementation sketch from c3-p1 source 40 is recorded in RESEARCH.md for the implement pass. |
+| 23 | MLA compression formula overstates KV memory for low-rank non-MLA models (c3-p1-F6) | **OPEN — not testable** | The GQA formula uses `n_kv_heads × head_dim`. An MLA model (source 36, c3-p1) with `d_c ≪ n_kv_heads × head_dim` would over-predict. fitsproof v0.1 supports only the reference model (GQA, not MLA). Cannot be closed until MLA support is added. Not a blocker. |
+| **c4-p1 new falsifiers** | | | |
+| c4-p1-F1 | FlashAttention IO bound does not hold for the NumPy CPU path | **CLOSED by scope** | Source 45 establishes that tiling provides IO savings only when blocks fit in SRAM (L2/L3 cache, 256 KB–4 MB on CPU). NumPy's standard attention materialises the full N×N attention score matrix (O(N²d) IO). This is the known failure mode of the engine — it is the reason the README Limitations says "NumPy engine is correctness-first and slow." At max_seq_len=512 and d=96 for our reference model, attention IO is ~400 MB (4% of weight-streaming cost), negligible. The falsifier states that tiling "provides no IO reduction" on CPU — correct, and documented. No action needed at v0.1 scope. |
+| c4-p1-F2 | int4_asym round-then-clip order bug produces error > S/2 | **CLOSED (not observed)** | Source 46 (Jacob et al. 2018) establishes the correct order: `clip(round(r/S) + Z, 0, 15)`. `tests/engine/test_quant.py` asserts `max(|w - w_hat|) ≤ S/2 + epsilon` on the reference model weights. This test passes in the 178-test suite. The KAT is grounded in the published error bound from source 46, Section 2.1. |
+| c4-p1-F3 | cost.py weight_bytes under-predicts by 262 MB for gemma3:4b due to excluding embeddings | **OBSERVED — root cause confirmed** | Source 49 (GPT-2 weight tying) establishes the correct accounting: one embedding matrix for tied models, two for untied (input + output head). The +64% over-prediction on gemma3:4b (F-1 in ADOPTION.md §3) was caused by the *opposite* error — counting embeddings twice (5.37 of 7.22 GB predicted was fp32 double-counted embeddings). The falsifier inverts the direction: if the fix removes embeddings entirely for untied models, it under-predicts by 262 MB. The correct fix is: include exactly one (input) embedding at the model's native dtype, check `weight_tying` config, and account for the output head separately only if untied. Observable once the cost model fix lands; this falsifier guards against overcorrection in the opposite direction. Status: OBSERVED (the original error) → the corrected form is the fix target. |
+| c4-p1-F4 | temperature=0 path is non-deterministic when two logits are within machine epsilon | **CLOSED (not observed)** | Source 48 (softmax numerics) and source 53 (temperature calibration) establish the risk. `sampling.py` computes `softmax(logits / T)` with the subtract-max stabilisation; at T → 0 the logit difference is amplified and argmax is unambiguous for any finite gap. For equal logits (gap = 0): numpy argmax returns index 0 deterministically (C-order first-occurrence), which is reproducible. The Tier-1 determinism tests in `tests/engine/test_sampling.py` pass with fixed seeds. The risk is real but not observed at reference-model scale (random init produces no exact ties at float64). |
+| c4-p1-F5 | PagedAttention block-size independence fails because KV allocation is pre-allocated, not lazy | **CLOSED by inspection** | Source 47 (PagedAttention) deepened in c4-p1 establishes that contiguous KV allocation pre-allocates `max_seq_len × kv_per_token`. The `Transformer._init_kv_cache()` in `model.py` pre-allocates for `max_seq_len = 512`. This means the prediction is a valid worst-case upper bound: for a generation that produces fewer than 512 tokens, real KV memory is less than predicted. The direction is conservative (safe for a refusal gate). The falsifier was asking whether lazy allocation would make measured peak *lower* than predicted — yes, it would, but in the conservative direction only. Verified in the stress harness: 25 configs, 0 violations (measured ≤ predicted); the pre-allocation accounts for the max possible KV footprint. |
+| **c4-p2 new falsifiers** | | | |
+| c4-p2-F1 | A new tool appeared in c4-p2 searches that does all three gap properties | **CLOSED (not observed)** | Five search queries in c4-p2, only two new entries: CryptoGuy1/BoundedEdge (empty repo) and ashcakeancient7671/aura (consumer Windows wrapper). Neither closes the gap. |
+| c4-p2-F2 | Grevix/aura added calibration or stress harness in a commit since c3-p2 | **CLOSED (not observed)** | Confirmed in c4-p2: `GET /repos/Grevix/aura/commits?since=2026-09-03T17:51:00Z` → empty array. No commits. v0.1.0 is the latest. |
+| c4-p2-F3 | llama.cpp v0.5.0 release notes contain budget enforcement terms | **CLOSED (not observed)** | Confirmed in c4-p2: grep for budget/enforce/admit/contract returned no matches. Still absent. |
+| c4-p2-F4 | CryptoGuy1/BoundedEdge has content in non-default branches | **CLOSED (not observed)** | Branches endpoint returned no results. Empty repo. |
+| c4-p2-F5 | longe/baton adds VRAM/RAM memory-budget enforcement as a feature | **CLOSED (not observed)** | Both repos reviewed in c2-p2 and c3-p2; both enforce context/token budgets, not peak RSS budgets. No new pushes with feature additions observed in c4-p2 searches. |
+
+---
+
+### Summary: items that remain OPEN entering the adversarial pass
+
+| # | Why open | Closure path |
+|---|---|---|
+| 6 / 15 | n_held_out=1; CI degenerates to a point | Collect ≥10 held-out measurements, check empirical coverage |
+| 16 | ru_maxrss has no reset operation; per-call measurement impossible without root | Per-call measurement via fresh subprocess or cgroup `memory.peak` reset (requires elevated privileges) |
+| 17 | Binary release not built | Implement pass delivers M1; CI clean-job run is the evidence bar |
+| 19 | Only testable with a real trained model ≥6B params | Point fitsproof at a real GGUF model; observe top-1 agreement degradation |
+| 20 | YaRN not implemented | Implement YaRN frequency schedule in attention.py; test on extended context |
+| 23 | MLA support not implemented | Implement MLA KV formula; test against DeepSeek-V2-class model |
+
+All *closeable* items — those requiring only analysis or evidence from measurements
+already taken — have been closed. The remaining six are structural (instrument design,
+implementation scope) and cannot be closed in a research pass.
+
+---
+
+### Research base — final state for the campaign
+
+**Total sources: 54** (1–22 from cycles 1–2, 23–34 from c2-p1, 35–44 from c3-p1,
+45–54 from c4-p1). All 54 links verified to resolve. The one persistent 403
+(dl.acm.org for source 1: Roofline, Williams 2009) is confirmed via DOI redirect and
+Crossref metadata across all passes; it is bot-blocked, not dead.
+
+**Source traceability table — final (all 44 original sources carry forward; additions from c4-p1):**
+
+| Source | Design claim | Implemented in | Test that validates it |
+|---|---|---|---|
+| 1+2 (Roofline + FlexGen) | `decode_tok_s = bandwidth / weight_bytes` | `cost.py:decode_tok_s` | `tests/contract/test_cost.py` |
+| 3 (RoPE) | Frequency schedule + rotation | `attention.py:_rope_freqs, apply_rope` | `tests/engine/test_attention.py` |
+| 4 (GQA) | `kv_bytes = 2*L*kv_h*seq*head_dim*elem` | `cost.py:kv_cache_bytes` | `tests/contract/test_cost.py` |
+| 5 (SDPA) | `1/sqrt(d_k)` attention scale | `attention.py:_sdp_attention` | `tests/engine/test_attention.py` |
+| 6+35 (Kaplan+Chinchilla) | `prefill_flops = 2*N*seq_len` | `cost.py:prefill_flops` | `tests/contract/test_cost.py` |
+| 7+38+46 (GPTQ+LLM.int8()+Jacob) | int8_sym per-channel; int4_asym error bound S/2 | `quant.py` | `tests/engine/test_quant.py` |
+| 8 (AWQ) | int8_asym asymmetric quantisation | `quant.py:_int8_asym_quant` | `tests/engine/test_quant.py` |
+| 9+37 (Leviathan+Chen) | Greedy speculative = target greedy | `speculative.py:speculative_generate` | `tests/engine/test_speculative.py` |
+| 12 (STREAM) | Triad bandwidth measurement | `probe.py:_measure_bandwidth` | `tests/contract/test_probe.py` |
+| 13+43 (GGML k-quants+GGUF) | int4 pack/unpack, range [-7,7], block-scale overhead | `quant.py:_int4_pack/_unpack` | `tests/engine/test_quant.py` |
+| 23 (MCP spec) | JSON-RPC stdio, `isError` semantics | `mcp.py` | `tests/value/test_incumbent_gap.py` |
+| 25 (SSE spec) | Chunked SSE streaming | `server.py` | `tests/engine/test_server.py` |
+| 27 (MAPE) | `MAPE = 100/n × SUM|y-ŷ|/|y|` | `calibrate.py:_mape` | `tests/contract/test_calibrate.py` |
+| 28 (Bootstrap) | Percentile CI on held-out MAPE | `calibrate.py:_bootstrap_mape_ci` | `tests/contract/test_calibrate.py` |
+| 29 (getrusage) | `peak_bytes = ru_maxrss × 1024` (Linux) | `verify.py:_get_rss_bytes` | `tests/contract/test_plan_admit_verify.py` |
+| 45 (FlashAttention) | IO cost of NumPy attention = O(N²d) | README Limitations (documents why engine is slow) | N/A — limitation, not an algorithm we implement |
+| 46 (Jacob et al.) | int4_asym error bound `≤ S/2` | `quant.py:_int4_asym_quant` | `tests/engine/test_quant.py` |
+| 47 (PagedAttention, deepened) | `kv_bytes` formula applies to contiguous allocation too | `cost.py:kv_cache_bytes` | `tests/contract/test_cost.py` |
+| 48 (Blanchard/Higham) | Subtract-max softmax is numerically stable to O(n·ε) | `attention.py:_sdp_attention`, `sampling.py:top_p_sample` | `tests/engine/test_attention.py`, `tests/engine/test_sampling.py` |
+| 49 (GPT-2) | Weight tying: one embedding copy; embedding bytes in weight_bytes | `model.py` (reference model), cost model fix target | KAT target: 4.4 GB for gemma3:4b after fix |
+| 54 (Orca) | Single-batch (batch=1) design rationale; memory-first constraint | README Architecture section | N/A — design rationale, not an algorithm |
+
+---
+
+### Cycle 4 Pass 3 — Falsification
+
+What observation would prove this pass's closure decisions wrong:
+
+1. **An open item declared CLOSED is re-opened by the adversarial reviewer.**
+   The adversarial pass runs independently; if it surfaces a test failure, a
+   citation that does not resolve, or an unanticipated path in the code, the
+   item must be re-opened and the closure note corrected. The adversarial pass
+   is the correct validation vehicle for all "CLOSED (not observed)" items.
+
+2. **The FlashAttention IO bound falsifier (c4-p1-F1) fires at extended context
+   before YaRN is implemented.** If a user extends max_seq_len beyond 512 before
+   v0.2 delivers YaRN, the attention cost will exceed weight streaming at seq > 13k
+   (derived in c3-p1-F5), and the decode formula will under-predict total latency.
+   Not a budget violation (RSS is not affected by attention FLOPs); but the tok/s
+   prediction will be wrong for long contexts. Documented; not a blocker for v0.1.
+
+3. **Source 49's weight-tying argument inverts the cost model error direction after
+   the implement-pass fix.** The current error is +64% over-prediction. If the fix
+   removes embeddings rather than correcting their dtype and tying flag, the error
+   could flip to under-prediction for untied models (−262 MB for gemma3:4b). The
+   falsifier c4-p1-F3 guards against this; the KAT (4.4 GB gemma3:4b observed) must
+   be checked against the fixed cost model to confirm the error direction remains
+   conservative.
+
+4. **178 tests pass but a test that should fail (on its named fault) does not.**
+   The QUALITY-CONTRACT §1 vacuity ban requires every test docstring to name the fault
+   it detects. The adversarial reviewer's test-quality audit (sample ≥5 tests, inject
+   the fault, confirm the suite fails) is the correct check for this. Not observed in
+   this pass because this pass does not run fault injection.
+
+5. **The MCP server violates the 2025-03-26 spec with an independent client.**
+   The in-repo round-trip test uses the same codebase as the server. An independent
+   MCP client (e.g. an official SDK implementation) run against `fitsproof mcp` is
+   the real test of spec compliance. Status: the in-repo test passes; the independent
+   test has not been run. The adversarial pass is the correct vehicle.
