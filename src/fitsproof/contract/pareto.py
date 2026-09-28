@@ -10,6 +10,11 @@ table and PNG.
 
 "Measured" means every row in the table was produced by actually running
 the configuration. Predicted values are labelled as such.
+
+Memory measurement uses _get_rss_bytes() from fitsproof.contract.verify,
+which reads /proc/self/status VmRSS (live resident set, not the process
+high-water mark). This produces different values per config because
+different context lengths cause different KV-cache allocations.
 """
 
 from __future__ import annotations
@@ -22,6 +27,7 @@ import numpy as np
 
 from fitsproof.contract.cost import estimate
 from fitsproof.contract.probe import MachineProfile
+from fitsproof.contract.verify import _get_rss_bytes
 from fitsproof.engine.model import ModelConfig
 from fitsproof.engine.quant import dequantize, quantize, top1_agreement
 from fitsproof.engine.sampling import Sampler
@@ -98,9 +104,6 @@ def sweep(
     This is the data behind the "≥20 configurations, zero budget violations"
     acceptance criterion in the stress harness.
     """
-    import os
-    import resource
-
     if quants is None:
         quants = ["none", "int8_sym", "int4_sym"]
     if context_lens is None:
@@ -108,15 +111,6 @@ def sweep(
     if prompt_ids is None:
         rng = np.random.default_rng(42)
         prompt_ids = rng.integers(0, cfg.vocab_size, size=8, dtype=np.int64).tolist()
-
-    def get_rss() -> int:
-        try:
-            usage = resource.getrusage(resource.RUSAGE_SELF)
-            if os.uname().sysname == "Linux":
-                return usage.ru_maxrss * 1024
-            return usage.ru_maxrss
-        except Exception:
-            return 0
 
     # Pre-compute fp32 weights for top1 comparison
     fp32_weights = transformer.weights
@@ -142,7 +136,6 @@ def sweep(
         estimate(cfg, machine, max(context_lens), quant, bandwidth_utilisation)
 
         for ctx in context_lens:
-            rss_before = get_rss()
             sampler = Sampler(seed=42)
             t0 = time.perf_counter()
             _tokens = transformer.generate(
@@ -152,10 +145,14 @@ def sweep(
                 temperature=0.0,
             )
             elapsed = time.perf_counter() - t0
-            rss_after = get_rss()
+            # Sample live RSS after the call (VmRSS from /proc/self/status).
+            # This is the same sampler used by verify.py: it reflects the current
+            # resident set, so different configs with different KV-cache sizes
+            # produce different values — unlike ru_maxrss (process HWM since start)
+            # which never decreases and is dominated by probe() benchmark arrays.
+            measured_peak = _get_rss_bytes()
 
             measured_tok_s = n_decode_tokens / elapsed if elapsed > 0 else 0.0
-            measured_peak = max(rss_before, rss_after)
 
             ctx_cost = estimate(cfg, machine, ctx, quant, bandwidth_utilisation)
 

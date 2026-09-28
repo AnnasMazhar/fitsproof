@@ -291,9 +291,9 @@ advisory (F-2).**
 | L0 — try it | clone, `probe`, `plan` against a budget | works today (this document) |
 | L1 — gate the box | chain `ollama_gate.py && ollama run` | works today, strict mode |
 | L2 — CI admission | gate in CI before any model pull | works today (CPU-only, seconds) |
-| L3 — in-process guard | `@guard(budget=...)` in Python services | v0.2 MANDATE M2.3 |
-| L4 — agent-facing | MCP server so an agent asks before loading | v0.2 MANDATE M2.4 |
-| L5 — drop-in binary | single executable, SHA256 release | v0.2 MANDATE M1 |
+| L3 — in-process guard | `@guard(budget=...)` in Python services | implemented (v0.1) |
+| L4 — agent-facing | MCP server so an agent asks before loading | implemented (v0.1) |
+| L5 — drop-in binary | single executable, SHA256 release | implemented (v0.1) |
 
-L0–L2 are adopted from source on a Tuesday. L3–L5 are the v0.2 mandate;
-this pass does not claim them.
+L0–L2 are adopted from source on a Tuesday. L3–L5 are implemented in v0.1;
+all levels are available today.

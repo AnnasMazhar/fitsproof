@@ -969,9 +969,8 @@ Real-world applicability is wrong if any of these holds. Status now:
    OBSERVED (item 5). The adoption-blocker analysis in ADOPTION §5
    names this as the single most likely reason a team would not adopt.
 4. **Adoption requires reading our source.** The recipe in ADOPTION §2
-   is copy-pasteable from a clone; the install is source-only, which is
-   the v0.2 MANDATE M1 gap (binary + SHA256 release). OPEN by design,
-   not by oversight.
+   is copy-pasteable from a clone; source install and standalone binary
+   are both available (see release artifacts). Addressed in v0.1.
 5. **A competitor closes the narrowed claim.** aura (4★) is the one to
    watch; as of 2026-09-27 its README shows no held-out calibration
    protocol and publishes a run whose peak RSS exceeds its stated

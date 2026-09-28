@@ -84,7 +84,7 @@ def main() -> int:
     stress_p.add_argument("--context", type=int, default=64)
     stress_p.add_argument("--quant", default="none")
 
-    # server (alias: serve — the v0.2 MANDATE binary surface name)
+    # server (alias: serve — binary surface name)
     srv_p = sub.add_parser("server", aliases=["serve"], help="Start OpenAI-compatible HTTP server")
     srv_p.add_argument("--host", default="127.0.0.1")
     srv_p.add_argument("--port", type=int, default=8080)
@@ -144,9 +144,11 @@ def main() -> int:
             for d in p.degradations:
                 fits = "fits" if d.fits_budget else "does not fit"
                 print(f"  [{fits}] {d.description} -> {d.predicted_peak_bytes / 1e9:.3f} GB")
-        # Non-zero exit on refusal
+        # Non-zero exit on refusal or near-boundary warning
         if record.status.value == "refused":
             return 2
+        if record.status.value == "near_boundary":
+            return 1
 
     elif args.command == "verify":
         from fitsproof.contract.admit import admit as _admit
@@ -230,6 +232,8 @@ def main() -> int:
         print(record.message)
         if record.status.value == "refused":
             return 2
+        if record.status.value == "near_boundary":
+            return 1
 
         cfg, weights = get_reference_bundle()
         transformer = Transformer(cfg, weights)

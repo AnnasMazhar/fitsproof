@@ -2,9 +2,17 @@
 fitsproof.contract.admit — The enforcement point.
 
 Given a Plan, either:
-  (a) admits it unchanged (Plan.verdict == FITS),
-  (b) applies the cheapest fitting degradation and emits a DegradedRecord, or
-  (c) refuses with an explicit message naming the binding constraint.
+  (a) admits it unchanged (Plan.verdict == FITS, margin >= SAFETY_MARGIN_BYTES),
+  (b) admits with a boundary warning (Plan.verdict == FITS, margin < SAFETY_MARGIN_BYTES),
+  (c) applies the cheapest fitting degradation and emits a DegradedRecord, or
+  (d) refuses with an explicit message naming the binding constraint.
+
+SAFETY MARGIN: When predicted_peak is within SAFETY_MARGIN_BYTES of budget, the
+admission is flagged as NEAR_BOUNDARY.  The proof harness may still pass or fail
+depending on measurement noise, but the caller is warned that the margin is small
+and the tool cannot guarantee the budget will be respected at runtime.  The CLI
+exits non-zero (exit 1) on NEAR_BOUNDARY so the build will fail unless the caller
+explicitly handles the warning.
 
 INVARIANT: there is no code path that changes execution mode without
 emitting a record. This is the central guarantee of fitsproof.
@@ -19,9 +27,18 @@ from enum import Enum
 
 from fitsproof.contract.plan import DegradationStep, Plan, Verdict
 
+# When the predicted peak is within this many bytes of the declared budget,
+# admit() returns NEAR_BOUNDARY instead of ADMITTED.  The value is chosen to
+# cover a 25% prediction overrun on a typical small model (~50 MB weights):
+#   50 MB * 1.25 = 62.5 MB overshoot if the predictor underestimates by 25%.
+# Any budget whose margin is smaller than this value cannot be guaranteed by
+# the predictor alone; the proof harness must be run to confirm.
+SAFETY_MARGIN_BYTES: int = 50 * 1024 * 1024  # 50 MB
+
 
 class AdmitStatus(str, Enum):
     ADMITTED = "admitted"
+    NEAR_BOUNDARY = "near_boundary"
     DEGRADED = "degraded"
     REFUSED = "refused"
 
@@ -60,6 +77,22 @@ def admit(plan: Plan) -> AdmitRecord:
     silently and allow an OOM.
     """
     if plan.verdict == Verdict.FITS:
+        margin = plan.budget_bytes - plan.predicted_peak_bytes
+        if margin < SAFETY_MARGIN_BYTES:
+            return AdmitRecord(
+                status=AdmitStatus.NEAR_BOUNDARY,
+                plan=plan,
+                applied_degradation=None,
+                refusal_reason="",
+                message=(
+                    f"WARNING (near boundary): {plan.predicted_peak_bytes / 1e9:.3f} GB "
+                    f"predicted peak <= {plan.budget_bytes / 1e9:.3f} GB budget "
+                    f"(margin: {margin / 1e6:.1f} MB < safety margin: "
+                    f"{SAFETY_MARGIN_BYTES / 1e6:.0f} MB). "
+                    "Prediction error may exceed the remaining margin. "
+                    "Run `fitsproof verify` to measure actual RSS, or increase the budget."
+                ),
+            )
         return AdmitRecord(
             status=AdmitStatus.ADMITTED,
             plan=plan,
@@ -68,7 +101,7 @@ def admit(plan: Plan) -> AdmitRecord:
             message=(
                 f"ADMITTED: {plan.predicted_peak_bytes / 1e9:.3f} GB predicted peak "
                 f"<= {plan.budget_bytes / 1e9:.3f} GB budget "
-                f"(margin: {(plan.budget_bytes - plan.predicted_peak_bytes) / 1e6:.1f} MB)"
+                f"(margin: {margin / 1e6:.1f} MB)"
             ),
         )
 
