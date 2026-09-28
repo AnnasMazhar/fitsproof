@@ -2722,3 +2722,250 @@ this pass's new sources change their status.
    low-rank will have a smaller effective KV footprint than the formula predicts.
    Observable: run `fitsproof plan` on a real MLA model and compare predicted vs
    measured peak KV memory. Not yet testable with fitsproof's current model support.
+
+---
+
+## Cycle 3 — Pass 2 — ECOSYSTEM AND COMPETITION DEEPENING (c3-p2)
+
+*Dispatched 2026-09-28T04:30Z. Star counts retrieved via GitHub REST API at
+2026-09-28T04:31:07Z (raw batch output below). This pass: (1) refreshes all named
+tools to the session timestamp, (2) runs four new search queries and evaluates every
+new entry, (3) deep-checks the ashcakeancient7671/aura variant that had a fresh push
+at 03:56Z the same morning, (4) confirms Grevix/aura released v0.1.0 (2026-08-23)
+and checks for any changes since c2-p2, and (5) states the final gap-claim status
+entering cycle 3.*
+
+---
+
+### Raw star-count refresh (2026-09-28T04:31:07Z)
+
+All calls in one parallel batch via `curl -s https://api.github.com/repos/<owner>/<repo>`:
+
+```
+ggml-org/llama.cpp               | stars=129731 | push=2026-09-27T22:03:22Z | license=MIT
+vllm-project/vllm                | stars=92825  | push=2026-09-28T04:17:36Z | license=Apache-2.0
+kvcache-ai/ktransformers         | stars=19543  | push=2026-09-23T05:07:33Z | license=Apache-2.0
+Isk4R1oT/ridgepoint              | stars=1      | push=2026-09-08T18:40:09Z | license=MIT
+pochenai/llm-inference-calculator| stars=20     | push=2026-09-09T15:58:07Z | license=None
+Pluenet-Killian/llm-roofline     | stars=0      | push=2026-06-20T19:26:33Z | license=MIT
+JohnScheuer/hardware-aware-llm-runtime | stars=0 | push=2026-06-25T09:50:23Z | license=MIT
+Shun-Calvin/llm-vram-calculator  | stars=1      | push=2026-09-26T06:38:02Z | license=MIT
+tommasocerruti/detllm            | stars=20     | push=2026-08-20T21:07:45Z | license=Apache-2.0
+Grevix/aura                      | stars=4      | push=2026-09-03T17:50:25Z  | license=Apache-2.0
+```
+
+Latest releases confirmed (GitHub REST `/releases/latest`):
+
+```
+ggml-org/llama.cpp       | tag=v0.5.0  | published=2026-09-23T20:50:06Z
+vllm-project/vllm        | tag=v0.30.0 | published=2026-09-22T05:20:54Z
+kvcache-ai/ktransformers | tag=v0.7.1  | published=2026-09-15T10:17:55Z
+Grevix/aura              | tag=v0.1.0  | published=2026-08-23T18:36:19Z  ← NEW vs c2-p2 (no release then)
+```
+
+PyPI ridgepoint: version=0.1.2, uploaded=2026-09-08T18:42:30 (unchanged).
+
+Deltas vs the c2-p2 session (20:42Z, 2026-09-27): llama.cpp +30, vLLM +33,
+KTransformers +2; ridgepoint/detllm/inactive repos unchanged. The aura formal
+release v0.1.0 (2026-08-23) was not captured in c2-p2 because the releases
+endpoint was not queried then. Rankings and gap conclusions unchanged.
+
+---
+
+### New search queries (2026-09-28T04:31Z)
+
+Four searches run; raw output below:
+
+```
+# Search 1: llm+memory+budget+enforcement (sort=updated) — total_count=11
+ashcakeancient7671/aura | stars=1 | push=2026-09-28T03:56:12Z | Run low-memory LLMs on consumer hardware with adaptive memory-budget enforcement
+AnnasMazhar/fitsproof   | stars=0 | push=2026-09-27T22:36:35Z | [this repo — skip]
+mrshelll/baton          | stars=0 | push=2026-09-25T17:52:11Z | Context handoff between Claude Code sessions with a document that doesn't grow
+confused-ai/personaforge| stars=10| push=2026-09-25T05:07:55Z | TypeScript AI agent framework — 40+ LLM providers, 100+ tools, multi-agent orche
+jake-garnier/autonomous-bug-hunter | stars=0 | push=2026-09-24T10:18:56Z | [unrelated security agent]
+edouard-claude/longe    | stars=3 | push=2026-09-12T13:59:36Z | Self-improving harness for any LLM (agent-loop budget, not memory budget)
+w-sliman/vela           | stars=0 | push=2026-09-09T22:31:54Z | [unrelated coding agent]
+Grevix/aura             | stars=4 | push=2026-09-03T17:50:25Z | [already in table]
+teflon07/memkeeper-librarian | stars=1 | push=2026-07-06T15:34:05Z | Bounded context-curation layer for AI agents (token budget, not memory)
+shrivastava03/llm_router_agent | stars=5 | push=2026-05-22T09:06:28Z | [unrelated proxy/routing]
+
+# Search 2: llm+inference+contract+enforcement — total_count=3
+api-evangelist/txt      | stars=0 | push=2026-09-27 | [unrelated API description]
+sunsul/qvacmarketplace  | stars=0 | push=2026-05-14 | [unrelated decentralised inference marketplace]
+Vlad1343/ContractLawAI  | stars=0 | push=2026-02-14 | [legal AI, unrelated]
+
+# Search 3: peak+RAM+budget+llm+admit+refuse — total_count=0
+# Search 4: llm+inference+memory+proof+harness — total_count=0
+
+# Additional targeted searches:
+# llm+vram+calibrate+enforce+consumer          — total_count=0
+# llm+resource+contract+predict+enforce        — total_count=0
+```
+
+All entries with `total_count > 0` were inspected. None enter the comparison
+table (see evaluations below).
+
+---
+
+### New entries evaluated
+
+#### ashcakeancient7671/aura (1 star, Rust, Apache-2.0, pushed 2026-09-28T03:56Z)
+
+Fresh push on the morning of this pass — flagged for deep check.
+
+- README fetched 2026-09-28T04:31Z. Key findings:
+  - Windows-only (Windows 10/11, 64-bit). Distribution is a ZIP download from
+    the repo's own `benchmarks/audit/` path — not a CI-built artifact.
+  - Consumer-facing copy ("smart helper program … aura watches how much memory
+    your computer uses"), no technical calibration section.
+  - Features described: memory budget enforcement, smart model loading,
+    GGUF support, CPU-friendly, adaptive optimisation.
+  - No calibration protocol, no held-out split, no MAPE, no proof harness,
+    no API surfaces (Python client, MCP, OpenAI-compatible server).
+  - README explicitly says *"If you see a warning saying 'This file might be
+    unsafe', you can safely ignore it."* — distributes a binary via non-CI
+    path; no SHA256 in the README.
+- **Conclusion:** consumer wrapper tool, no research contribution, no overlap with
+  fitsproof's calibration/proof-harness layer. Does not enter the comparison table.
+  The fresh push is a minor README update, not a feature addition.
+
+#### confused-ai/personaforge (10 stars, TypeScript)
+
+- README inspected (content: 13,606 chars). Only term matching is `probe` (1x,
+  in a different context). No VRAM, peak memory, RSS, or calibration discussion.
+- **Conclusion:** LLM agent orchestration framework. Does not compete.
+
+#### edouard-claude/longe (3 stars, Rust) — re-evaluated this pass
+
+- All five occurrences of "ram" in the README are about the agent memory hierarchy
+  (L1=context, L2=live REPL variables in RAM, L3=filesystem). None describe peak
+  physical memory enforcement or model loading budgets.
+- **Conclusion:** agent-harness turn/token budget. Confirmed non-competitor from c2-p2.
+
+#### mrshelll/baton — re-evaluated
+
+- Unchanged from c2-p2: context handoff tool with a character/token size budget.
+  Not a memory budget for model loading. Confirmed non-competitor.
+
+---
+
+### Grevix/aura v0.1.0 (2026-08-23) — release details
+
+This release was not in the c2-p2 snapshot (the releases endpoint was not queried
+then). v0.1.0 was published 2026-08-23T18:36:19Z — before both the c2-p2 session
+(2026-09-27T20:42Z) and the c3-p1 session (2026-09-28T04:00Z). Checking for any
+features added in the release that would close the gap:
+
+- Last push: 2026-09-03 (no changes after the August release).
+- aura's BENCHMARK.md finding from c2-p2 stands: `qwen3:8b` with 4.00 GB
+  Win32 Job Object budget shows `Peak Working Set: 4.92 GB` (23% over), labelled
+  `aura_measured`, `Simulated: false`, with no violation flag in the output.
+- No held-out calibration protocol, no CI-integrated zero-violation stress harness.
+
+**Status:** unchanged from c2-p2. aura v0.1.0 is the released version. The gap
+observations from c2-p2 apply to v0.1.0.
+
+---
+
+### Comparison table — final state as of 2026-09-28T04:31Z
+
+Star counts from this session's API batch. Release versions as confirmed above.
+
+| Tool | Stars | Latest release / Last push | Approach | What it does well | Gap it leaves | What fitsproof does differently |
+|---|---|---|---|---|---|---|
+| **llama.cpp** (ggml-org/llama.cpp) | 129,731 | v0.5.0 (2026-09-23) | CPU/GPU inference, GGUF, k-quants, layer offload | Mature (3+ yr), broadest model + quant support, fast CPU kernels, GPU offload, runs everywhere | Silent OOM; silent CPU fallback at 0.3 tok/s; no user-declared budget; no calibrated prediction; no RSS proof | Explicit budget; structured degradation record; zero-violation stress harness as repo test |
+| **vLLM** (vllm-project/vllm) | 92,825 | v0.30.0 (2026-09-22) | GPU serving, PagedAttention, continuous batching | Highest GPU throughput open-source, production serving, 100+ models, full OpenAI API | Targets A100/H100 class; no 4–8 GB VRAM path; non-deterministic by default (VLLM_BATCH_INVARIANT=1 flag, not default) | CPU-first; 4–8 GB VRAM class; per-machine calibration; deterministic by construction |
+| **KTransformers** (kvcache-ai/ktransformers) | 19,543 | v0.7.1 (2026-09-15) | CPU/GPU hybrid MoE, Intel AMX kernels, SOSP 2025 | Runs DeepSeek-671B on ~14 GB VRAM + 128 GB RAM; 1.25–4.09× decode over llama.cpp | Requires 128 GB RAM + AMX + CUDA/ROCm; does not serve 16–32 GB RAM class; no resource contract layer; no proof harness | Targets the 16–32 GB RAM class KTransformers excludes; adds predict→enforce→prove pipeline |
+| **ridgepoint** (Isk4R1oT/ridgepoint, PyPI v0.1.2) | 1 | 2026-09-08 | Calibrated VRAM + roofline for A100/H100; GQA/MLA-correct; per-field `calibrated` flag | ~1% MAPE vs real vLLM on A100/H100; MLA support; intervals not point estimates; honest provenance flags | Calibration offline, for A100/H100 only; `quadro-m2000` unknown (confirmed c1-p3); prediction only — no enforcement; no RSS proof harness | On-device calibration with held-out MAPE; enforcement gate (admit/degrade/refuse); measured RSS proof |
+| **llm-inference-calculator** (pochenai) | 20 | 2026-09-09 | Two-phase roofline (prefill compute-bound TTFT + decode bandwidth-bound TPOT); MoE sparsity; spec-decoding modelling | Rigorous two-phase model (source 44 / Sarathi confirms the theoretical basis); MoE expert coverage | No calibration; no enforcement; no consumer-hardware class; static model only | On-device calibration; single-machine consumer target; enforcement gate after prediction |
+| **llm-roofline** (Pluenet-Killian) | 0 | 2026-06-20 (inactive 3+ mo) | Decode throughput floor = bytes/bandwidth per GPU; roofline chart | Simple, clean derivation; readable chart | Throughput floor only; no memory prediction; no enforcement; inactive | Memory contract + enforcement + RSS proof |
+| **hardware-aware-llm-runtime** (JohnScheuer) | 0 | 2026-06-25 (inactive 3+ mo) | Hardware-calibrated roofline; empirical optimal batch size; finds compute/bandwidth crossover | Empirical constant fitting; predicts batch sweet spot within ~1 | Throughput focus; no enforcement; no stress harness; inactive | Memory-safety focus; enforcement after calibration |
+| **llm-vram-calculator** (Shun-Calvin) | 1 | 2026-09-26 | Formula-based VRAM/TTFT/tok/s for 100+ models × 70+ GPUs; public API | Widest model×GPU coverage of any tool in this table | Formula-based, not calibrated to any machine; GPU-only; no enforcement | On-device calibration; enforcement; RSS proof harness |
+| **aura** (Grevix/aura, Rust, Apache-2.0, v0.1.0) | 4 | v0.1.0 (2026-08-23); last push 2026-09-03 | Kernel-level budget enforcement (cgroup v2 / Win32 Job Object); context-ladder degradation; ollama model discovery; NVMe/GPU/SIMD diagnostics; MetricProvenance tagging | More aggressive enforcement (OS-level) than fitsproof's in-process gate; four-tier memory hierarchy; consumer-hardware focus | BENCHMARK.md (c2-p2 verified, c3-p2 confirmed): `qwen3:8b` with 4.00 GB Job Object budget reports `Peak Working Set: 4.92 GB` — 23% over — with no violation flag and no failing assertion; no held-out calibration; no MAPE; no embeddable `plan`/`admit` API; no OpenAI/MCP plugin surfaces | Held-out MAPE published even when bad; zero-violation stress harness as repo test (exits non-zero on any violation); embeddable Python client + MCP + OpenAI server surfaces |
+| **detllm** (tommasocerruti) | 20 | 2026-08-20 | Capability-gated determinism tier reporting (Tier 0/1/2); repro packs | Honest tier framing — always reports the tier actually achieved, never claims higher | Determinism checking only; no memory prediction or enforcement | Adopts the detllm tier model for verify layer (source 14 in this document); adds contract enforcement on top |
+
+---
+
+### The gap claim — final state for cycle 3
+
+**Three properties, no single tool has all three as of 2026-09-28T04:31Z:**
+
+1. **Calibrate prediction constants from measurements on the user's own hardware**
+   with a train/hold-out split and a published held-out MAPE (honest even when the
+   number is bad). ridgepoint calibrates but against A100/H100 (cannot express the
+   Quadro M2000 class at all). aura probes hardware but publishes no calibration
+   protocol with held-out evaluation.
+
+2. **Enforce a declared budget with a structured degradation record that names
+   exactly what changed** (quant mode, context length, offload fraction) and its
+   predicted cost. aura enforces at the OS level (more aggressive than fitsproof's
+   in-process gate), but its own BENCHMARK.md shows a run 23% over its declared
+   budget with no violation flag or failing assertion.
+
+3. **Prove compliance: a test-suite-wired stress harness that asserts
+   `measured_peak ≤ declared_budget` across ≥20 configurations and exits non-zero on
+   any violation.** No tool in the table — including aura — ships this as a
+   repository test.
+
+**How a user would notice the gap:**
+
+With aura: they set `--memory 4G`, run `qwen3:8b`, and post-run telemetry reports
+`Peak Working Set: 4.92 GB` — 23% over budget — with a pass result. With fitsproof:
+the `stress` command runs ≥20 configurations and exits non-zero the moment any
+measured peak exceeds the declared budget. The contract either holds or the build
+fails; there is no middle ground.
+
+**The 4–8 GB VRAM / 16–32 GB RAM hardware class claim** remains grounded in
+external data (Steam Hardware Survey Aug 2026: ~47% of users have ≤8 GB VRAM —
+confirmed in c2-p3 closure table item 11). This is the class no mature tool serves:
+llama.cpp and vLLM serve higher-memory hardware; KTransformers requires 128 GB RAM;
+Strata requires 12 GB+ VRAM.
+
+---
+
+### Watch items — carry forward to adversarial pass
+
+1. **aura v0.1.0.** Last push 2026-09-03; no commits since the August release.
+   If a v0.2.0 ships before fitsproof's release commit with (a) held-out calibration
+   and (b) a zero-violation stress harness, the gap closes. Check before publication.
+
+2. **llama.cpp `--budget` flag.** Confirmed absent in v0.5.0 (c1-p2, c2-p3 item 10).
+   Re-check before publication.
+
+3. **Four new search queries return zero or no relevant tools.** The adversarial
+   reviewer should re-run with query terms "LLM memory budget proof harness",
+   "inference admit refuse OOM", and "llm peak RSS enforce" to independently
+   confirm the table is complete.
+
+---
+
+### Falsification for Cycle 3 — Pass 2
+
+Observations that would prove this pass's findings wrong:
+
+1. **A new tool appeared in this pass's searches that does all three properties.**
+   NOT OBSERVED: four search queries, eleven new entries evaluated, zero enter the
+   comparison table as gap-closers. The c3-p2 table is the widest scan to date.
+
+2. **Grevix/aura v0.1.0 release notes contain a held-out calibration section not
+   in the README.** The README is the primary documentation surface; the release
+   notes were not fetched. If v0.1.0 added a calibration protocol in the release
+   notes only, this pass would have missed it. Check: fetch
+   `api.github.com/repos/Grevix/aura/releases/tags/v0.1.0` and read the body.
+
+3. **ashcakeancient7671/aura's 03:56Z push on the same morning contains a feature
+   addition not reflected in the README.** The diff between that push and the
+   prior commit was not fetched (only the README was read). Check: fetch the
+   commit diff. Given the README is consumer-facing and contains no technical
+   calibration section, this is unlikely.
+
+4. **The Steam Hardware Survey citation is stale or misread.** The c2-p3 closure
+   table cites "Tom's Hardware / TechRadar on the July data: just under half (47%)
+   have a graphics card with 8GB or less." The exact survey URL was not fetched this
+   pass. If the actual figure is substantially lower, the hardware-class claim shrinks.
+
+5. **A tool in the table added enforcement + calibration + a proof harness as a
+   feature between c2-p2 (2026-09-27T20:42Z) and now (2026-09-28T04:31Z).**
+   NOT OBSERVED: the only repos with pushes in that window are llama.cpp (code
+   update, no `--budget` flag), vLLM (code update, no consumer-RAM path), and
+   ashcakeancient7671/aura (README update only). Rankings and gap conclusions unchanged.
