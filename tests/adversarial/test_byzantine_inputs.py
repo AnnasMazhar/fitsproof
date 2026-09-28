@@ -635,3 +635,55 @@ def test_stress_harness_budget_violation_exits_nonzero() -> None:
     assert has_signal, (
         f"stress output must mention violation/refused/degraded/budget. stdout: {proc.stdout[:500]}"
     )
+
+
+# ---------------------------------------------------------------------------
+# Cycle 3 adversarial tests — ADV-12: server must reject non-list messages
+# ---------------------------------------------------------------------------
+
+
+def test_server_rejects_messages_as_string() -> None:
+    """
+    Sources: fitsproof.md M2.1 — server handles malformed requests without crashing.
+    Fault (ADV-12, c2-p11): server crashed with AttributeError when 'messages' was a
+    string instead of a list. The handler iterated over the characters of the string
+    and called .get() on each character, raising AttributeError and closing the
+    connection without a response. The fix must return HTTP 400 with a clear error.
+    """
+    from fitsproof.engine.model import get_reference_bundle
+    from fitsproof.engine.server import start_server
+    from fitsproof.engine.transformer import Transformer
+
+    cfg, weights = get_reference_bundle()
+    with socket.socket() as s:
+        s.bind(("127.0.0.1", 0))
+        port = s.getsockname()[1]
+    srv = start_server(
+        Transformer(cfg, weights),
+        cfg,
+        host="127.0.0.1",
+        port=port,
+        block=False,
+    )
+    try:
+        payload = {"messages": "this is a string not a list", "max_tokens": 5}
+        req = urllib.request.Request(
+            f"http://127.0.0.1:{port}/v1/chat/completions",
+            data=json.dumps(payload).encode(),
+            headers={"Content-Type": "application/json"},
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=10) as resp:
+                status = resp.status
+                body = json.loads(resp.read())
+        except HTTPError as e:
+            status = e.code
+            body = json.loads(e.read())
+
+        assert status == 400, f"expected 400, got {status}: {body}"
+        assert body["error"]["type"] == "invalid_request"
+        assert "list" in body["error"]["message"].lower(), (
+            f"error message must mention 'list': {body['error']['message']}"
+        )
+    finally:
+        srv.shutdown()

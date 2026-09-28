@@ -85,9 +85,20 @@ class _Handler(BaseHTTPRequestHandler):
                 {"error": {"message": "messages is required", "type": "invalid_request"}},
             )
             return
+        if not isinstance(messages, list):
+            self._send_json(
+                400,
+                {
+                    "error": {
+                        "message": "messages must be a list of message objects",
+                        "type": "invalid_request",
+                    }
+                },
+            )
+            return
 
         # Simple tokenisation: convert text to byte values (0-255)
-        text = " ".join(m.get("content", "") for m in messages)
+        text = " ".join(m.get("content", "") if isinstance(m, dict) else str(m) for m in messages)
         prompt_ids = [int(b) % cfg.vocab_size for b in text.encode("utf-8", errors="replace")]
         if not prompt_ids:
             prompt_ids = [0]

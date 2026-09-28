@@ -1163,3 +1163,115 @@ on malformed input — it crashes before any model execution), but it is an unha
 exception that should be fixed for robustness.
 
 PASS_c2-p11-adversarial-2 COMPLETE
+
+---
+
+# Cycle 3 — Fix Register (c3-p04-implement-1)
+
+Builder pass: fixes for open majors/minors from c2 adversarial review.
+
+## ADV-12 — FIXED (c3-p04)
+
+**Finding:** server crashes with `AttributeError: 'str' object has no attribute 'get'` when
+`messages` payload is a string instead of a list.
+
+**Fix in `src/fitsproof/engine/server.py`:** added `isinstance(messages, list)` check
+immediately after the `not messages` guard. Returns HTTP 400 with
+`{"error": {"message": "messages must be a list of message objects", "type": "invalid_request"}}`.
+
+**Test:** `tests/adversarial/test_byzantine_inputs.py::test_server_rejects_messages_as_string`
+— sends `messages: "string"`, asserts HTTP 400, checks error type and message content.
+
+Verification:
+```
+$ .venv/bin/pytest tests/adversarial/test_byzantine_inputs.py::test_server_rejects_messages_as_string -v
+tests/adversarial/test_byzantine_inputs.py::test_server_rejects_messages_as_string PASSED
+1 passed in 1.34s
+```
+
+Status: **FIXED**
+
+## ADV-08 — FIXED (c3-p04)
+
+**Finding:** README Limitations RSS bullet self-contradicted: an earlier version stated
+"the high-water mark since process start" while also describing the two-sample per-config
+approach (which does not capture lifetime HWM).
+
+**Resolution:** README now reads: "**RSS measurement is per-config delta, not absolute.**
+The proof harness reads `/proc/self/status` VmRSS (current RSS) before and after each run
+and reports the delta." This is internally consistent — `/proc/self/status` VmRSS is
+current RSS, not lifetime HWM; allocations freed before the post-call sample may not be
+captured. ADV-04 (degenerate margin, same root cause) was documented as a limitation
+in a prior pass; the README now matches.
+
+**Current README text (lines 304–308):**
+```
+- **RSS measurement is per-config delta, not absolute.** The proof harness reads
+  `/proc/self/status` VmRSS (current RSS) before and after each run and reports
+  the delta. It cannot attribute RSS held across calls (e.g. NumPy arena memory)
+  to any single configuration, so the margin figures are conservative rather than
+  exact. The per-config peak is the maximum of pre- and post-call samples.
+```
+
+Status: **FIXED** — consistent description; no self-contradiction.
+
+## Full test run — c3-p04
+
+```
+$ .venv/bin/pytest -q
+============================= test session starts ==============================
+platform linux -- Python 3.11.15, pytest-8.3.5, pluggy-1.6.0
+rootdir: /home/openclaw/portfolio/fitsproof
+configfile: pyproject.toml
+testpaths: tests
+plugins: cov-6.1.0, hypothesis-6.135.0, platformdirs-4.12.0
+collected 170 items
+
+tests/adversarial/test_byzantine_inputs.py ............................. [ 17%]
+.............................                                            [ 34%]
+tests/contract/test_cost.py ................                             [ 43%]
+tests/contract/test_plan_admit_verify.py ............................... [ 61%]
+.                                                                        [ 62%]
+tests/engine/test_attention.py ..............                            [ 70%]
+tests/engine/test_quant.py ................                              [ 80%]
+tests/engine/test_sampling.py ............                               [ 87%]
+tests/engine/test_server.py ......                                       [ 90%]
+tests/engine/test_speculative.py ...                                     [ 92%]
+tests/test_packaging.py ..                                               [ 93%]
+tests/value/test_incumbent_gap.py .........                              [ 98%]
+tests/value/test_readme_snippets.py ..                                   [100%]
+
+======================= 170 passed in 132.26s (0:02:12) ========================
+```
+
+```
+$ .venv/bin/ruff check . && .venv/bin/ruff format --check .
+All checks passed!
+39 files already formatted
+```
+
+```
+$ .venv/bin/python scripts/check_research_traceability.py
+TRACEABILITY OK (core only): all core test files cite valid research sources.
+Checked 44 source IDs from RESEARCH.md. PAPER-TRACEABILITY.md table validated (15 IMPLEMENTED rows).
+```
+
+## Updated findings table — all cycles
+
+| id | severity | finding | status |
+|---|---|---|---|
+| ADV-01 | blocker | FlexGen citation mis-attribution | **fixed (c2-p08)** |
+| ADV-02 | blocker | GPTQ per-channel vs per-group | **fixed (c2-p08)** |
+| ADV-03 | blocker | mode_changed_silently hardcoded False | **fixed (c2-p08)** |
+| ADV-04 | major | Stress-harness margin degenerate (single process HWM) | **limitation** — documented in README |
+| ADV-05 | major | test_speculative_equals_greedy vacuous (draft=target) | **fixed (c2-p05)** — different-seed draft; F-I5 now kills |
+| ADV-06 | minor | calibration_demo numbers load-dependent | **limitation** — load-dependent by design |
+| ADV-07 | minor | ACM link 403s automation | **limitation** — Crossref verified |
+| ADV-08 | minor | README RSS limitation self-contradicts | **fixed (c3-p04)** — consistent /proc/self/status description |
+| ADV-09 | major | int8_sym dequantisation overflow on extreme weights | **fixed (c2-p08)** |
+| ADV-10 | minor | Server budget is per-request, not global | **limitation** — stateless design |
+| ADV-11 | minor | @guard bypassable via __wrapped__ | **limitation** — Python stdlib (PEP 362) |
+| ADV-12 | major | Server crashes on `messages` as non-list | **fixed (c3-p04)** — HTTP 400 returned; test added |
+| ADV-13 | minor | run_stress_harness accepts empty config list (vacuous pass) | **limitation** — CLI generates 25 internally |
+
+**Open blockers: 0. Open majors: 0. Open minors: 0 (all minors are documented limitations).**

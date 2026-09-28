@@ -799,3 +799,66 @@ PAPER-TRACEABILITY.md table validated (15 IMPLEMENTED rows).
 | ADV-05 | major | test_speculative_equals_greedy vacuous | **FIXED** — draft uses seed=999 (different from target seed=42); reject path exercised |
 | ADV-06 | minor | calibration_demo numbers load-dependent | open — marked as limitation in README |
 | ADV-08 | minor | README RSS limitation self-contradicts | open — minor wording issue |
+
+---
+
+## Cycle 3, Pass 4 — implement-1 (2026-09-28T06:30Z)
+
+### Changes
+
+- **ADV-12 fixed**: `src/fitsproof/engine/server.py` — added `isinstance(messages, list)` guard.
+  Previously crashed with `AttributeError` on non-list `messages`; now returns HTTP 400.
+- **ADV-08 fixed**: README RSS limitation section (already correctly reworded in a prior pass;
+  confirmed consistent in this pass — `/proc/self/status` VmRSS description matches the code).
+- **New test**: `tests/adversarial/test_byzantine_inputs.py::test_server_rejects_messages_as_string`
+  — verifies HTTP 400 + `invalid_request` error type when `messages` is a string.
+
+### Full test run
+
+```
+$ .venv/bin/pytest -q
+============================= test session starts ==============================
+platform linux -- Python 3.11.15, pytest-8.3.5, pluggy-1.6.0
+rootdir: /home/openclaw/portfolio/fitsproof
+configfile: pyproject.toml
+testpaths: tests
+plugins: cov-6.1.0, hypothesis-6.135.0, platformdirs-4.12.0
+collected 170 items
+
+tests/adversarial/test_byzantine_inputs.py ............................. [ 17%]
+.............................                                            [ 34%]
+tests/contract/test_cost.py ................                             [ 43%]
+tests/contract/test_plan_admit_verify.py ............................... [ 61%]
+.                                                                        [ 62%]
+tests/engine/test_attention.py ..............                            [ 70%]
+tests/engine/test_quant.py ................                              [ 80%]
+tests/engine/test_sampling.py ............                               [ 87%]
+tests/engine/test_server.py ......                                       [ 90%]
+tests/engine/test_speculative.py ...                                     [ 92%]
+tests/test_packaging.py ..                                               [ 93%]
+tests/value/test_incumbent_gap.py .........                              [ 98%]
+tests/value/test_readme_snippets.py ..                                   [100%]
+
+======================= 170 passed in 132.26s (0:02:12) ========================
+```
+
+### Ruff
+
+```
+$ .venv/bin/ruff check . && .venv/bin/ruff format --check .
+All checks passed!
+39 files already formatted
+```
+
+### Research traceability
+
+```
+$ .venv/bin/python scripts/check_research_traceability.py
+TRACEABILITY OK (core only): all core test files cite valid research sources.
+Checked 44 source IDs from RESEARCH.md. PAPER-TRACEABILITY.md table validated (15 IMPLEMENTED rows).
+```
+
+### Adversarial finding status after this pass
+
+Open blockers: 0. Open majors: 0. All previously open minors are documented limitations.
+The full updated findings table is in `docs/ADVERSARIAL_REVIEW.md` (c3-p04 fix register).
