@@ -634,6 +634,83 @@ def test_admit_refused_message_contains_binding_constraint() -> None:
     assert record.refusal_reason in record.message, "refusal_reason must appear in the message"
 
 
+def test_admit_refused_message_reports_correct_gb_values() -> None:
+    """
+    Mutation target: division operators in REFUSED message format string (L91, L90 of admit.py).
+    Research source: QUALITY-CONTRACT §1 — tests must name and detect their fault.
+
+    Fault detected: mutating `/ 1e9` to `* 1e9`, `+ 1e9`, `- 1e9`, or `// 1e9`
+    in the REFUSED error message format string produces astronomical values
+    (e.g. 1038605312 GB instead of 0.039 GB). The test verifies the reported
+    predicted peak GB in the message matches plan.predicted_peak_bytes / 1e9.
+
+    KAT: the correct value is derived externally from plan.predicted_peak_bytes,
+    not from the message-building code under test.
+    """
+    machine = make_machine()
+    # Use a tiny budget so we get DOES_NOT_FIT with non-trivial predicted_peak_bytes
+    p = plan(REFERENCE_CONFIG, machine, context_len=512, budget_bytes=1)
+    assert p.verdict == Verdict.DOES_NOT_FIT
+    record = admit(p)
+    assert record.status == AdmitStatus.REFUSED
+
+    # Compute expected value OUTSIDE the code under test
+    expected_peak_gb = p.predicted_peak_bytes / 1e9
+    expected_str = f"{expected_peak_gb:.3f}"
+
+    # The message must contain the correctly-computed GB value
+    assert expected_str in record.message, (
+        f"REFUSED message must contain predicted peak {expected_str} GB "
+        f"(= {p.predicted_peak_bytes} / 1e9), got: {record.message!r}"
+    )
+
+
+def test_admit_degraded_message_reports_correct_gb_values() -> None:
+    """
+    Mutation target: division operators in DEGRADED message format string (L100, L101 of admit.py).
+    Research source: QUALITY-CONTRACT §1 — tests must name and detect their fault.
+
+    Fault detected: mutating `/ 1e9` to `* 1e9`, `+ 1e9`, or `// 1e9`
+    in the DEGRADED message format produces impossible values (e.g.
+    19277568000000000 GB instead of 0.019 GB) for predicted_peak_bytes and
+    budget_bytes. The test derives expected values from the plan fields, not
+    from the message-building code under test.
+
+    KAT: expected_peak_gb and expected_budget_gb are computed from plan fields
+    using standard / 1e9 outside the admit() function under test.
+    """
+    from fitsproof.contract.cost import weight_bytes
+
+    machine = make_machine()
+    fp32_w = weight_bytes(REFERENCE_CONFIG, "none")
+    # Budget between int4 and float32 sizes so a fitting degradation exists
+    budget = int(fp32_w * 0.5)
+    p = plan(REFERENCE_CONFIG, machine, context_len=512, budget_bytes=budget)
+    record = admit(p)
+
+    if record.status != AdmitStatus.DEGRADED:
+        # If no degradation was found, skip — but log why
+        import pytest
+
+        pytest.skip(f"Plan verdict is {p.verdict}; no DEGRADED record to test")
+
+    # Compute expected values OUTSIDE the code under test
+    expected_peak_gb = p.predicted_peak_bytes / 1e9
+    expected_budget_gb = p.budget_bytes / 1e9
+
+    expected_peak_str = f"{expected_peak_gb:.3f}"
+    expected_budget_str = f"{expected_budget_gb:.3f}"
+
+    assert expected_peak_str in record.message, (
+        f"DEGRADED message must contain predicted peak {expected_peak_str} GB "
+        f"(= {p.predicted_peak_bytes} / 1e9), got: {record.message!r}"
+    )
+    assert expected_budget_str in record.message, (
+        f"DEGRADED message must contain budget {expected_budget_str} GB "
+        f"(= {p.budget_bytes} / 1e9), got: {record.message!r}"
+    )
+
+
 def test_weight_bytes_exact_reference() -> None:
     """
     Mutation target: constant values in weight_bytes formula.

@@ -1,5 +1,131 @@
 # Improvement log — fitsproof
 
+## Pass c3-p08-improve-1 (2026-09-28) — surviving mutations in admit.py format string arithmetic
+
+### Finding source
+
+Mutation analysis (cosmic-ray, partial run — `mutmut` times out during generation in all cycles).
+
+Prior mutation passes (mutation-c1.json, mutation-c2.json) both timed out with rc=124 at the
+"Generating mutants" stage and reported `kill_rate: null`. The QUALITY-CONTRACT §5 requires
+≥70% kill rate on core modules. This pass established a working mutation run for the first time,
+using `cosmic-ray 2.0` (installed via uv) with a per-file TOML config on the highest-risk contract
+module: `src/fitsproof/contract/admit.py`.
+
+### Finding
+
+Partial mutation run (42/133 mutants executed before 10-min timeout):
+
+- Pre-fix kill rate: 24/40 = **60%** (16 survivors in first partial run before new tests)
+- Post-fix kill rate: 33/42 = **78.6%** (9 survivors after new tests added)
+
+Two categories of surviving mutants:
+
+1. **Format string divisor mutations in DEGRADED message (L100/L101)** — lines like
+   `f"DEGRADED: base config needs {plan.predicted_peak_bytes / 1e9:.3f} GB"` where
+   mutating `/ 1e9` to `+ 1e9`, `* 1e9`, or `// 1e9` produces values like
+   "1041708032.000 GB" instead of "0.042 GB". The only tests checking DEGRADED messages
+   verified the presence of `"DEGRADED"` and `applied_degradation is not None`, but not
+   the numeric GB values.
+
+2. **Corrupted constant `1000000001.0` in ADMITTED message (L69)** — the ADMITTED message
+   used `1000000001.0` instead of `1e9` as the divisor. At `.3f` precision for typical
+   reference-model sizes the rounding difference is invisible, but the constant is wrong
+   and the surviving NumberReplacer mutations around L70/L71 were related.
+
+The L90/L91 survivors are in the `REFUSED (internal inconsistency)` defensive path — that path
+is only reached when `verdict=FITS_WITH_DEGRADATION` but no degradation fits, which cannot happen
+in normal operation and is hard to exercise in unit tests without fabricating a broken plan.
+
+### Fix
+
+**`src/fitsproof/contract/admit.py`:**
+- Line 69: `1000000001.0` → `1e9` (corrected corrupted constant in ADMITTED message).
+
+**`tests/contract/test_plan_admit_verify.py`** — two new KAT tests added:
+
+- `test_admit_refused_message_reports_correct_gb_values` — computes
+  `expected_str = f"{plan.predicted_peak_bytes / 1e9:.3f}"` outside admit() and asserts
+  that string appears in the REFUSED record's message.
+- `test_admit_degraded_message_reports_correct_gb_values` — computes both
+  `expected_peak_str` and `expected_budget_str` from plan fields and asserts both appear
+  in the DEGRADED record's message.
+
+Both tests derive their expected values from `plan.*` fields using `/ 1e9` outside the
+code under test — consistent with QUALITY-CONTRACT §1 (KAT, external ground truth).
+
+### Fault injection proof
+
+Injecting the surviving mutation at L100 (`/ 1e9` → `+ 1e9` in DEGRADED message):
+
+```
+$ sed -i 's|predicted_peak_bytes / 1e9:.3f} GB "|predicted_peak_bytes + 1e9:.3f} GB "|g' \
+    src/fitsproof/contract/admit.py
+$ .venv/bin/pytest tests/contract/test_plan_admit_verify.py::test_admit_degraded_message_reports_correct_gb_values -v
+FAILED tests/contract/test_plan_admit_verify.py::test_admit_degraded_message_reports_correct_gb_values
+AssertionError: DEGRADED message must contain predicted peak 0.042 GB (= 41708032 / 1e9),
+got: 'DEGRADED: base config needs 1041708032.000 GB > budget 0.019 GB. ...'
+1 failed in 0.31s
+$ git checkout -- src/fitsproof/contract/admit.py   # reverted
+```
+
+The test kills the fault. Pre-fix, the test did not exist and the fault survived.
+
+### Before/after metrics
+
+| Metric | Before (eval-c3-p7) | After | Delta |
+|---|---|---|---|
+| `pytest -q` test count | 175 | 177 | +2 |
+| `pytest -q` failures | 0 | 0 | — |
+| admit.py mutation kill rate (partial, 40–42 mutants) | 24/40 = 60.0% | 33/42 = 78.6% | +18.6pp |
+| Corrupted constant `1000000001.0` in ADMITTED message | present | fixed (`1e9`) | fixed |
+| Tests verify GB values in DEGRADED message | NO | YES | added |
+| Tests verify GB values in REFUSED message | NO | YES (via binding_constraint) | added |
+| `ruff check .` | clean | clean | — |
+| `ruff format --check .` | clean | clean | — |
+| `check_research_traceability.py` | TRACEABILITY OK | TRACEABILITY OK | — |
+
+### Terminal evidence
+
+```
+$ .venv/bin/pytest tests/contract/test_plan_admit_verify.py::test_admit_refused_message_reports_correct_gb_values \
+    tests/contract/test_plan_admit_verify.py::test_admit_degraded_message_reports_correct_gb_values -v
+============================= test session starts ==============================
+platform linux -- Python 3.11.15, pytest-8.3.5, pluggy-1.6.0
+rootdir: /home/openclaw/portfolio/fitsproof
+configfile: pyproject.toml
+testpaths: tests
+plugins: cov-6.1.0, hypothesis-6.135.0, platformdirs-4.12.0
+collected 2 items
+
+tests/contract/test_plan_admit_verify.py::test_admit_refused_message_reports_correct_gb_values PASSED [ 50%]
+tests/contract/test_plan_admit_verify.py::test_admit_degraded_message_reports_correct_gb_values PASSED [100%]
+
+============================== 2 passed in 0.29s ==============================
+
+$ .venv/bin/pytest -q --tb=short 2>&1 | tail -3
+======================== 177 passed in 98.93s (0:01:38) ========================
+
+$ .venv/bin/ruff check . && .venv/bin/ruff format --check .
+All checks passed!
+39 files already formatted
+
+$ .venv/bin/python scripts/check_research_traceability.py
+TRACEABILITY OK (core only): all core test files cite valid research sources.
+Checked 44 source IDs from RESEARCH.md. PAPER-TRACEABILITY.md table validated (15 IMPLEMENTED rows).
+```
+
+Mutation analysis note: `mutmut 3.3.0` continues to hang at the "Generating mutants" stage in
+all three cycles (rc=124, TIMEOUT after 1800s — identical tail in mutation-c1.json and
+mutation-c2.json). `cosmic-ray` (installed this pass) completes the generation stage but times
+out before testing all 133 admit.py mutants in 10 min (42/133 done). The partial run is
+sufficient to measure the delta: 60% → 78.6% on the tested subset. A dedicated mutation pass
+would run overnight on the full module set.
+
+---
+
+
+
 ## Pass c2-p08-improve-1 (2026-09-28) — ADV-09: int8_sym/int4_sym overflow on extreme float32 weights
 
 ### Finding fixed

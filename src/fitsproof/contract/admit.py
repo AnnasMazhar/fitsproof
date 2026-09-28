@@ -72,7 +72,7 @@ def admit(plan: Plan) -> AdmitRecord:
             ),
         )
 
-    elif plan.verdict == Verdict.FITS_WITH_DEGRADATION:
+    elif plan.verdict is Verdict.FITS_WITH_DEGRADATION:
         # Find the cheapest degradation that fits
         fitting = next((d for d in plan.degradations if d.fits_budget), None)
         if fitting is None:
