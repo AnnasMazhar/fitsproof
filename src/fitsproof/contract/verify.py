@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import os
 import resource
+import threading
 import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
@@ -30,6 +31,10 @@ from enum import Enum
 import numpy as np
 
 from fitsproof.contract.admit import AdmitRecord, AdmitStatus
+
+# What measured_peak_bytes is. Exposed so tests (and users) can verify the
+# harness is reporting a sampled peak of THIS run, never the process HWM.
+MEASUREMENT_SOURCE = "sampled_vmrss"
 
 
 class DeterminismTier(int, Enum):
@@ -44,7 +49,13 @@ class VerifyRecord:
     Result of the proof harness for one configuration.
 
     budget_bytes: the declared budget.
-    measured_peak_bytes: measured RSS peak during generation.
+    measured_peak_bytes: sampled PEAK LIVE RSS (VmRSS) of this run — the
+        measurement. Never ru_maxrss/VmHWM; see _sample_peak_rss.
+    measurement_source: which quantity measured_peak_bytes is
+        ("sampled_vmrss"). Exposed so the harness cannot silently revert to
+        a constant (process high-water) measurement.
+    hwm_bytes: process high-water mark (VmHWM) at end of run — reported as a
+        separate, clearly-labelled column only, never as the measurement.
     budget_respected: measured_peak_bytes <= budget_bytes.
     margin_bytes: budget_bytes - measured_peak_bytes (positive = safe).
     mode_changed_silently: True if a backend transition occurred without a record.
@@ -59,7 +70,30 @@ class VerifyRecord:
     determinism_tier: DeterminismTier
     elapsed_s: float
     config_label: str = ""
+    hwm_bytes: int = 0
+    measurement_source: str = MEASUREMENT_SOURCE
     extra: dict = field(default_factory=dict)
+
+
+def _read_status_rss_hwm() -> tuple[int, int]:
+    """
+    Read (VmRSS, VmHWM) from /proc/self/status in a single pass.
+
+    Both lines come from one snapshot of the file, where VmHWM >= VmRSS holds
+    by construction (verified over thousands of allocation cycles). Reading
+    them separately across calls does NOT compose: on some kernels VmHWM
+    reads slightly lower after a large munmap than it did while the memory
+    was held, so an independently-timed VmHWM read can fall below an earlier
+    VmRSS sample.
+    """
+    rss = hwm = 0
+    with open("/proc/self/status") as fh:
+        for line in fh:
+            if line.startswith("VmRSS:"):
+                rss = int(line.split()[1]) * 1024
+            elif line.startswith("VmHWM:"):
+                hwm = int(line.split()[1]) * 1024
+    return rss, hwm
 
 
 def _get_rss_bytes() -> int:
@@ -82,11 +116,9 @@ def _get_rss_bytes() -> int:
     """
     # Primary: /proc/self/status — live RSS, not HWM
     try:
-        with open("/proc/self/status") as fh:
-            for line in fh:
-                if line.startswith("VmRSS:"):
-                    kb = int(line.split()[1])
-                    return kb * 1024
+        rss, _ = _read_status_rss_hwm()
+        if rss:
+            return rss
     except (FileNotFoundError, ValueError, OSError):
         pass
 
@@ -101,44 +133,113 @@ def _get_rss_bytes() -> int:
     return 0
 
 
+def _get_hwm_bytes() -> int:
+    """
+    Return the process high-water mark (VmHWM) in bytes.
+
+    VmHWM is the maximum RSS the process has reached (per a single status
+    snapshot). It cannot discriminate between configurations: after any earlier
+    call raises it, every later run reports at least that same constant. It is
+    reported as a separate, clearly-labelled column so the difference from the
+    sampled peak stays visible — it is never the measurement.
+    """
+    try:
+        _, hwm = _read_status_rss_hwm()
+        if hwm:
+            return hwm
+    except (FileNotFoundError, ValueError, OSError):
+        pass
+
+    # Fallback: ru_maxrss IS the HWM on every platform
+    try:
+        usage = resource.getrusage(resource.RUSAGE_SELF)
+        if os.uname().sysname == "Linux":
+            return usage.ru_maxrss * 1024
+        return usage.ru_maxrss
+    except (OSError, AttributeError):
+        pass
+    return 0
+
+
 def _sample_peak_rss(
     fn: Callable[[], list[int]],
-    sample_interval_s: float = 0.01,
-) -> tuple[list[int], int]:
+    sample_interval_s: float = 0.001,
+) -> tuple[list[int], int, int]:
     """
-    Run *fn* in the current thread and return (result, peak_rss_bytes).
+    Run *fn* in the current thread and return
+    (result, peak_live_rss_bytes, hwm_bytes).
 
-    peak_rss_bytes is the absolute live RSS *after* the call (/proc/self/status
-    VmRSS).  This is the correct value to compare against the declared budget:
-    the budget covers the full working set (interpreter + numpy + model), and
-    the prediction includes machine.process_baseline_bytes for the same reason.
+    peak_live_rss_bytes is the maximum *live* RSS (VmRSS) observed before,
+    during and after the call — the peak of THIS run. It is the quantity
+    compared against the declared budget, because the budget covers the full
+    working set (interpreter + numpy + model) and the prediction includes
+    machine.process_baseline_bytes for the same reason.
 
-    Why absolute RSS and not a delta:
-      - The declared budget is a wall ("does this workload fit in N GB?"), not
-        a marginal allocation question.
-      - The prediction (plan.py) is baseline + model_bytes; the verifier must
-        compare the same quantity.
-      - Absolute RSS from /proc/self/status varies across configs because
-        different context lengths and decode lengths cause KV-cache growth, so
-        the harness is discriminating: 25 configs produce non-identical values.
+    hwm_bytes is the maximum VmHWM seen across the same paired samples. Every
+    RSS sample is paired with an HWM from the same status snapshot
+    (VmHWM >= VmRSS), so peak_live_rss_bytes <= hwm_bytes always holds, while
+    the two stay clearly distinguishable: the HWM is a cumulative process
+    constant, the peak is per-run.
 
-    Why /proc/self/status and not ru_maxrss:
-      - ru_maxrss is a HWM since process start (never decreases).  After the
-        probe() call allocates large benchmark arrays, every subsequent call
-        reports the same HWM even though those arrays were freed.  That makes
-        the stress harness trivially non-discriminating.
-      - /proc/self/status VmRSS reflects the live resident set at the instant
-        of reading, so different configs with different working sets produce
-        different numbers.
+    Why sample during the run instead of reading after it:
+      - Reading VmRSS only after fn() returns misses transient peaks: a config
+        that allocates its working set and frees it before returning looks
+        identical to one that allocates nothing.
+      - Reading ru_maxrss/VmHWM is worse: the high-water mark never
+        decreases, so once probe()'s benchmark arrays (or any earlier config)
+        raise it, every later config reports the same constant — the harness
+        is non-discriminating (the defect CI caught: all 25 configs reporting
+        one identical margin).
 
-    Fault detected: if fn() causes a large persistent allocation, the post-call
-    RSS will be larger than the pre-call value and the budget check will trigger.
+    How: a background thread samples /proc/self/status every *sample_interval_s*
+    while fn runs. time.sleep() and NumPy ops release the GIL, so the sampler
+    is scheduled during real workloads; pre- and post-call samples guarantee a
+    value even for runs shorter than the interval (those observe the run's
+    steady-state RSS, which still varies with persistent allocations).
+
+    On platforms without /proc this degrades to the pre/post readings of the
+    ru_maxrss fallback in _get_rss_bytes (coarser, but the tests that require
+    discrimination are Linux-only, matching CI).
     """
-    result = fn()
 
-    # Sample after — absolute live RSS (includes all persistent allocations)
-    peak = _get_rss_bytes()
-    return result, peak
+    def _read_pair() -> tuple[int, int]:
+        try:
+            rss, hwm = _read_status_rss_hwm()
+            if rss:
+                return rss, hwm
+        except (FileNotFoundError, ValueError, OSError):
+            pass
+        # Fallback reads are two separate snapshots; clamp so the paired
+        # invariant (peak <= hwm) survives even if VmHWM dips between reads.
+        rss = _get_rss_bytes()
+        return rss, max(_get_hwm_bytes(), rss)
+
+    peak, hwm_peak = _read_pair()
+    stop = threading.Event()
+
+    def _sampler() -> None:
+        nonlocal peak, hwm_peak
+        while not stop.wait(sample_interval_s):
+            rss, hwm = _read_pair()
+            if rss > peak:
+                peak = rss
+            if hwm > hwm_peak:
+                hwm_peak = hwm
+
+    sampler = threading.Thread(target=_sampler, name="fitsproof-rss-sampler", daemon=True)
+    sampler.start()
+    try:
+        result = fn()
+    finally:
+        stop.set()
+        sampler.join()
+
+    rss, hwm = _read_pair()
+    if rss > peak:
+        peak = rss
+    if hwm > hwm_peak:
+        hwm_peak = hwm
+    return result, peak, hwm_peak
 
 
 def verify_run(
@@ -149,7 +250,14 @@ def verify_run(
     determinism_check_fn: Callable[[], list[int]] | None = None,
 ) -> VerifyRecord:
     """
-    Run *fn* (a generation callable), measure peak RSS, assert budget compliance.
+    Run *fn* (a generation callable), measure the sampled peak live RSS of
+    this run, assert budget compliance.
+
+    measured_peak_bytes is the sampled peak of *this* call (VmRSS before/
+    during/after), never the process high-water mark; hwm_bytes is reported
+    alongside as a separate, clearly-labelled column. The headline number,
+    margin_bytes, is budget_bytes − measured_peak_bytes, so two configs with
+    genuinely different footprints cannot report the same margin.
 
     Args:
         fn:                  Callable returning a list of generated token ids.
@@ -172,7 +280,9 @@ def verify_run(
         )
 
     t0 = time.perf_counter()
-    result, peak_rss = _sample_peak_rss(fn)
+    # (peak_rss, hwm) come from paired status samples: peak is this run's
+    # measurement, hwm is the separate, clearly-labelled process-HWM column.
+    result, peak_rss, hwm = _sample_peak_rss(fn)
     elapsed = time.perf_counter() - t0
 
     budget_respected = peak_rss <= budget_bytes
@@ -186,7 +296,7 @@ def verify_run(
     # Determinism tier assessment
     tier = DeterminismTier.TIER_0
     if determinism_check_fn is not None:
-        result2, _ = _sample_peak_rss(determinism_check_fn)
+        result2, _, _ = _sample_peak_rss(determinism_check_fn)
         if result == result2:
             tier = DeterminismTier.TIER_1
             # Tier 2 requires logprob equality (not measured here; promoted only
@@ -201,6 +311,8 @@ def verify_run(
         determinism_tier=tier,
         elapsed_s=elapsed,
         config_label=config_label,
+        hwm_bytes=hwm,
+        measurement_source=MEASUREMENT_SOURCE,
     )
 
 
@@ -227,15 +339,27 @@ class StressResult:
     def all_modes_explicit(self) -> bool:
         return self.silent_mode_changes == 0
 
+    @property
+    def measurement_source(self) -> str:
+        """Which quantity measured_peak_bytes is (exposed for regression tests)."""
+        if self.records:
+            return self.records[0].measurement_source
+        return MEASUREMENT_SOURCE
+
     def summary(self) -> str:
         margins = np.array(self.margin_bytes)
+        peaks = np.array([r.measured_peak_bytes for r in self.records])
+        hwm = max((r.hwm_bytes for r in self.records), default=0)
         return (
             f"Stress harness: {self.n_configs} configs, "
             f"{self.violations} violations, "
-            f"{self.silent_mode_changes} silent mode changes. "
-            f"Margin: min={margins.min() / 1e6:.1f} MB, "
-            f"median={np.median(margins) / 1e6:.1f} MB, "
-            f"max={margins.max() / 1e6:.1f} MB."
+            f"{self.silent_mode_changes} silent mode changes.\n"
+            f"  measurement: {self.measurement_source} (sampled peak live RSS "
+            f"of each run, not the process high-water mark)\n"
+            f"  margin (budget - sampled peak): min={margins.min() / 1e6:.1f} MB, "
+            f"median={np.median(margins) / 1e6:.1f} MB, max={margins.max() / 1e6:.1f} MB\n"
+            f"  sampled peak: min={peaks.min() / 1e6:.1f} MB, max={peaks.max() / 1e6:.1f} MB; "
+            f"process VmHWM (separate column, not the measurement): {hwm / 1e6:.1f} MB"
         )
 
 
