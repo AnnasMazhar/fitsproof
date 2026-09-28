@@ -1484,3 +1484,407 @@ those faults affect default parameters or internal calculation paths.
 - Repo left green: 178 passed, ruff clean.
 
 PASS_c3-p10-adversarial-1 COMPLETE
+
+
+---
+
+# Cycle 3 — Pass 2: Attack the Property (c3-p11-adversarial-2)
+
+Independent review, pass `c3-p11-adversarial-2` (cycle 3, adversarial pass 2 of 2).
+Reviewer lane: kiro (claude-opus-4.5). The reviewer does not fix code — it
+reports findings; the builder fixes; the reviewer re-verifies.
+
+Baseline before attack (repo state `5aa991f`, branch `feat/v0.1`):
+
+```
+$ .venv/bin/pytest -q
+======================= 178 passed in 209.15s (0:03:29) ========================
+$ .venv/bin/ruff check . && .venv/bin/ruff format --check .
+All checks passed!
+```
+
+---
+
+## 25. Property attacks — attempt to defeat the core safety/correctness property
+
+### P3-A1: Bypass verify_run budget check with negative budget
+
+Attack: Pass a negative budget to verify_run to test boundary behaviour.
+
+```python
+result = verify_run(dummy_gen, budget_bytes=-1000000, admit_record=fake_record, config_label="neg-budget")
+```
+
+Result:
+```
+Budget:      -1000000 bytes
+Measured:    32284672 bytes
+Respected:   False
+Margin:      -33284672 bytes
+ATTACK FAILED (good): negative budget correctly shows as NOT respected
+```
+
+**Verdict: Defense held.** Negative budget correctly results in `budget_respected=False`.
+
+### P3-A2: Verify mode_changed_silently detection (ADMITTED with predicted > budget)
+
+Attack: Create an ADMITTED record where plan.predicted_peak_bytes > budget.
+
+```python
+plan_over_budget = Plan(predicted_peak_bytes=10_000_000_000, ...)  # 10GB
+admitted_over = AdmitRecord(status=AdmitStatus.ADMITTED, plan=plan_over_budget, ...)
+result = verify_run(dummy_gen, budget_bytes=1_000_000_000, admit_record=admitted_over)
+```
+
+Result:
+```
+mode_changed_silently: True
+ATTACK FAILED (good): verify_run detected the inconsistency
+```
+
+**Verdict: Defense held.** ADV-03 fix confirmed working.
+
+### P3-A3: Verify mode_changed_silently detection (DEGRADED with no applied_degradation)
+
+Attack: Create a DEGRADED record with applied_degradation=None.
+
+```python
+degraded_no_name = AdmitRecord(status=AdmitStatus.DEGRADED, applied_degradation=None, ...)
+result = verify_run(dummy_gen, budget_bytes=10_000_000, admit_record=degraded_no_name)
+```
+
+Result:
+```
+mode_changed_silently: True
+ATTACK FAILED (good): verify_run detected the missing degradation name
+```
+
+**Verdict: Defense held.** ADV-03 fix confirmed working.
+
+### P3-A4: Invalid quant name smuggling
+
+Attack: Pass invalid quant names (typos, injection strings, null bytes) to plan().
+
+```python
+invalid_quants = ["int2", "INT8_SYM", "none ", "int8_sym\x00", "int4_sym; echo pwned", "", "float128"]
+for q in invalid_quants:
+    plan(cfg=cfg, machine=profile, context_len=512, budget_bytes=4*1024**3, quant=q)
+```
+
+Result:
+```
+  quant='int2': ATTACK FAILED (good) - ValueError raised
+  quant='INT8_SYM': ATTACK FAILED (good) - ValueError raised
+  quant='none ': ATTACK FAILED (good) - ValueError raised
+  quant='int8_sym\x00': ATTACK FAILED (good) - ValueError raised
+  quant='int4_sym; echo pwned': ATTACK FAILED (good) - ValueError raised
+  quant='': ATTACK FAILED (good) - ValueError raised
+  quant='float128': ATTACK FAILED (good) - ValueError raised
+```
+
+**Verdict: Defense held.** All 7 invalid quant names rejected with ValueError.
+
+### P3-A5: NaN/Inf injection into plan()
+
+Attack: Pass NaN, Inf, -Inf, and negative values as budget_bytes.
+
+```python
+special_values = [float("nan"), float("inf"), float("-inf"), -1]
+for budget in special_values:
+    plan(cfg=cfg, machine=profile, context_len=512, budget_bytes=budget, quant="none")
+```
+
+Result:
+```
+  budget_bytes=nan: ATTACK FAILED (good) - rejected
+  budget_bytes=inf: ATTACK FAILED (good) - rejected
+  budget_bytes=-inf: ATTACK FAILED (good) - rejected
+  budget_bytes=-1: ATTACK FAILED (good) - rejected
+```
+
+**Verdict: Defense held.** All invalid budget values rejected.
+
+### P3-A6: Empty degradation list when FITS_WITH_DEGRADATION
+
+Attack: Create a Plan with verdict=FITS_WITH_DEGRADATION but empty degradations list.
+
+```python
+broken_plan = Plan(verdict=Verdict.FITS_WITH_DEGRADATION, degradations=[], ...)
+result = admit(broken_plan)
+```
+
+Result:
+```
+  Status: AdmitStatus.REFUSED
+  Message: REFUSED (internal inconsistency): budget=4.000 GB, predicted=8.000 GB...
+  ATTACK FAILED (good): admit() refused inconsistent plan
+```
+
+**Verdict: Defense held.** Internal inconsistency detected and refused.
+
+### P3-A7: All degradations don't fit, but verdict says FITS_WITH_DEGRADATION
+
+Attack: Create a Plan with verdict=FITS_WITH_DEGRADATION but all degradations have
+`fits_budget=False`.
+
+```python
+inconsistent_plan = Plan(
+    verdict=Verdict.FITS_WITH_DEGRADATION,
+    degradations=[DegradationStep(fits_budget=False, ...)],
+    ...
+)
+result = admit(inconsistent_plan)
+```
+
+Result:
+```
+  Status: AdmitStatus.REFUSED
+  Applied degradation: None
+  ATTACK FAILED (good): admit() refused because no degradation fits
+```
+
+**Verdict: Defense held.** admit() correctly refuses when no degradation fits.
+
+### P3-A8: Integer overflow in budget comparison
+
+Attack: Pass extremely large budget values (2^63-1, 2^63, 2^64-1).
+
+Result:
+```
+  budget=2^63-1: verdict=Verdict.FITS, predicted=139225600
+    ATTACK FAILED (good): correctly identified as fits
+  budget=2^63: verdict=Verdict.FITS, predicted=139225600
+    ATTACK FAILED (good): correctly identified as fits
+  budget=2^64-1: verdict=Verdict.FITS, predicted=139225600
+    ATTACK FAILED (good): correctly identified as fits
+```
+
+**Verdict: Defense held.** Python handles large integers correctly.
+
+### P3-A9: Concurrent verify_run calls
+
+Attack: Run 4 concurrent verify_run calls to test for race conditions.
+
+```python
+with ThreadPoolExecutor(max_workers=4) as executor:
+    futures = [executor.submit(verify_worker, i) for i in range(4)]
+    results = [f.result() for f in futures]
+```
+
+Result:
+```
+  Worker 0: respected=True, measured=119.5 MB
+  Worker 1: respected=True, measured=119.3 MB
+  Worker 2: respected=True, measured=119.4 MB
+  Worker 3: respected=True, measured=119.5 MB
+  ATTACK FAILED (good): all concurrent workers respected budget
+```
+
+**Verdict: Defense held.** No race conditions observed.
+
+### P3-A10: Speculative decoding with adversarial draft (different seed=999999)
+
+Attack: Generate target and draft models with maximally different seeds and verify
+speculative output equals greedy target output.
+
+Result:
+```
+  Target greedy: [179, 179, 179, 179, 179, 179, 179, 179, 179, 179]
+  Speculative:   [179, 179, 179, 179, 179, 179, 179, 179, 179, 179]
+  ATTACK FAILED (good): speculative equals greedy with adversarial draft
+```
+
+**Verdict: Defense held.** Speculative decoding equality property holds.
+
+### P3-A11: MCP tool with malformed JSON-RPC
+
+Attack: Send malformed JSON-RPC requests to the MCP server (missing method, wrong
+version, unknown method, SQL injection in arguments).
+
+Result:
+```
+  Missing method: error response (good) - -32601
+  Wrong jsonrpc version: success response - possibly bad
+  Unknown method: error response (good) - -32601
+  SQL injection in args: MCP Error (isError=True): Invalid arguments: cannot parse budget...
+```
+
+**Observations:**
+- Missing method: correctly rejected with JSON-RPC error -32601
+- Unknown method: correctly rejected with JSON-RPC error -32601
+- SQL injection: correctly rejected with isError=True, "cannot parse budget"
+- **Wrong jsonrpc version**: server does not validate jsonrpc version field. This
+  is minor — MCP spec (source 27) says jsonrpc must be "2.0" but the behaviour is
+  merely lenient, not a security issue. See ADV-16.
+
+### P3-A12: HTTP server header injection
+
+Attack: Send payloads with CRLF injection attempts in content and model fields.
+
+Result:
+```
+  Payload 0: ATTACK FAILED (good) - no injection
+  Payload 1: ATTACK FAILED (good) - no injection
+```
+
+**Verdict: Defense held.** No header injection.
+
+### P3-A13: Empty config list to stress harness
+
+Attack: Pass an empty config list to run_stress_harness().
+
+Result:
+```
+  n_configs: 0
+  violations: 0
+  violation_free: True
+  Status: ADV-13 limitation confirmed (vacuous pass with 0 configs)
+```
+
+**Verdict: ADV-13 limitation confirmed.** The CLI generates 25 configs internally,
+so this only affects direct API callers.
+
+### P3-A14: RSS measurement verification
+
+Attack: Verify that fitsproof uses /proc/self/status VmRSS (current RSS), not
+ru_maxrss (high-water mark).
+
+Result:
+```
+  fitsproof._get_rss_bytes(): 32.9 MB
+  /proc/self/status VmRSS:    32.9 MB
+  VERIFIED: fitsproof uses /proc/self/status VmRSS (current RSS, not high-water)
+```
+
+**Verdict: README correctly describes behaviour.** ADV-08 was already fixed (c3-p04).
+
+### P3-A16: Float denormalized number edge case
+
+Attack: Pass denormalized float (smallest positive) as budget.
+
+Result:
+```
+  ATTACK FAILED (good): denorm budget rejected
+  Float budget 4.5 GB: verdict=Verdict.FITS (accepted - floats allowed)
+```
+
+**Verdict: Defense held.** Denormals rejected; valid floats accepted.
+
+### P3-A17: Guard decorator with async function
+
+Attack: Apply @guard(budget="1MiB") to an async function.
+
+Result:
+```
+  ATTACK FAILED (good): async function guard works
+```
+
+**Verdict: Defense held.** @guard works with async functions.
+
+### P3-A18: Quantization with NaN/Inf weights
+
+Attack: Pass NaN and Inf in weight arrays to quantize().
+
+Result:
+```
+  NaN weights: ATTACK FAILED (good) - NaN weights rejected
+  Inf weights: ATTACK FAILED (good) - Inf weights rejected
+```
+
+**Verdict: Defense held.** Both NaN and Inf rejected with explicit ValueError.
+
+### P3-A19: Server crash on huge max_tokens
+
+Attack: Send HTTP request with max_tokens=1_000_000.
+
+Result:
+```
+  Server crashed with ValueError: could not broadcast input array from shape (1,6,0,32)
+  into shape (1,6,1,32)
+```
+
+**Root cause:** `Transformer.generate()` does not clamp `max_new_tokens` to
+`cfg.max_seq_len - len(prompt)`. When max_tokens exceeds this, the RoPE offset
+exceeds the precomputed frequency array bounds, causing a broadcasting error.
+
+**Verdict: NEW MAJOR FINDING (ADV-16).** Server should clamp max_tokens to avoid
+crash. This is a denial-of-service vulnerability via malformed request.
+
+### P3-A20: Budget string "4" without unit
+
+Attack: Pass "4" (no unit) as budget_bytes string to client.plan().
+
+Result:
+```
+  '4' parses to budget_bytes=4 (4 bytes)
+  predicted_peak_bytes: 41708032
+  verdict: Verdict.DOES_NOT_FIT
+```
+
+**Observation:** "4" without a unit is interpreted as 4 bytes, which results in
+DOES_NOT_FIT as expected. This is arguably confusing UX but technically correct
+behaviour — the integer is used directly. The contract still works correctly.
+See ADV-17 (minor).
+
+---
+
+## 26. Updated Findings Table — Cycle 3 Pass 2 Final Status
+
+| id | severity | finding | status |
+|---|---|---|---|
+| ADV-01 | blocker | FlexGen citation mis-attribution | **fixed (c2-p08)** |
+| ADV-02 | blocker | GPTQ per-channel vs per-group | **fixed (c2-p08)** |
+| ADV-03 | blocker | mode_changed_silently hardcoded False | **fixed (c2-p08)** |
+| ADV-04 | major | Stress-harness margin degenerate | **limitation** — documented in README |
+| ADV-05 | major | test_speculative_equals_greedy vacuous | **fixed (c2-p05)** — different-seed draft |
+| ADV-06 | minor | calibration_demo numbers load-dependent | **limitation** |
+| ADV-07 | minor | ACM link 403s automation | **limitation** — Crossref verified |
+| ADV-08 | minor | README RSS limitation self-contradicts | **fixed (c3-p04)** |
+| ADV-09 | major | int8_sym overflow on extreme weights | **fixed (c2-p08)** |
+| ADV-10 | minor | Server budget per-request, not global | **limitation** |
+| ADV-11 | minor | @guard bypassable via __wrapped__ | **limitation** — Python stdlib |
+| ADV-12 | major | Server crashes on messages as non-list | **fixed (c3-p04)** |
+| ADV-13 | minor | Empty config list passes stress harness | **limitation** — CLI generates 25 |
+| ADV-14 | minor | test_rope_known_values doesn't exercise default theta | **new — c3-p10** |
+| ADV-15 | minor | test_decode_tok_s_known_answer bypasses formula path | **new — c3-p10** |
+| ADV-16 | major | Server crashes on max_tokens > max_seq_len - prompt_len | **new — c3-p11, open** |
+| ADV-17 | minor | Budget string "4" without unit treated as 4 bytes | **new — c3-p11, limitation** — UX quirk, contract correct |
+| ADV-18 | minor | MCP server does not validate jsonrpc version field | **new — c3-p11, limitation** — lenient, not a security issue |
+
+---
+
+## 27. Failed attacks (evidence for the defence, c3-p11)
+
+- P3-A1: Negative budget correctly shows as NOT respected.
+- P3-A2/A3: mode_changed_silently detection works (ADV-03 fix verified).
+- P3-A4: All 7 invalid quant names rejected with ValueError.
+- P3-A5: NaN/Inf/-Inf/-1 budget values all rejected.
+- P3-A6/A7: Inconsistent Plan verdicts refused.
+- P3-A8: Large integers (2^64-1) handled correctly.
+- P3-A9: Concurrent verify_run calls — no race conditions.
+- P3-A10: Speculative decoding equality holds with adversarial draft (seed=999999).
+- P3-A11: SQL injection in MCP args rejected with explicit error.
+- P3-A12: HTTP header injection — no injection.
+- P3-A14: RSS measurement verified correct.
+- P3-A16: Denormalized budget rejected; valid floats accepted.
+- P3-A17: @guard works with async functions.
+- P3-A18: NaN/Inf weights rejected by quantizer.
+
+---
+
+## 28. Gate status for this pass
+
+- Artifact: `docs/ADVERSARIAL_REVIEW.md` extended with cycle 3 pass 2 findings.
+- **Open blockers: 0** — all previous blockers resolved.
+- **Open majors: 1** — ADV-16 (server crash on huge max_tokens).
+- **Open minors: 8** — ADV-06, ADV-07, ADV-10, ADV-11, ADV-13, ADV-14, ADV-15, ADV-17, ADV-18
+  (all documented as limitations or minor issues).
+- Repo left green: 178 passed, ruff clean.
+
+ADV-16 (server crash on huge max_tokens) is a new major finding. The server should
+clamp `max_tokens` to `cfg.max_seq_len - len(prompt_ids)` before passing to generate().
+This is a robustness issue (denial of service via malformed request) but does not
+compromise the core safety property (the contract is not bypassed — the request
+crashes before any budget check).
+
+PASS_c3-p11-adversarial-2 COMPLETE
