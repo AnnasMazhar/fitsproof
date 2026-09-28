@@ -189,6 +189,12 @@ def main() -> int:
             config_label="cli_verify",
         )
         print(f"  measured_peak:    {vresult.measured_peak_bytes / 1e6:.1f} MB")
+        print(
+            f"  measurement:      {vresult.measurement_source} (sampled peak live RSS of this run)"
+        )
+        print(
+            f"  process VmHWM:    {vresult.hwm_bytes / 1e6:.1f} MB (separate column, not the measurement)"
+        )
         print(f"  budget:           {budget / 1e6:.1f} MB")
         print(f"  budget_respected: {vresult.budget_respected}")
         print(f"  margin:           {vresult.margin_bytes / 1e6:.1f} MB")
