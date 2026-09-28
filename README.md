@@ -208,16 +208,42 @@ correctness-first runtime that runs offline with no GPU and no CUDA toolkit.
 
 ## CLI
 
+`plan` and `admit` are distinct commands. `plan` describes the prediction without enforcing;
+`admit` enforces it (exit 2 on refusal). Use `plan` to inspect before committing to the gate.
+
 ```
 fitsproof --version  # print the package version (also -V)
 fitsproof probe    # measure this machine (bandwidth, GEMM, RAM/VRAM)
-fitsproof plan     # predict peak memory for a budget (--model <bundle> for a saved model)
-fitsproof admit    # admit / degrade loudly / refuse (exit 2 on refusal)
+fitsproof plan     # show predicted peak, CI, tok/s, verdict — does NOT enforce (always exit 0)
+fitsproof admit    # enforce the contract — ADMITTED / DEGRADED / REFUSED (exit 2 on refusal)
 fitsproof verify   # measure peak RSS during generation, assert <= budget
 fitsproof stress   # >=20 configs: zero violations, zero silent mode changes
 fitsproof serve    # OpenAI-compatible HTTP server (alias: fitsproof server)
 fitsproof mcp      # MCP server (stdio): plan / admit / probe tools
 fitsproof pareto   # measured Pareto frontier over (quant, context)
+```
+
+Example — inspect the prediction, then enforce:
+
+```
+$ fitsproof plan --budget-gb 4
+predicted peak:  0.042 GB  (95% CI: [0.033, 0.050] GB)
+predicted tok/s: 98.6  (95% CI: [69.0, 128.2])
+budget:          4.000 GB
+verdict:         fits
+
+$ fitsproof admit --budget-gb 4
+ADMITTED: 0.042 GB predicted peak <= 4.000 GB budget (margin: 3958.3 MB)
+
+$ fitsproof plan --budget-gb 0.001
+predicted peak:  0.042 GB  (95% CI: [0.033, 0.050] GB)
+predicted tok/s: 103.8  (95% CI: [72.6, 134.9])
+budget:          0.001 GB
+verdict:         does_not_fit
+degradation options:
+  [does not fit] Use int4_sym quantisation instead of none -> 0.006 GB  (724.2 tok/s)
+  ...
+# plan exits 0 — it describes; admit enforces (exit 2 on does_not_fit)
 ```
 
 ## Architecture

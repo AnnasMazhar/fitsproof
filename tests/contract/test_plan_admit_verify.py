@@ -86,6 +86,8 @@ Faults detected by each test:
 
 from __future__ import annotations
 
+import subprocess
+import sys
 import time
 
 import numpy as np
@@ -863,4 +865,99 @@ def test_verify_mode_changed_silently_detectable(transformer) -> None:
         "verify_run must set mode_changed_silently=True when an ADMITTED record "
         "is presented for a plan whose predicted_peak_bytes exceeds budget_bytes. "
         "This is the silent mode change ADV-03 requires to be detectable."
+    )
+
+
+# ---------------------------------------------------------------------------
+# CLI plan-vs-admit separation (c2-p09-improve-2)
+# ---------------------------------------------------------------------------
+
+
+def test_cli_plan_exits_0_on_does_not_fit() -> None:
+    """
+    `fitsproof plan` must exit 0 even when the verdict is does_not_fit.
+
+    Fault detected: the old combined plan/admit handler called admit() and
+    returned exit code 2 on REFUSED — identical to `fitsproof admit`. A stranger
+    who runs `fitsproof plan` to inspect the prediction before committing to the
+    gate got an enforcement decision instead of a description.
+
+    Sources: [1] Roofline (the formula being described), [2] FlexGen (peak model).
+    """
+    import subprocess
+
+    proc = subprocess.run(
+        [sys.executable, "-m", "fitsproof.cli", "plan", "--budget-gb", "0.0001"],
+        capture_output=True,
+        text=True,
+        timeout=120,
+    )
+    assert proc.returncode == 0, (
+        f"`fitsproof plan` must exit 0 even when verdict is does_not_fit. "
+        f"Got exit code {proc.returncode}.\nstdout: {proc.stdout!r}\nstderr: {proc.stderr!r}"
+    )
+    assert "does_not_fit" in proc.stdout, (
+        f"plan output must show verdict 'does_not_fit', got: {proc.stdout!r}"
+    )
+
+
+def test_cli_plan_shows_prediction_not_enforcement() -> None:
+    """
+    `fitsproof plan` output must contain predicted peak, CI, tok/s, and verdict.
+    It must NOT contain 'ADMITTED', 'REFUSED', or 'DEGRADED' — those are enforcement
+    messages that belong to `fitsproof admit`.
+
+    Fault detected: the old combined handler printed 'ADMITTED: ...' from admit(),
+    which looks like an enforcement decision, not a prediction. A stranger reading
+    the output had no way to distinguish plan from admit.
+
+    Sources: [1] Roofline, [2] FlexGen — the values shown are the model's output.
+    """
+    import subprocess
+
+    proc = subprocess.run(
+        [sys.executable, "-m", "fitsproof.cli", "plan", "--budget-gb", "4"],
+        capture_output=True,
+        text=True,
+        timeout=120,
+    )
+    assert proc.returncode == 0, f"plan --budget-gb 4 must exit 0, got {proc.returncode}"
+    out = proc.stdout
+
+    # prediction fields must be present
+    assert "predicted peak:" in out, f"plan must show 'predicted peak:', got: {out!r}"
+    assert "predicted tok/s:" in out, f"plan must show 'predicted tok/s:', got: {out!r}"
+    assert "budget:" in out, f"plan must show 'budget:', got: {out!r}"
+    assert "verdict:" in out, f"plan must show 'verdict:', got: {out!r}"
+    assert "fits" in out.lower(), f"plan must show a verdict string, got: {out!r}"
+
+    # enforcement messages must be absent
+    for forbidden in ("ADMITTED", "REFUSED", "DEGRADED"):
+        assert forbidden not in out, (
+            f"`fitsproof plan` must not print enforcement message '{forbidden}'. "
+            f"That belongs to `fitsproof admit`. Got: {out!r}"
+        )
+
+
+def test_cli_admit_exits_2_on_refusal() -> None:
+    """
+    `fitsproof admit` must exit 2 when the verdict is does_not_fit.
+
+    Fault detected: if admit exits 0 on refusal, callers that chain commands
+    (`fitsproof admit ... && ollama run ...`) will proceed when the contract refused.
+
+    Sources: [1] Roofline, [2] FlexGen.
+    """
+    proc = subprocess.run(
+        [sys.executable, "-m", "fitsproof.cli", "admit", "--budget-gb", "0.0001"],
+        capture_output=True,
+        text=True,
+        timeout=120,
+    )
+    assert proc.returncode == 2, (
+        f"`fitsproof admit` must exit 2 on refusal. Got {proc.returncode}.\n"
+        f"stdout: {proc.stdout!r}\nstderr: {proc.stderr!r}"
+    )
+    assert "REFUSED" in proc.stdout, (
+        f"admit output on refusal must contain 'REFUSED', got: {proc.stdout!r}"
     )

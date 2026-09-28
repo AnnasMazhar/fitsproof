@@ -134,7 +134,138 @@ PAPER-TRACEABILITY.md table validated (15 IMPLEMENTED rows).
 
 ---
 
-## Pass c1-p08-improve-1 (2026-09-27)
+## Pass c2-p09-improve-2 (2026-09-28) — `plan` CLI separated from `admit` (credibility gap)
+
+### Finding fixed
+
+**`fitsproof plan` was identical to `fitsproof admit` — both ran `admit()` and printed `ADMITTED`/`REFUSED`.**
+
+The README describes `plan` as "predict peak memory for a budget" and the spec says it should
+show `predicted_peak_bytes`, `predicted_peak_ci`, `predicted_tok_s` and `verdict`. But the CLI
+had a combined handler `elif args.command in ("plan", "admit"):` that ran `admit()` on both.
+
+A stranger who read the README, saw "plan — predict peak memory" and ran `fitsproof plan`:
+
+```
+# Before this fix:
+$ fitsproof plan --budget-gb 4
+ADMITTED: 0.042 GB predicted peak <= 4.000 GB budget (margin: 3958.3 MB)
+$ fitsproof plan --budget-gb 0.001
+REFUSED: needs 0.042 GB, budget 0.001 GB; ...
+exit: 2
+```
+
+The README said `plan` would *describe*, but the output enforced. Running `plan` with a tiny budget
+exited 2 — identical to `admit`. A CI script that ran `fitsproof plan` to inspect before committing
+to the gate would fail with exit 2 on tiny budgets. A reviewer comparing `plan` vs `admit` output
+would see identical text.
+
+The root cause: `plan` and `admit` shared one handler branch.
+
+### Fix
+
+Split the `plan` and `admit` CLI handlers in `src/fitsproof/cli.py`:
+
+- **`plan`**: calls `make_plan()` only, formats the `Plan` object's fields directly (predicted peak,
+  CI, tok/s, verdict, degradation options with tok/s), always exits 0. Does not call `admit()`.
+- **`admit`**: calls `make_plan()` then `admit()`, prints the enforcement record (`ADMITTED`/`REFUSED`/`DEGRADED`), exits 2 on refusal.
+
+After fix:
+
+```
+$ fitsproof plan --budget-gb 4
+predicted peak:  0.042 GB  (95% CI: [0.033, 0.050] GB)
+predicted tok/s: 98.6  (95% CI: [69.0, 128.2])
+budget:          4.000 GB
+verdict:         fits
+exit: 0
+
+$ fitsproof plan --budget-gb 0.001
+predicted peak:  0.042 GB  (95% CI: [0.033, 0.050] GB)
+predicted tok/s: 103.8  (95% CI: [72.6, 134.9])
+budget:          0.001 GB
+verdict:         does_not_fit
+degradation options:
+  [does not fit] Use int4_sym quantisation instead of none -> 0.006 GB  (724.2 tok/s)
+  ...
+exit: 0   ← plan exits 0 — it describes; it does not enforce
+
+$ fitsproof admit --budget-gb 0.001
+REFUSED: needs 0.042 GB, budget 0.001 GB; no listed option fits — nearest is "Use int4_sym quantisation instead of none" at 0.006 GB (0.005 GB above budget)
+exit: 2   ← admit exits 2 on refusal
+```
+
+### Tests that would have caught it
+
+Three new tests in `tests/contract/test_plan_admit_verify.py`:
+
+- `test_cli_plan_exits_0_on_does_not_fit` — runs `fitsproof plan --budget-gb 0.0001` as a subprocess;
+  asserts exit code 0 and `does_not_fit` in stdout. **Fails on the pre-fix code** (exit code 2).
+- `test_cli_plan_shows_prediction_not_enforcement` — runs `fitsproof plan --budget-gb 4`; asserts
+  `predicted peak:`, `predicted tok/s:`, `budget:`, `verdict:` are present, and `ADMITTED`/`REFUSED`/
+  `DEGRADED` are absent. **Fails on the pre-fix code** (`ADMITTED` was in the output).
+- `test_cli_admit_exits_2_on_refusal` — runs `fitsproof admit --budget-gb 0.0001`; asserts exit 2
+  and `REFUSED` in stdout.
+
+### Other improvements
+
+**README CLI section updated**: added the `plan` / `admit` distinction with a worked example showing
+both commands' outputs. ADOPTION.md §7 updated to document the plan workflow alongside admit.
+
+### Before/after metrics
+
+| Metric | Before (c2-p08) | After | Delta |
+|---|---|---|---|
+| `pytest -q` test count | 166 | 169 | +3 |
+| `pytest -q` failures | 0 | 0 | — |
+| `fitsproof plan` exit on `does_not_fit` | 2 (same as admit) | 0 (describes, no enforce) | fixed |
+| `fitsproof plan` output shows prediction fields | NO (showed ADMITTED/REFUSED) | YES (predicted peak, CI, tok/s, verdict) | fixed |
+| `fitsproof admit` exit on refusal | 2 | 2 | unchanged |
+| README plan/admit distinction documented | no | yes (worked example) | added |
+| ADOPTION.md §7 shows plan output | no | yes | added |
+| `ruff check .` | clean | clean | — |
+| `ruff format --check .` | clean | clean | — |
+| `check_research_traceability.py` | TRACEABILITY OK | TRACEABILITY OK | — |
+
+### Terminal evidence
+
+```
+$ .venv/bin/fitsproof plan --budget-gb 4
+predicted peak:  0.042 GB  (95% CI: [0.033, 0.050] GB)
+predicted tok/s: 93.0  (95% CI: [65.1, 120.9])
+budget:          4.000 GB
+verdict:         fits
+
+$ .venv/bin/fitsproof plan --budget-gb 0.001
+predicted peak:  0.042 GB  (95% CI: [0.033, 0.050] GB)
+predicted tok/s: 111.6  (95% CI: [78.1, 145.1])
+budget:          0.001 GB
+verdict:         does_not_fit
+degradation options:
+  [does not fit] Use int8_sym quantisation instead of none -> 0.011 GB  (420.1 tok/s)
+  [does not fit] Use int4_sym quantisation instead of none -> 0.006 GB  (778.9 tok/s)
+  [does not fit] Reduce context to 256 tokens (1/2 of 512) -> 0.040 GB  (111.6 tok/s)
+  [does not fit] Reduce context to 128 tokens (1/4 of 512) -> 0.039 GB  (111.6 tok/s)
+  [does not fit] Reduce context to 64 tokens (1/8 of 512) -> 0.039 GB  (111.6 tok/s)
+  [does not fit] Offload ~50% of layers to system RAM (CPU fallback for those layers) -> 0.022 GB  (33.5 tok/s)
+(exit: 0)
+
+$ .venv/bin/fitsproof admit --budget-gb 0.001
+REFUSED: needs 0.042 GB, budget 0.001 GB; no listed option fits — nearest is "Use int4_sym quantisation instead of none" at 0.006 GB (0.005 GB above budget)
+(exit: 2)
+
+$ .venv/bin/pytest -q --tb=no 2>&1 | tail -3
+======================== 169 passed in 99.91s (0:01:39) ========================
+
+$ .venv/bin/ruff check . && .venv/bin/ruff format --check .
+All checks passed!
+39 files already formatted
+
+$ .venv/bin/python scripts/check_research_traceability.py
+TRACEABILITY OK (core only): all core test files cite valid research sources.
+Checked 34 source IDs from RESEARCH.md.
+PAPER-TRACEABILITY.md table validated (15 IMPLEMENTED rows).
+```
 
 ### Finding fixed
 

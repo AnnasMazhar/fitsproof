@@ -319,20 +319,42 @@ are exercised by the test suite). L5 is the remaining mandate item.
 *2026-09-27T22:34Z. All four v0.2 plugin surfaces are now implemented and
 tested. This section documents them against raw output from this machine.*
 
+*Updated 2026-09-28 (c2-p09-improve-2): `fitsproof plan` and `fitsproof admit` are now
+distinct commands. `plan` shows the prediction (peak, CI, tok/s, verdict) and exits 0
+even on `does_not_fit`; `admit` enforces and exits 2 on refusal. The README CLI section
+reflects this with a worked example.*
+
 ### The four surfaces, one at a time
 
-**L2 — CLI gate (the recipe from §2 still works)**
+**L2 — CLI gate (plan to inspect, admit to enforce)**
 
 ```
+$ .venv/bin/fitsproof plan --budget-gb 4
+predicted peak:  0.042 GB  (95% CI: [0.033, 0.050] GB)
+predicted tok/s: 98.6  (95% CI: [69.0, 128.2])
+budget:          4.000 GB
+verdict:         fits
+
 $ .venv/bin/fitsproof admit --budget-gb 4
 ADMITTED: 0.042 GB predicted peak <= 4.000 GB budget (margin: 3958.3 MB)
 $ echo $?
 0
 
+$ .venv/bin/fitsproof plan --budget-gb 0.001
+predicted peak:  0.042 GB  (95% CI: [0.033, 0.050] GB)
+predicted tok/s: 103.8  (95% CI: [72.6, 134.9])
+budget:          0.001 GB
+verdict:         does_not_fit
+degradation options:
+  [does not fit] Use int4_sym quantisation instead of none -> 0.006 GB  (724.2 tok/s)
+  ...
+$ echo $?
+0   # plan exits 0 — it describes; it does not enforce
+
 $ .venv/bin/fitsproof admit --budget-gb 0.001
 REFUSED: needs 0.042 GB, budget 0.001 GB; no listed option fits — nearest is "Use int4_sym quantisation instead of none" at 0.006 GB (0.005 GB above budget)
 $ echo $?
-2
+2   # admit exits 2 on refusal
 ```
 
 **L3 — in-process Python guard**
