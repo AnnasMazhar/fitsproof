@@ -898,3 +898,268 @@ E   AssertionError: Expected REFUSED, got AdmitStatus.ADMITTED
 - Repo left green: 169 passed, ruff clean.
 
 PASS_c2-p10-adversarial-1 COMPLETE
+
+---
+
+# Cycle 2 — Pass 2: Attack the Property (c2-p11-adversarial-2)
+
+Independent review, pass `c2-p11-adversarial-2` (cycle 2, adversarial pass 2 of 2).
+Reviewer lane: kiro (claude-opus-4.5). The reviewer does not fix code — it
+reports findings; the builder fixes; the reviewer re-verifies.
+
+Baseline before attack (repo state `408b1e1`, branch `feat/v0.1`):
+
+```
+$ .venv/bin/pytest -q
+169 passed in 120.20s (0:02:00)
+$ .venv/bin/ruff check . && .venv/bin/ruff format --check .
+All checks passed!
+39 files already formatted
+```
+
+All fault injections were reverted immediately after each test; repo left green.
+
+---
+
+## 14. Property attacks — attempt to defeat the core safety/correctness property
+
+### P2-A1: Speculative decoding with adversarial draft model
+
+Attack: Create two models with maximally different seeds (42 vs 999999) and verify
+that speculative decoding still produces output identical to greedy target.
+
+```
+$ python3 -c '
+from fitsproof.engine.speculative import speculative_generate
+# target seed=42, draft seed=999999 (maximally different)
+...'
+Target greedy: [43, 43, 191, 191, 199, 251, 251, 251, 251, 251, 251, 111]
+Speculative:   [43, 43, 191, 191, 199, 251, 251, 251, 251, 251, 251, 111]
+ATTACK FAILED (good): speculative equals greedy even with adversarial draft
+```
+
+**Verdict: Defense held.** Even with a draft that produces completely different
+proposals, the verify-then-accept logic correctly rejects wrong tokens and emits
+the target's greedy choice. The speculative decoding equality property is sound.
+
+### P2-A2: Plan bypass with NaN/Inf/negative budget
+
+Attack: Attempt to create a plan with invalid budget values to bypass validation.
+
+```
+=== Attack: budget_bytes = nan ===
+ATTACK FAILED (good): ValueError: budget_bytes must be a positive finite number, got nan
+
+=== Attack: budget_bytes = inf ===
+ATTACK FAILED (good): ValueError: budget_bytes must be a positive finite number, got inf
+
+=== Attack: budget_bytes = -1 ===
+ATTACK FAILED (good): ValueError: budget_bytes must be a positive finite number, got -1
+```
+
+**Verdict: Defense held.** Plan rejects NaN, Inf, and negative budgets.
+
+### P2-A3: Invalid quant name bypass
+
+Attack: Pass typos or invalid quant names to see if they silently fall back to fp32.
+
+```
+=== Attack: quant='int2' ===
+ATTACK FAILED (good): ValueError: unknown quant 'int2'; valid: float16, float32, int4_asym, int4_sym, int8_asym, int8_sym, none
+
+=== Attack: quant='INT8_SYM' ===
+ATTACK FAILED (good): ValueError: unknown quant 'INT8_SYM'; ...
+
+=== Attack: quant='none ' ===
+ATTACK FAILED (good): ValueError: unknown quant 'none '; ...
+```
+
+(All 8 invalid quant names rejected with explicit error.)
+
+**Verdict: Defense held.** Fail-closed validation on quant names.
+
+### P2-A4: Mode change detection verification
+
+Attack: Confirm the ADV-03 fix by testing fabricated AdmitRecords.
+
+```
+=== Attack: ADMITTED with predicted > budget ===
+  mode_changed_silently: True
+  ATTACK FAILED (good): verify_run detected the inconsistency
+
+=== Attack: DEGRADED with no applied_degradation ===
+  mode_changed_silently: True
+  ATTACK FAILED (good): verify_run detected the missing degradation name
+
+=== Attack: DEGRADED with named degradation (should be False) ===
+  mode_changed_silently: False
+  Correct: named degradation is not a silent change
+```
+
+**Verdict: Defense held.** ADV-03 fix confirmed working — `mode_changed_silently`
+is now properly detecting both conditions: (1) ADMITTED with predicted > budget,
+(2) DEGRADED without applied_degradation named.
+
+### P2-A5: MCP server injection attacks
+
+Attack: Send malicious parameters to MCP tools (negative budget, SQL injection
+strings, huge context_len, type mismatches).
+
+```
+=== MCP attack results ===
+
+Request 3 (budget="-1GiB"):
+  isError: True
+  ATTACK FAILED (good): rejected with error
+
+Request 4 (budget="4GiB; DROP TABLE users;"):
+  isError: True
+  ATTACK FAILED (good): rejected with error
+
+Request 5 (context_len=999999999):
+  isError: True
+  ATTACK FAILED (good): rejected with error
+```
+
+**Verdict: Defense held.** MCP server validates parameters and rejects malicious inputs.
+
+### P2-A6: HTTP server request body manipulation
+
+Attack: Send malformed HTTP requests to the OpenAI-compatible server.
+
+```
+=== Server attack results ===
+
+empty body: HTTP 400 (rejected)
+malformed JSON: HTTP 400 (rejected)
+missing messages: HTTP 400 (rejected)
+messages as string: Exception: RemoteDisconnected: Remote end closed connection without response
+injection in content: HTTP 200, admission=admitted
+huge max_tokens: HTTP 503 (rejected)
+negative temperature: HTTP 200, admission=admitted
+valid request: HTTP 200, admission=admitted
+```
+
+**ATTACK PARTIALLY SUCCEEDED**: The `messages as string` case crashes the server
+handler with `AttributeError: 'str' object has no attribute 'get'`. The server
+iterates over `messages` assuming it is a list, but does not validate the type.
+See **ADV-12** below.
+
+### P2-A7: Nested @guard decorator bypass
+
+Attack: Call a small-budget guarded function from inside a big-budget guarded function.
+
+```
+=== Attack: nested guard calls ===
+Result: nested refused
+Call log: ['big_budget_fn executed', 'nested call refused']
+ATTACK FAILED (good): nested function was refused by its own guard
+```
+
+**Verdict: Defense held.** Each @guard decorator enforces its own budget independently.
+
+### P2-A8: Determinism under seed variation
+
+Attack: Verify deterministic output with same seed, and that greedy decoding
+is deterministic regardless of seed.
+
+```
+Seed 123 run 1: [180, 15, 66, 57, 52, 201, 237, 76]
+Seed 123 run 2: [180, 15, 66, 57, 52, 201, 237, 76]
+Seed 123 run 3: [180, 15, 66, 57, 52, 201, 237, 76]
+Same seed → same output: PASS
+
+Greedy (seed=111): [142, 185, 142, 71, 142, 167, 167, 167]
+Greedy (seed=999): [142, 185, 142, 71, 142, 167, 167, 167]
+Greedy determinism: PASS
+```
+
+**Verdict: Defense held.** Sampling is deterministic with seeded RNG; greedy is
+deterministic regardless of seed (as expected — temperature=0 ignores RNG).
+
+### P2-A9: ADV-05 re-verification (speculative test vacuousness fix)
+
+Attack: Re-inject the F-I5 fault (accept all draft tokens without verification)
+to confirm the ADV-05 fix now catches it.
+
+```
+=== Fault injection F-I5 re-test ===
+Injecting: accept all draft tokens without verification
+
+Return code: 1
+FAILED tests/engine/test_speculative.py::test_speculative_equals_greedy
+
+At index 0 diff: 213 != 60
+
+ATTACK FAILED (good): F-I5 now kills the test (ADV-05 is fixed)
+```
+
+**Verdict: ADV-05 is FIXED.** The speculative test now uses different-seed draft
+(seed=999 vs target seed=42), so the accept-all fault produces different output
+that is caught by the equality assertion.
+
+### P2-A10: Empty config list to stress harness
+
+Attack: Pass an empty config list to `run_stress_harness()`.
+
+```
+n_configs: 0
+violations: 0
+violation_free: True
+ATTACK SUCCEEDED (bad): 0 configs passes as violation_free
+```
+
+**Verdict: Minor finding.** The library API accepts an empty list and returns
+`violation_free=True` (vacuous truth). The CLI generates 25 configs internally
+and is not affected. See **ADV-13** below.
+
+---
+
+## 15. Updated Findings Table — Cycle 2 Pass 2 Status
+
+| id | severity | finding | evidence | status |
+|---|---|---|---|---|
+| ADV-01 | blocker | FlexGen citation mis-attribution | §2b c1-p10 | **fixed (c2-p08)** |
+| ADV-02 | blocker | GPTQ per-channel vs per-group | §2b c1-p10 | **fixed (c2-p08)** |
+| ADV-03 | blocker | mode_changed_silently hardcoded False | §1 c1-p10, §5 c1-p11 | **fixed (c2-p08)** — verified in §14 P2-A4 |
+| ADV-04 | major | Stress-harness margin is degenerate (single process HWM) | §1 c1-p10 | **limitation** — documented in README |
+| ADV-05 | major | test_speculative_equals_greedy vacuous (draft=target) | §3 c1-p10 | **fixed** — different-seed draft now used; F-I5 now kills (§14 P2-A9) |
+| ADV-06 | minor | calibration_demo numbers load-dependent | §1 c1-p10, §8 c2-p10 | **limitation** |
+| ADV-07 | minor | ACM link 403s automation | §2a c1-p10 | **limitation** — Crossref verified |
+| ADV-08 | minor | README RSS limitation self-contradicts | c1-p10 | open — wording improvement needed |
+| ADV-09 | major | int8_sym dequantisation overflow on extreme weights | §5 c1-p11 | **fixed (c2-p08)** |
+| ADV-10 | minor | Server budget is per-request, not global | §5 c1-p11 | **limitation** — stateless design |
+| ADV-11 | minor | @guard bypassable via __wrapped__ | §5 c1-p11 | **limitation** — Python stdlib (PEP 362) |
+| ADV-12 | major | Server crashes on `messages` as non-list (no type validation) | §14 P2-A6 | **new — c2-p11, open** |
+| ADV-13 | minor | run_stress_harness accepts empty config list (vacuous pass) | §14 P2-A10 | **new — c2-p11, limitation** — CLI generates 25 internally |
+
+---
+
+## 16. Failed attacks (evidence for the defence, cycle 2 pass 2)
+
+- P2-A1: Speculative decoding with adversarial draft — equality holds.
+- P2-A2: NaN/Inf/negative budget — all rejected with ValueError.
+- P2-A3: Invalid quant names — all rejected with explicit error.
+- P2-A4: Mode change detection — both detectable cases work as expected.
+- P2-A5: MCP injection — all malicious parameters rejected.
+- P2-A6 (partial): Bulk requests handled correctly; only type mismatch crashes.
+- P2-A7: Nested @guard — each guard enforces independently.
+- P2-A8: Determinism — seeded sampling and greedy both deterministic.
+- P2-A9: ADV-05 fix verified — F-I5 now kills the test.
+
+---
+
+## 17. Gate status for this pass
+
+- Artifact: `docs/ADVERSARIAL_REVIEW.md` extended with cycle 2 pass 2 findings.
+- **Open blockers: 0** — all previous blockers resolved.
+- **Open majors: 1** — ADV-12 (server type validation).
+- **Open minors: 2** — ADV-08 (README wording), ADV-13 (vacuous harness, documented limitation).
+- Repo left green: 169 passed, ruff clean.
+
+ADV-12 (server crash on non-list messages) is a new major finding. It does not
+block the contract's safety property (the server never silently admits or executes
+on malformed input — it crashes before any model execution), but it is an unhandled
+exception that should be fixed for robustness.
+
+PASS_c2-p11-adversarial-2 COMPLETE
