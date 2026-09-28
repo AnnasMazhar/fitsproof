@@ -5,8 +5,8 @@ The tools below beat fitsproof on speed, model coverage, and hardware breadth.
 We name them here so reviewers do not have to look them up.
 
 Star counts and versions retrieved from the GitHub REST API and PyPI at
-2026-09-28T12:30:30Z (cycle 4 pass 2 refresh; +31 llama.cpp, +36 vLLM, +1 KTransformers,
-+1 llm-inference-calculator vs the c3-p2 04:31Z snapshot; all other repos unchanged).
+2026-09-28T22:00:00Z (cycle 4 pass 9 refresh; +35 llama.cpp, +17 vLLM, +2 KTransformers
+vs the c4-p2 12:30Z snapshot; all other repos unchanged).
 Five new search queries run; one new repo found (CryptoGuy1/BoundedEdge — empty, no code);
 no new tool entered the comparison table.
 
@@ -14,9 +14,9 @@ no new tool entered the comparison table.
 
 | Tool | Stars | Latest | What it does better than fitsproof | What fitsproof adds |
 |---|---|---|---|---|
-| **llama.cpp** (ggml-org/llama.cpp) | 129,762 | v0.5.0 (2026-09-23) | Mature (3+ years), broad model support (GGUF), fast CPU kernels (GGML), broad quant support, GPU offload | No enforced resource contract; silent OOM documented; no calibrated prediction interval |
-| **vLLM** (vllm-project/vllm) | 92,861 | v0.30.0 (2026-09-22) | GPU serving, high throughput, PagedAttention, continuous batching, 100+ model support | No enforced memory budget; targets A100/H100, not 4–8 GB VRAM class |
-| **KTransformers** (kvcache-ai/ktransformers) | 19,544 | v0.7.1 (2026-09-15) | CPU/GPU hybrid MoE, Intel AMX kernels, runs DeepSeek-671B on ~14 GB VRAM. *Requires 128 GB RAM, AMX, CUDA/ROCm.* | Does not serve the 16–32 GB RAM class; no calibrated contract; no stress harness |
+| **llama.cpp** (ggml-org/llama.cpp) | 129,797 | v0.5.0 (2026-09-23) | Mature (3+ years), broad model support (GGUF), fast CPU kernels (GGML), broad quant support, GPU offload | No enforced resource contract; silent OOM documented; no calibrated prediction interval |
+| **vLLM** (vllm-project/vllm) | 92,878 | v0.30.0 (2026-09-22) | GPU serving, high throughput, PagedAttention, continuous batching, 100+ model support | No enforced memory budget; targets A100/H100, not 4–8 GB VRAM class |
+| **KTransformers** (kvcache-ai/ktransformers) | 19,546 | v0.7.1 (2026-09-15) | CPU/GPU hybrid MoE, Intel AMX kernels, runs DeepSeek-671B on ~14 GB VRAM. *Requires 128 GB RAM, AMX, CUDA/ROCm.* | Does not serve the 16–32 GB RAM class; no calibrated contract; no stress harness |
 
 ## Prediction and sizing tools
 

@@ -888,3 +888,32 @@ Until the fix lands, the operational guidance from §5 applies:
 | C4-P3-F5 | MAPE drops below 20% on real-model measurement before cost-model fix lands | NOT OBSERVABLE — the fix is not yet in the cost model; the MAPE on the fixture remains 46–62% |
 | C4-P3-F6 | The int4_asym round-then-clip order bug (source 46) is present in quant.py | NOT OBSERVED — the test in `tests/engine/test_quant.py` asserts `max(|w - w_hat|) <= S/2 + epsilon` and passes in the 178-test suite |
 | C4-P3-F7 | The subtract-max softmax produces NaN/inf for any input in the reference model | NOT OBSERVED — softmax is tested under all-masked rows (source 48 known failure mode); 178 tests pass |
+
+---
+
+## 10. Cycle 4 — Pass 9 (improve-2) — State as of 2026-09-28T22:00Z
+
+### 10.1 What changed since cycle 4 pass 3
+
+| Item | Cycle 4 pass 3 (14:00Z) | Cycle 4 pass 9 (22:00Z) |
+|---|---|---|
+| Test count | 178 passed | **189 passed** (+11: ADV-16 fix, mutation tests, ADV-14 fix) |
+| MAPE (held-out) | 61.2% this session | Unchanged (no cost model changes this pass) |
+| Stress harness | 25 configs, 0 violations | 25 configs, 0 violations |
+| ADV-14: test_rope_known_values gap | Open (test passes explicit theta, not default) | **Fixed** — `test_rope_non_default_theta_changes_freqs` added; fault injection confirmed |
+| ADV-15: test_decode_tok_s_known_answer | Reported as open (false finding) | **Retracted** — fault injection proves the test DOES kill the formula inversion |
+| ADV-16: server crash on huge max_tokens | Fixed in c4-p04, strengthened in c4-p08 | Confirmed; test asserts `completion_tokens <= max_seq_len` |
+| COMPARISONS.md star counts | as of 12:30Z | as of 22:00Z (+35 llama.cpp, +17 vLLM, +2 KTransformers) |
+| Binary release (L5) | Not built | Not built — v0.2 MANDATE M1 pending |
+
+### 10.2 Adversarial review final state
+
+All 18 adversarial findings are now resolved:
+- **Blockers (0 open):** ADV-01, 02, 03 all fixed in c2.
+- **Majors (0 open):** ADV-04 documented limitation; ADV-05, 09, 12, 16 all fixed.
+- **Minors (open as documented limitations):** ADV-06, 07, 10, 11, 13, 17, 18.
+- ADV-14 **fixed** (c4-p09). ADV-15 **retracted** (c4-p09, false finding).
+
+The adversarial review record is now internally consistent: every reported finding
+is either fixed with evidence, retracted with fault-injection proof, or documented
+as a named limitation.

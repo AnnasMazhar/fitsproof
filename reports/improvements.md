@@ -1,6 +1,129 @@
 # Improvement log — fitsproof
 
-## Pass c4-p08-improve-1 (2026-09-28) — ADV-16: server crash on oversized max_tokens, test strengthened
+## Pass c4-p09-improve-2 (2026-09-28) — ADV-14 fixed + ADV-15 false finding retracted
+
+### Finding fixed
+
+**ADV-14 (minor) — `test_rope_known_values` did not exercise the default theta used
+by `Attention.__init__`.**
+
+Identified by the adversarial reviewer in pass c3-p10: the test passes `theta=10000.0`
+explicitly to `_rope_freqs`, so a mutation to the DEFAULT theta in `_rope_freqs`'s
+signature (or to the line `self._freqs = _rope_freqs(cfg.head_dim, cfg.max_seq_len, cfg.rope_theta)`
+in `Attention.__init__`) would not be detected by that test.
+
+### Biggest credibility gap fixed
+
+**ADV-15 retracted — `test_decode_tok_s_known_answer` was reported as a false negative
+by the c3-p10 adversarial reviewer; re-running fault injection proves the test IS
+effective.**
+
+The reviewer reported: `test_decode_tok_s_known_answer` "injects MachineProfile directly,
+bypassing the actual formula code path for bandwidth-to-tok/s calculation."
+
+This claim was wrong. Re-running the fault injection in this pass with
+`effective_bw / w_bytes` → `w_bytes / effective_bw` in cost.py:
+
+```
+$ sed -i 's/return effective_bw \/ w_bytes/return w_bytes \/ effective_bw/' src/fitsproof/contract/cost.py
+$ .venv/bin/pytest tests/contract/test_cost.py::test_decode_tok_s_known_answer -v --tb=short
+FAILED tests/contract/test_cost.py::test_decode_tok_s_known_answer
+  ACTUAL: array(0.003856)
+  DESIRED: array(259.368817)
+  decode_tok_s mismatch: got 0.0039, expected 259.3688 (bw=10 GB/s, util=1.0, weight_bytes=38555136)
+1 failed in 0.28s
+$ git checkout -- src/fitsproof/contract/cost.py
+```
+
+The test kills the fault. The `expected` value in the test (`10e9 * 1.0 / w`) is derived
+independently of the code under test (dimensional analysis: bytes/s ÷ bytes/token = tokens/s).
+Swapping numerator and denominator changes `result` from 259.4 to 0.004 — a 67,000× difference
+that the `rtol=1e-6` assertion catches. ADV-15 was a false finding.
+
+### Improvements in this pass
+
+**`tests/engine/test_attention.py` — new `test_rope_non_default_theta_changes_freqs`:**
+
+Exercises `Transformer.__init__` → `Attention.__init__` → `_rope_freqs` with
+`cfg.rope_theta=100.0` (non-default), verifies the generated sequence differs from
+the `rope_theta=10000.0` baseline. If `cfg.rope_theta` is ignored (hardcoded to
+10000.0), both runs produce identical output and the test fails.
+
+Fault injection proof:
+
+```
+# Inject: hardcode rope_theta=10000.0 in Attention.__init__ (ignore cfg.rope_theta)
+$ sed -i 's/self._freqs = _rope_freqs(cfg.head_dim, cfg.max_seq_len, cfg.rope_theta)/self._freqs = _rope_freqs(cfg.head_dim, cfg.max_seq_len, 10000.0)/' src/fitsproof/engine/attention.py
+$ .venv/bin/pytest tests/engine/test_attention.py::test_rope_non_default_theta_changes_freqs -v
+FAILED tests/engine/test_attention.py::test_rope_non_default_theta_changes_freqs
+  AssertionError: Outputs are identical with rope_theta=10000.0 and rope_theta=100.0 —
+  cfg.rope_theta is not being propagated to Attention._freqs (ADV-14 regression).
+    rope_theta=10000: [5, 5, 209, 65, 65, 131, 131, 65]
+    rope_theta=  100: [5, 5, 209, 65, 65, 131, 131, 65]
+1 failed in 2.85s
+$ git checkout -- src/fitsproof/engine/attention.py
+
+# After restoring the fix, test passes:
+$ .venv/bin/pytest tests/engine/test_attention.py::test_rope_non_default_theta_changes_freqs -v
+PASSED 1 passed in 2.87s
+```
+
+**`docs/ADVERSARIAL_REVIEW.md`:**
+- ADV-14: updated to `fixed (c4-p09)` with fault injection evidence.
+- ADV-15: updated to `retracted (c4-p09)` with fault injection proof in §21.
+- §23 (failed attacks): added note that F-I3 was incorrectly reported as survived.
+- §24 gate status: corrected open minor count from 7 to 5 (ADV-14 fixed, ADV-15 retracted).
+- §26 (c3-p11 final table): updated ADV-14 and ADV-15 rows.
+- §28 (c3-p11 gate status): corrected open minor count from 8 to 6.
+
+**`COMPARISONS.md`:**
+- Star counts refreshed at 2026-09-28T22:00Z:
+  - llama.cpp: 129,762 → 129,797 (+35)
+  - vLLM: 92,861 → 92,878 (+17)
+  - KTransformers: 19,544 → 19,546 (+2)
+  - All other repos unchanged.
+
+**`docs/ADOPTION.md`:**
+- Added §10 (Cycle 4 Pass 9 state): final adversarial review status (0 open blockers,
+  0 open majors), test count 189, ADV-14 fixed/ADV-15 retracted.
+
+### Before/after metrics
+
+| Metric | Before (c4-p08-improve-1) | After | Delta |
+|---|---|---|---|
+| `pytest -q` test count | 188 | **189** | +1 |
+| `pytest -q` failures | 0 | 0 | — |
+| ADV-14 status in ADVERSARIAL_REVIEW.md | open (minor) | **fixed** | closed |
+| ADV-15 status in ADVERSARIAL_REVIEW.md | open (minor, false finding) | **retracted** | retracted |
+| test_rope_non_default_theta_changes_freqs | missing | present; kills fault | added |
+| COMPARISONS.md star counts | as of 12:30Z | as of 22:00Z (+35/+17/+2) | refreshed |
+| ADOPTION.md cycle 4 pass 9 state | missing | §10 added | added |
+| `ruff check src/ tests/` | clean | clean | — |
+| `ruff format --check src/ tests/` | clean | clean | — |
+| `check_research_traceability.py` | TRACEABILITY OK | TRACEABILITY OK | — |
+
+### Terminal evidence
+
+```
+$ .venv/bin/pytest tests/engine/test_attention.py::test_rope_non_default_theta_changes_freqs -v
+tests/engine/test_attention.py::test_rope_non_default_theta_changes_freqs PASSED [100%]
+1 passed in 2.87s
+
+$ .venv/bin/pytest -q --tb=no 2>&1 | tail -3
+======================== 189 passed in 113.62s (0:01:53) ========================
+
+$ .venv/bin/ruff check src/ tests/ && .venv/bin/ruff format --check src/ tests/
+All checks passed!
+36 files already formatted
+
+$ .venv/bin/python scripts/check_research_traceability.py
+TRACEABILITY OK (core only): all core test files cite valid research sources.
+Checked 54 source IDs from RESEARCH.md. PAPER-TRACEABILITY.md table validated (15 IMPLEMENTED rows).
+```
+
+---
+
+
 
 ### Finding fixed
 

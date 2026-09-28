@@ -1433,12 +1433,51 @@ assert <AdmitStatus.ADMITTED: 'admitted'> == <AdmitStatus.REFUSED: 'refused'>
 
 | id | severity | finding | evidence | status |
 |---|---|---|---|---|
-| ADV-14 | minor | `test_rope_known_values` does not exercise default theta; passes explicit theta=10000 so fault in default value not caught | §20 F-I1 | **new — c3-p10** |
-| ADV-15 | minor | `test_decode_tok_s_known_answer` injects MachineProfile directly, bypassing the actual formula code path for bandwidth-to-tok/s calculation | §20 F-I3 | **new — c3-p10** |
+| ADV-14 | minor | `test_rope_known_values` does not exercise default theta; passes explicit theta=10000 so fault in default value not caught | §20 F-I1 | **fixed (c4-p09)** — `test_rope_non_default_theta_changes_freqs` added; exercises `Attention.__init__` via `cfg.rope_theta=100.0`; fault injection confirms test kills the mutation |
+| ADV-15 | minor | `test_decode_tok_s_known_answer` — **FINDING RETRACTED (c4-p09).** The c3-p10 reviewer reported the test "bypasses the actual formula code path". Re-running the fault injection at `c4-p09` with `effective_bw / w_bytes` → `w_bytes / effective_bw` in cost.py shows the test FAILS: `got 0.0039, expected 259.3688`. The test injects `MachineProfile` to set bandwidth, but then calls `_decode_tok_s()` directly and asserts `result ≈ expected = (10e9 * 1.0) / w` — an independently computed value. Swapping numerator and denominator changes `result` from 259.4 to 0.004, which the `rtol=1e-6` assertion catches. | §20 F-I3 (original) + c4-p09 fault injection below | **retracted** |
 
-Both are minor: the underlying formulas are correct (other tests exercise them), but
-the KAT tests as written do not catch the specific faults their docstrings name when
-those faults affect default parameters or internal calculation paths.
+**ADV-15 retraction evidence (c4-p09, 2026-09-28T22:00Z):**
+
+```
+# Injecting: cost.py line 185: effective_bw / w_bytes → w_bytes / effective_bw
+$ sed -i 's/return effective_bw \/ w_bytes/return w_bytes \/ effective_bw/' src/fitsproof/contract/cost.py
+$ .venv/bin/pytest tests/contract/test_cost.py::test_decode_tok_s_known_answer -v --tb=short
+FAILED tests/contract/test_cost.py::test_decode_tok_s_known_answer
+  Mismatched elements: 1 / 1 (100%)
+  Max relative difference: 0.99998514
+  ACTUAL: array(0.003856)  ← w_bytes / effective_bw
+  DESIRED: array(259.368817)  ← (10e9 * 1.0) / w (the independent expected value)
+  decode_tok_s mismatch: got 0.0039, expected 259.3688 (bw=10 GB/s, util=1.0, weight_bytes=38555136)
+1 failed in 0.28s
+$ git checkout -- src/fitsproof/contract/cost.py
+```
+
+The test kills the fault. ADV-15 was a false finding from the c3-p10 reviewer.
+
+**ADV-14 fix evidence (c4-p09, 2026-09-28T22:00Z):**
+
+```
+# New test: test_rope_non_default_theta_changes_freqs
+$ .venv/bin/pytest tests/engine/test_attention.py::test_rope_non_default_theta_changes_freqs -v
+tests/engine/test_attention.py::test_rope_non_default_theta_changes_freqs PASSED
+1 passed in 2.87s
+
+# Fault injection: hardcode rope_theta=10000.0 in Attention.__init__ (ignore cfg.rope_theta)
+$ sed -i 's/self._freqs = _rope_freqs(cfg.head_dim, cfg.max_seq_len, cfg.rope_theta)/self._freqs = _rope_freqs(cfg.head_dim, cfg.max_seq_len, 10000.0)/' src/fitsproof/engine/attention.py
+$ .venv/bin/pytest tests/engine/test_attention.py::test_rope_non_default_theta_changes_freqs -v --tb=short
+FAILED tests/engine/test_attention.py::test_rope_non_default_theta_changes_freqs
+  AssertionError: Outputs are identical with rope_theta=10000.0 and rope_theta=100.0 —
+  cfg.rope_theta is not being propagated to Attention._freqs (ADV-14 regression).
+    rope_theta=10000: [5, 5, 209, 65, 65, 131, 131, 65]
+    rope_theta=  100: [5, 5, 209, 65, 65, 131, 131, 65]
+1 failed in 2.85s
+$ git checkout -- src/fitsproof/engine/attention.py
+```
+
+The new test kills the ADV-14 fault.
+
+Both are minor: ADV-15 was retracted after re-running fault injection;
+ADV-14 was a real gap (now fixed with a test).
 
 ---
 
@@ -1459,8 +1498,8 @@ those faults affect default parameters or internal calculation paths.
 | ADV-11 | minor | @guard bypassable via __wrapped__ | **limitation** — Python stdlib |
 | ADV-12 | major | Server crashes on messages as non-list | **fixed (c3-p04)** |
 | ADV-13 | minor | Empty config list passes stress harness | **limitation** — CLI generates 25 |
-| ADV-14 | minor | test_rope_known_values doesn't exercise default theta | **new — c3-p10** |
-| ADV-15 | minor | test_decode_tok_s_known_answer bypasses formula path | **new — c3-p10** |
+| ADV-14 | minor | test_rope_known_values doesn't exercise default theta | **fixed (c4-p09)** — test_rope_non_default_theta_changes_freqs added |
+| ADV-15 | minor | test_decode_tok_s_known_answer bypasses formula path | **retracted (c4-p09)** — false finding; fault injection kills the test |
 
 ---
 
@@ -1471,6 +1510,9 @@ those faults affect default parameters or internal calculation paths.
 - Speculative C3: claim holds — test passes with different-seed draft.
 - Fault injections F-I2, F-I4, F-I5: all killed by their respective tests.
 - Link audit: all 7 key URLs resolve (6 direct 200, 1 via Crossref).
+- **F-I3 retracted (c4-p09):** F-I3 was incorrectly reported as survived. Re-running with the same
+  fault injection (`effective_bw / w_bytes` → `w_bytes / effective_bw`) shows the test FAILS.
+  See §21 ADV-15 retraction for raw evidence.
 
 ---
 
@@ -1479,8 +1521,8 @@ those faults affect default parameters or internal calculation paths.
 - Artifact: `docs/ADVERSARIAL_REVIEW.md` extended with cycle 3 pass 1 findings.
 - **Open blockers: 0** — all previous blockers resolved.
 - **Open majors: 0** — all previous majors resolved or documented as limitations.
-- **Open minors: 7** — ADV-06, ADV-07, ADV-10, ADV-11, ADV-13, ADV-14, ADV-15
-  (all documented as limitations or minor test-coverage gaps).
+- **Open minors: 5** — ADV-06, ADV-07, ADV-10, ADV-11, ADV-13. ADV-14 **fixed** (c4-p09).
+  ADV-15 **retracted** (c4-p09, false finding).
 - Repo left green: 178 passed, ruff clean.
 
 PASS_c3-p10-adversarial-1 COMPLETE
@@ -1845,8 +1887,8 @@ See ADV-17 (minor).
 | ADV-11 | minor | @guard bypassable via __wrapped__ | **limitation** — Python stdlib |
 | ADV-12 | major | Server crashes on messages as non-list | **fixed (c3-p04)** |
 | ADV-13 | minor | Empty config list passes stress harness | **limitation** — CLI generates 25 |
-| ADV-14 | minor | test_rope_known_values doesn't exercise default theta | **new — c3-p10** |
-| ADV-15 | minor | test_decode_tok_s_known_answer bypasses formula path | **new — c3-p10** |
+| ADV-14 | minor | test_rope_known_values doesn't exercise default theta | **fixed (c4-p09)** — test_rope_non_default_theta_changes_freqs added; fault injection kills test |
+| ADV-15 | minor | test_decode_tok_s_known_answer bypasses formula path | **retracted (c4-p09)** — false finding; fault injection (bw/w→w/bw) kills the test with ACTUAL=0.0039 vs DESIRED=259.37 |
 | ADV-16 | major | Server crashes on max_tokens > max_seq_len - prompt_len | **fixed (c4-p04/c4-p08)** — clamp applied in server.py; strengthened test verifies completion_tokens <= max_seq_len |
 | ADV-17 | minor | Budget string "4" without unit treated as 4 bytes | **new — c3-p11, limitation** — UX quirk, contract correct |
 | ADV-18 | minor | MCP server does not validate jsonrpc version field | **new — c3-p11, limitation** — lenient, not a security issue |
@@ -1877,8 +1919,8 @@ See ADV-17 (minor).
 - Artifact: `docs/ADVERSARIAL_REVIEW.md` extended with cycle 3 pass 2 findings.
 - **Open blockers: 0** — all previous blockers resolved.
 - **Open majors: 1** — ADV-16 (server crash on huge max_tokens).
-- **Open minors: 8** — ADV-06, ADV-07, ADV-10, ADV-11, ADV-13, ADV-14, ADV-15, ADV-17, ADV-18
-  (all documented as limitations or minor issues).
+- **Open minors: 6** — ADV-06, ADV-07, ADV-10, ADV-11, ADV-13, ADV-17, ADV-18
+  (all documented as limitations or minor issues). ADV-14 **fixed** (c4-p09). ADV-15 **retracted** (c4-p09, false finding).
 - Repo left green: 178 passed, ruff clean.
 
 ADV-16 (server crash on huge max_tokens) was fixed in c4-p04 (server.py clamp) and
