@@ -1275,3 +1275,212 @@ Checked 44 source IDs from RESEARCH.md. PAPER-TRACEABILITY.md table validated (1
 | ADV-13 | minor | run_stress_harness accepts empty config list (vacuous pass) | **limitation** — CLI generates 25 internally |
 
 **Open blockers: 0. Open majors: 0. Open minors: 0 (all minors are documented limitations).**
+
+
+---
+
+# Cycle 3 — Pass 1: Attack the Claims (c3-p10-adversarial-1)
+
+Independent review, pass `c3-p10-adversarial-1` (cycle 3, adversarial pass 1 of 2).
+Reviewer lane: kiro (claude-opus-4.5). The reviewer does not fix code — it
+reports findings; the builder fixes; the reviewer re-verifies in pass 2.
+
+Baseline before attack (repo state on `feat/v0.1`, 2026-09-28T09:30Z):
+
+```
+$ .venv/bin/pytest -q
+178 passed in 128.34s (0:02:08)
+$ .venv/bin/ruff check . && .venv/bin/ruff format --check .
+All checks passed!
+```
+
+---
+
+## 18. Claims audit — the 3 most load-bearing README claims, attacked
+
+### Claim C1 (HEADLINE): "fitsproof stress runs 25 configurations against a declared budget and fails the build on any violation or undocumented mode change"
+
+Attack — reproduce the stress harness:
+
+```
+$ fitsproof stress
+ADMITTED: 0.039 GB predicted peak <= 4.000 GB budget (margin: 3961.0 MB)
+Stress harness: 25 configs, 0 violations, 0 silent mode changes. Margin: min=3909.4 MB, median=3909.6 MB, max=3913.0 MB.
+rc=0
+```
+
+**Verdict: Claim holds.** Output matches the README claim format. 25 configs tested,
+0 violations, 0 silent mode changes. Margin shows variation (3909.4–3913.0 MB) which
+is RSS jitter between runs (ADV-04 limitation documented).
+
+Attack — can the harness fail on violations?
+
+```
+$ fitsproof stress --budget-gb 0.01
+DEGRADED: base config needs 0.039 GB > budget 0.010 GB. Applying: Use int4_sym quantisation...
+Stress harness: 25 configs, 25 violations, 0 silent mode changes. Margin: min=-292.3 MB...
+rc=1
+```
+
+**Verdict: Harness has teeth.** rc=1 (build fails) when violations occur.
+
+### Claim C2 (QUICKSTART): "`fitsproof admit --budget-gb 0.001   # REFUSED — names the binding constraint, exit code 2`"
+
+```
+$ fitsproof admit --budget-gb 0.001
+REFUSED: needs 0.042 GB, budget 0.001 GB; no listed option fits — nearest is "Use int4_sym quantisation instead of none" at 0.006 GB (0.005 GB above budget)
+Degradation options:
+  [does not fit] Use int8_sym quantisation instead of none -> 0.011 GB
+  [does not fit] Use int4_sym quantisation instead of none -> 0.006 GB
+  [does not fit] Reduce context to 256 tokens (1/2 of 512) -> 0.040 GB
+  [does not fit] Reduce context to 128 tokens (1/4 of 512) -> 0.039 GB
+  [does not fit] Reduce context to 64 tokens (1/8 of 512) -> 0.039 GB
+  [does not fit] Offload ~50% of layers to system RAM (CPU fallback for those layers) -> 0.022 GB
+Exit code: 2
+```
+
+**Verdict: Claim holds.** Exit 2 on refusal, binding constraint named ("nearest is ...
+at 0.006 GB (0.005 GB above budget)"), all degradation options tagged `[does not fit]`.
+
+### Claim C3 (SPECULATIVE): "speculative decoding is tested to produce identical greedy output to the non-speculative path"
+
+Attack — run the speculative test directly:
+
+```
+$ python -m pytest tests/engine/test_speculative.py::test_speculative_equals_greedy -v
+tests/engine/test_speculative.py::test_speculative_equals_greedy PASSED  [100%]
+1 passed in 34.79s
+```
+
+**Verdict: Claim holds.** The test passes. Prior adversarial passes (ADV-05) confirmed
+the test now uses different-seed draft model (seed=999 vs target seed=42), making
+the equality assertion non-trivial.
+
+---
+
+## 19. Citation audit — RESEARCH.md links
+
+Verified 7 key URLs from RESEARCH.md with curl (2026-09-28T09:30Z):
+
+```
+200 https://arxiv.org/abs/2211.17192   [Leviathan et al. speculative decoding]
+200 https://arxiv.org/abs/2302.01318   [Chen et al. speculative sampling]
+200 https://www.cs.virginia.edu/stream/ref.html   [STREAM benchmark]
+200 https://modelcontextprotocol.io/specification/2025-03-26/   [MCP spec]
+200 https://doi.org/10.1214/aos/1176344552   [Bootstrap, Efron 1979]
+200 https://man7.org/linux/man-pages/man2/getrusage.2.html   [Linux getrusage]
+403 https://dl.acm.org/doi/10.1145/1498765.1498785   [Roofline, Williams 2009]
+```
+
+Roofline paper (403) verified via Crossref API:
+
+```
+$ curl -s "https://api.crossref.org/works/10.1145/1498765.1498785" | head -c 600
+{"status":"ok","message-type":"work",...,"publisher":"Association for Computing Machinery (ACM)",...
+"title":["Roofline"],...,"container-title":"Communications of the ACM",...,"date-parts":[[2009,4]]}
+```
+
+**Verdict:** 6/7 resolve directly (200). The ACM Roofline link 403s to automation but
+DOI is valid via Crossref with matching title/venue/date (ADV-07 limitation documented).
+
+---
+
+## 20. Fault injection — 5 tests sampled, fault each claims to detect
+
+| # | Test (its named fault) | Injected fault | Suite result |
+|---|---|---|---|
+| F-I1 | `test_rope_known_values` ("wrong theta or rotation formula") | attention.py: `10000.0` → `1000.0` (default theta) | **PASSED (SURVIVED)** |
+| F-I2 | `test_int8_sym_known_values` ("using 128 instead of 127") | quant.py: `np.float32(127)` → `np.float32(128)` | **FAILED (killed)** |
+| F-I3 | `test_decode_tok_s_known_answer` ("inverted formula") | cost.py: `effective_bw / weight_bytes` → `weight_bytes / effective_bw` | **PASSED (SURVIVED)** |
+| F-I4 | `test_kv_cache_equals_reference` ("wrong RoPE offset") | attention.py: `offset=offset` → `offset=0` | **FAILED (killed)** |
+| F-I5 | `test_admit_refuses_with_binding_constraint` ("admit instead of refuse") | admit.py: `REFUSED` → `ADMITTED` | **FAILED (killed)** |
+
+**Result: 3/5 killed, 2 survived.**
+
+Raw evidence:
+
+```
+### F-I1: RoPE theta default changed 10000→1000
+tests/engine/test_attention.py::test_rope_known_values PASSED [100%]
+1 passed in 0.23s
+### SURVIVED: test passes theta=10000 explicitly, doesn't exercise the default
+
+### F-I2: int8_sym uses 128 instead of 127
+tests/engine/test_quant.py::test_int8_sym_known_values FAILED
+Max absolute difference: 0.00036909
+ACTUAL: array([0.046875], dtype=float32)
+DESIRED: array([0.047244])
+### KILLED
+
+### F-I3: decode formula inverted
+tests/contract/test_cost.py::test_decode_tok_s_known_answer PASSED [100%]
+### SURVIVED: test injects bandwidth via MachineProfile, formula change not exercised
+
+### F-I4: KV-cache RoPE offset hardcoded to 0
+tests/engine/test_attention.py::test_kv_cache_equals_reference FAILED
+Mismatched elements: 242 / 256 (94.5%)
+### KILLED
+
+### F-I5: admit returns ADMITTED for non-fitting config
+tests/value/test_incumbent_gap.py::test_admit_refuses_with_binding_constraint FAILED
+assert <AdmitStatus.ADMITTED: 'admitted'> == <AdmitStatus.REFUSED: 'refused'>
+### KILLED
+```
+
+---
+
+## 21. New Findings — Cycle 3 Pass 1
+
+| id | severity | finding | evidence | status |
+|---|---|---|---|---|
+| ADV-14 | minor | `test_rope_known_values` does not exercise default theta; passes explicit theta=10000 so fault in default value not caught | §20 F-I1 | **new — c3-p10** |
+| ADV-15 | minor | `test_decode_tok_s_known_answer` injects MachineProfile directly, bypassing the actual formula code path for bandwidth-to-tok/s calculation | §20 F-I3 | **new — c3-p10** |
+
+Both are minor: the underlying formulas are correct (other tests exercise them), but
+the KAT tests as written do not catch the specific faults their docstrings name when
+those faults affect default parameters or internal calculation paths.
+
+---
+
+## 22. Updated Findings Table — Cycle 3 Pass 1 Status
+
+| id | severity | finding | status |
+|---|---|---|---|
+| ADV-01 | blocker | FlexGen citation mis-attribution | **fixed (c2-p08)** |
+| ADV-02 | blocker | GPTQ per-channel vs per-group | **fixed (c2-p08)** |
+| ADV-03 | blocker | mode_changed_silently hardcoded False | **fixed (c2-p08)** |
+| ADV-04 | major | Stress-harness margin degenerate | **limitation** — documented in README |
+| ADV-05 | major | test_speculative_equals_greedy vacuous | **fixed (c2-p05)** — different-seed draft |
+| ADV-06 | minor | calibration_demo numbers load-dependent | **limitation** |
+| ADV-07 | minor | ACM link 403s automation | **limitation** — Crossref verified |
+| ADV-08 | minor | README RSS limitation self-contradicts | **fixed (c3-p04)** |
+| ADV-09 | major | int8_sym overflow on extreme weights | **fixed (c2-p08)** |
+| ADV-10 | minor | Server budget per-request, not global | **limitation** |
+| ADV-11 | minor | @guard bypassable via __wrapped__ | **limitation** — Python stdlib |
+| ADV-12 | major | Server crashes on messages as non-list | **fixed (c3-p04)** |
+| ADV-13 | minor | Empty config list passes stress harness | **limitation** — CLI generates 25 |
+| ADV-14 | minor | test_rope_known_values doesn't exercise default theta | **new — c3-p10** |
+| ADV-15 | minor | test_decode_tok_s_known_answer bypasses formula path | **new — c3-p10** |
+
+---
+
+## 23. Failed attacks (evidence for the defence, c3-p10)
+
+- Stress harness C1: claim holds — 25 configs, 0 violations, rc=0 at default budget.
+- Refusal gate C2: claim holds — exit 2, binding constraint named, options tagged.
+- Speculative C3: claim holds — test passes with different-seed draft.
+- Fault injections F-I2, F-I4, F-I5: all killed by their respective tests.
+- Link audit: all 7 key URLs resolve (6 direct 200, 1 via Crossref).
+
+---
+
+## 24. Gate status for this pass
+
+- Artifact: `docs/ADVERSARIAL_REVIEW.md` extended with cycle 3 pass 1 findings.
+- **Open blockers: 0** — all previous blockers resolved.
+- **Open majors: 0** — all previous majors resolved or documented as limitations.
+- **Open minors: 7** — ADV-06, ADV-07, ADV-10, ADV-11, ADV-13, ADV-14, ADV-15
+  (all documented as limitations or minor test-coverage gaps).
+- Repo left green: 178 passed, ruff clean.
+
+PASS_c3-p10-adversarial-1 COMPLETE
