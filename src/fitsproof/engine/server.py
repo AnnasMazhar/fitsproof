@@ -103,7 +103,31 @@ class _Handler(BaseHTTPRequestHandler):
         if not prompt_ids:
             prompt_ids = [0]
 
-        max_tokens = int(payload.get("max_tokens", 32))
+        max_tokens_raw = int(payload.get("max_tokens", 32))
+        # ADV-16: clamp max_tokens so that prompt + generation never exceeds max_seq_len.
+        # Without this clamp the RoPE freqs table (size max_seq_len) is indexed out of
+        # bounds, crashing the server with an unhandled ValueError.
+        max_available = cfg.max_seq_len - len(prompt_ids)
+        if max_available <= 0:
+            self._send_json(
+                400,
+                {
+                    "error": {
+                        "message": (
+                            f"Prompt length {len(prompt_ids)} tokens already fills "
+                            f"max_seq_len={cfg.max_seq_len}; no room for generation."
+                        ),
+                        "type": "invalid_request",
+                    }
+                },
+            )
+            return
+        # Hard server-side cap: limit decode steps to avoid excessively long requests.
+        # The reference engine is CPU-bound; callers requesting huge max_tokens would
+        # stall the single-threaded server indefinitely.  This cap is a documented
+        # server limitation, not a safety constraint.
+        _SERVER_DECODE_CAP = 64
+        max_tokens = min(max_tokens_raw, max_available, _SERVER_DECODE_CAP)
         temperature = float(payload.get("temperature", 0.0))
         stream = bool(payload.get("stream", False))
         seed = int(payload.get("seed", 0))

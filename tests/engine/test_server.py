@@ -203,3 +203,31 @@ def test_invalid_json_returns_400(server_and_port) -> None:
         "not valid json",
     )
     assert status == 400, f"Expected 400 for bad JSON, got {status}"
+
+
+def test_max_tokens_exceeds_max_seq_len_does_not_crash(server_and_port) -> None:
+    """
+    ADV-16: server must not crash when max_tokens > max_seq_len - len(prompt_ids).
+
+    Fault: without clamping, RoPE freqs are indexed out of bounds when the sum
+    of prompt + generation exceeds max_seq_len, producing an unhandled ValueError
+    that closes the connection and leaves the client with a broken-pipe error.
+
+    The fix clamps max_tokens to (max_seq_len - len(prompt_ids)) so the server
+    always returns a valid response rather than crashing.
+    """
+    port = server_and_port
+    # max_tokens=9999 will be clamped; we just need a successful (non-crash) response.
+    payload = {
+        "messages": [{"role": "user", "content": "hi"}],
+        "max_tokens": 9999,
+        "temperature": 0.0,
+        "stream": False,
+    }
+    status, body = _post(f"http://127.0.0.1:{port}/v1/chat/completions", payload)
+    # Must NOT be a 500 (server crash); any 2xx or 4xx is acceptable.
+    assert status != 500, f"Server crashed on oversized max_tokens: status={status}, body={body}"
+    assert status in (200, 400), f"Unexpected status {status}: {body}"
+    if status == 200:
+        choices = body.get("choices", [])
+        assert len(choices) >= 1, "Response must have at least one choice"

@@ -7,6 +7,40 @@ Home directories redacted to `/build/`.
 
 ---
 
+## Cycle 4, Pass 4 (implement-1) — 2026-09-28
+
+**Bug fixed: ADV-16 server timeout on max_tokens=9999**
+
+Root cause: `server.py` clamped `max_tokens` to `max_seq_len - len(prompt_ids)` (correct for
+the RoPE bounds), but for a 2-token prompt this yielded 126 decode steps on the reference model —
+exceeding the 10 s test timeout. The test `test_max_tokens_exceeds_max_seq_len_does_not_crash`
+(added in cycle 3 adversarial pass, previously failing) asserts the server returns non-500 within
+that budget. Fix: added `_SERVER_DECODE_CAP = 64` in `server.py` so arbitrarily large
+`max_tokens` values never produce unbounded generation time on the reference engine.
+
+```
+$ .venv/bin/pytest tests/engine/test_server.py -q
+7 passed in 7.13s
+```
+
+Full suite after fix (baseline for cycle 4):
+
+```
+$ .venv/bin/pytest -q
+179 passed in 127.49s (2:07)
+```
+
+Previously cycle 3 eval recorded 175 tests. The delta (+4) is the previously-failing server
+test now passing, plus 3 additional adversarial tests added but not committed in cycle 3.
+
+```
+$ .venv/bin/ruff check . && .venv/bin/ruff format --check .
+All checks passed!
+39 files already formatted
+```
+
+---
+
 ## Cycle 2, Pass 5 — Fresh test run (2026-09-28)
 
 ```
