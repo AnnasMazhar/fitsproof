@@ -7,6 +7,9 @@ of machine every mainstream engine either ignores or silently falls back from. I
 peak memory for your machine from an on-device calibration, **enforces** a declared budget
 (admit / degrade loudly / refuse), and **proves** it with a measured stress harness.
 
+<!-- Record with: asciinema rec -c "bash docs/demo.sh" demo.cast && agg --speed 1.5 demo.cast docs/demo.gif -->
+<!-- ![fitsproof demo](docs/demo.gif) -->
+
 ## Quickstart (clean machine, no GPU, no CUDA toolkit, no model download)
 
 ```bash
@@ -19,18 +22,17 @@ fitsproof admit --budget-gb 0.001   # REFUSED — names the binding constraint, 
 Python 3.11+. Everything runs offline after install. Once the first tagged release is published
 the install is `pip install fitsproof`.
 
-If this is useful, star the repo.
-
-## Headline evidence
-
-`fitsproof stress` runs 25 configurations against a declared budget and fails the build on any
-violation or undocumented mode change. Real output:
+**Stress harness result** — 25 configs, zero budget violations, zero silent mode changes:
 
 ```
 $ fitsproof stress
 ADMITTED: 0.039 GB predicted peak <= 4.000 GB budget (margin: 3961.0 MB)
 Stress harness: 25 configs, 0 violations, 0 silent mode changes. Margin: min=3909.4 MB, median=3909.7 MB, max=3913.1 MB.
 ```
+
+If this is useful, star the repo.
+
+## Prediction accuracy — the benchmark, published even though it is unflattering
 
 ## Prediction accuracy — the benchmark, published even though it is unflattering
 

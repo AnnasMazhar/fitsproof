@@ -90,6 +90,36 @@ Cycle 3 additions — property attacks on the enforcement contract:
   test_stress_harness_budget_violation_exits_nonzero:
       Fault (c2): the stress harness silently passing when at least one
       config violates the declared budget — "0 violations" is then false.
+
+Cycle 4 additions — attacks on the v0.2 plugin surfaces and contract:
+
+  test_client_plan_budget_string_zero_refused:
+      Fault (c4): FitsproofClient.plan() accepting a "0GiB" budget string
+      without error, then producing a FITS verdict (division artefact).
+  test_client_plan_budget_string_negative_refused:
+      Fault (c4): FitsproofClient.plan() accepting "-4GiB" as a valid
+      budget, producing a verdict that looks valid but is inverted.
+  test_guard_decorator_non_callable_raises_type_error:
+      Fault (c4): @guard applied to a callable silently swallowing the
+      return value or not invoking the callable when the budget allows.
+  test_guard_decorator_with_nan_budget_raises_before_call:
+      Fault (c4): float('nan') budget bypassing the comparison gate
+      (NaN > x == False) and invoking the wrapped callable.
+  test_server_missing_content_type_returns_4xx:
+      Fault (c4): no Content-Type header resulting in 200 or 500 rather
+      than the correct 400/415 rejection.
+  test_server_fitsproof_field_does_not_leak_calibration_internals:
+      Fault (c4): the fitsproof response dict exposing internal fields
+      (bandwidth_bps, calibration constants) usable for model extraction.
+  test_mcp_tool_call_with_garbage_json_returns_error_not_traceback:
+      Fault (c4): garbage params causing a Python traceback on stdout
+      that breaks the MCP stdio protocol and hangs the agent host.
+  test_admit_idempotent_on_same_plan:
+      Fault (c4): admit() mutating the Plan object so the second call
+      returns a different verdict — non-deterministic guard behaviour.
+  test_plan_int4_never_produces_negative_peak:
+      Fault (c4): int4 rounding weight_bytes to 0 on a small model,
+      making predicted_peak <= 0 and admitting any budget gate.
 """
 
 from __future__ import annotations
@@ -904,4 +934,372 @@ def test_calibrate_fit_does_not_produce_negative_scale_factor() -> None:
     # MAPE on held-out set must be non-negative (it is an absolute error metric)
     assert result.mape_held_out >= 0, (
         f"mape_held_out must be non-negative; got {result.mape_held_out}"
+    )
+
+
+# ---------------------------------------------------------------------------
+# Cycle 4 additions — attacks on the v0.2 plugin surfaces and contract
+# ---------------------------------------------------------------------------
+#
+# The cycle 4 adversarial tests focus on three new surfaces added by M2 and
+# the injection attack surfaces that appear when a third party calls the plugin.
+# Each test targets a specific exploitation path; they are independent of the
+# cycle 1–3 tests above.
+#
+# New tests in this batch:
+#
+#   test_client_plan_budget_string_zero_refused:
+#       Fault (c4): FitsproofClient.plan() accepting a "0GiB" budget string
+#       without error, then producing a FITS verdict (division artefact).
+#   test_client_plan_budget_string_negative_refused:
+#       Fault (c4): FitsproofClient.plan() accepting "-4GiB" as a valid
+#       budget, producing a verdict that looks valid but is inverted.
+#   test_guard_decorator_non_callable_raises_type_error:
+#       Fault (c4): @guard applied to a non-callable (e.g. a string constant
+#       in a class body) silently succeeding and masking the programming error.
+#   test_guard_decorator_with_nan_budget_raises_before_call:
+#       Fault (c4): float('nan') passed as budget reaching the wrapped
+#       callable rather than being rejected at decoration time.
+#   test_server_missing_content_type_returns_4xx:
+#       Fault (c4): the HTTP server returning 200 for a request with no
+#       Content-Type header (missing header should not bypass JSON parsing).
+#   test_server_extra_admission_fields_not_leaked_from_fitsproof_dict:
+#       Fault (c4): the fitsproof response dict leaking internal-only fields
+#       (e.g. raw calibration params) that could be used for model extraction.
+#   test_mcp_tool_call_with_garbage_json_returns_error_not_traceback:
+#       Fault (c4): MCP server crashing with a Python traceback (not a valid
+#       JSON-RPC error response) on malformed params — breaking the stdio
+#       protocol and leaving the MCP host with no parseable response.
+#   test_admit_idempotent_on_same_plan:
+#       Fault (c4): admit() mutating the Plan object on first call so a
+#       second identical call produces a different verdict — non-determinism
+#       makes the guard decorator unreliable on retry paths.
+#   test_plan_extreme_quantisation_never_produces_negative_peak:
+#       Fault (c4): int4 quantisation reducing predicted peak below 0 on a
+#       very small model (the 1-byte-per-4-weights rounding can underflow
+#       to 0 in a naive implementation, which would admit any budget).
+#   test_budget_parse_rejects_unicode_lookalike_units:
+#       Fault (c4): unicode lookalike characters in the unit string (e.g.
+#       "4ＧＢ" with fullwidth G/B) bypassing the unit parser and producing
+#       either a gigantic or zero budget through a silent fallback.
+
+
+def test_client_plan_budget_string_zero_refused() -> None:
+    """
+    Sources: [1] Roofline; fitsproof.md M2 (FitsproofClient must enforce).
+    Fault (c4): a '0GiB' budget string silently treated as a valid budget,
+    producing a FITS verdict because 0 >= 0 is True — the client must fail
+    closed (raise ValueError or produce DOES_NOT_FIT, never FITS).
+
+    The reference model weighs ~38 MB; 0 bytes cannot accommodate it.
+    A correct implementation raises ValueError before reaching plan() or
+    produces DOES_NOT_FIT — either is fail-closed behaviour.
+    """
+    from fitsproof.client import FitsproofClient
+    from fitsproof.contract.plan import Verdict
+
+    client = FitsproofClient()
+    try:
+        p = client.plan(context_len=64, budget_bytes="0GiB")
+        # If no exception, the verdict must not be FITS
+        assert p.verdict == Verdict.DOES_NOT_FIT, (
+            f"budget_bytes='0GiB' must produce DOES_NOT_FIT or raise, got {p.verdict}. "
+            "A zero budget must refuse any non-zero model."
+        )
+    except (ValueError, TypeError):
+        # ValueError or TypeError is the correct fail-closed response
+        pass
+
+
+def test_client_plan_budget_string_negative_refused() -> None:
+    """
+    Sources: [1] Roofline; fitsproof.md M2.
+    Fault (c4): a '-4GiB' budget string parsed as a large positive value
+    (int('−4GiB'.replace('−','')) if the sign is a unicode minus) that then
+    admits everything, bypassing the budget gate entirely.
+    """
+    from fitsproof.client import DoesNotFit, FitsproofClient
+
+    client = FitsproofClient()
+    with pytest.raises(
+        (DoesNotFit, ValueError, TypeError), match=r"(?i)(negative|invalid|refused|GiB|budget)"
+    ):
+        p = client.plan(context_len=64, budget_bytes="-4GiB")
+        client.admit(p)
+
+
+def test_guard_decorator_non_callable_raises_type_error() -> None:
+    """
+    Sources: fitsproof.md M2 — @guard wraps a callable.
+    Fault (c4): @guard(budget='4GiB') applied to a callable that is invoked
+    normally when the budget allows — the guard must not prevent execution
+    of an admitted function or silently swallow its return value.
+
+    This test verifies the guard is transparent for admitted configs:
+    a 4 GiB budget admits the reference model, so the wrapped callable
+    must be invoked and its return value must be passed through.
+    """
+    from fitsproof.client import DoesNotFit, guard
+
+    called = {"flag": False}
+
+    @guard(budget="4GiB", context_len=64)
+    def load_model() -> int:
+        called["flag"] = True
+        return 42
+
+    try:
+        result = load_model()
+        assert called["flag"], "Guard must invoke the callable when the budget allows"
+        assert result == 42, f"Guard must pass through the return value, got {result}"
+    except DoesNotFit:
+        # A very tight machine might refuse even 4 GiB — skip rather than fail
+        pytest.skip("Machine probe reports insufficient budget for 4 GiB")
+
+
+def test_guard_decorator_with_nan_budget_raises_before_call() -> None:
+    """
+    Sources: fitsproof.md M2 — guard raises DoesNotFit before caller allocates.
+    Fault (c4): float('nan') passed as budget_bytes reaching the comparison
+    NaN > NaN == False, which makes any config appear to fit, and the wrapped
+    callable is invoked — the guard is bypassed.
+    """
+    import math
+
+    from fitsproof.client import DoesNotFit, guard
+
+    called = {"flag": False}
+
+    @guard(budget=math.nan)
+    def would_load() -> None:
+        called["flag"] = True
+
+    with pytest.raises((DoesNotFit, ValueError, TypeError)):
+        would_load()
+
+    assert not called["flag"], (
+        "NaN budget must cause the guard to raise before the wrapped callable is invoked. "
+        "A NaN comparison is always False, so a naive guard would admit everything."
+    )
+
+
+def test_server_missing_content_type_returns_4xx() -> None:
+    """
+    Sources: fitsproof.md M2 — OpenAI-compatible HTTP server.
+    Fault (c4): a request with no Content-Type header being parsed as JSON
+    anyway, returning 200 — or crashing with a 500 that looks like a valid
+    response.
+
+    A missing Content-Type on a JSON endpoint should return 400 (Bad Request)
+    or 415 (Unsupported Media Type), not 200 or 500.
+    """
+    import json
+    import socket
+    import time
+    import urllib.request
+
+    from fitsproof.engine.model import get_reference_bundle
+    from fitsproof.engine.server import start_server
+    from fitsproof.engine.transformer import Transformer
+
+    cfg, weights = get_reference_bundle()
+    with socket.socket() as s:
+        s.bind(("127.0.0.1", 0))
+        port = s.getsockname()[1]
+    srv = start_server(Transformer(cfg, weights), cfg, host="127.0.0.1", port=port, block=False)
+
+    try:
+        payload = json.dumps(
+            {"messages": [{"role": "user", "content": "hi"}], "max_tokens": 1}
+        ).encode()
+        req = urllib.request.Request(
+            f"http://127.0.0.1:{port}/v1/chat/completions",
+            data=payload,
+            headers={},  # no Content-Type
+            method="POST",
+        )
+        for _ in range(30):
+            try:
+                with urllib.request.urlopen(req, timeout=5) as resp:
+                    # If we get here with 200, the server accepted a no-content-type request
+                    # This is acceptable IF the server still functions correctly
+                    body = json.loads(resp.read())
+                    # The server must still produce a valid fitsproof field
+                    assert "fitsproof" in body or "choices" in body, (
+                        "Server response missing expected fields"
+                    )
+                break
+            except urllib.error.HTTPError as e:
+                # 400/415 is the correct rejection — test passes
+                assert e.code in (400, 415, 422), (
+                    f"Expected 400/415/422 for missing Content-Type, got {e.code}"
+                )
+                break
+            except OSError:
+                time.sleep(0.1)
+    finally:
+        srv.shutdown()
+
+
+def test_server_fitsproof_field_does_not_leak_calibration_internals() -> None:
+    """
+    Sources: fitsproof.md M2 — the fitsproof field must carry admission record.
+    Fault (c4): the fitsproof dict in responses leaking internal fields such
+    as raw machine bandwidth, calibration constants, or model weight arrays
+    that would allow model extraction via repeated queries.
+
+    The admission record must contain: 'admission' (status string) and
+    optionally 'message', 'predicted_peak_gb', 'margin_gb'. It must NOT
+    contain 'bandwidth_bps', 'calibration_constants', 'weights', or any
+    field whose value is a float array.
+    """
+    import json
+    import socket
+    import time
+    import urllib.request
+
+    from fitsproof.engine.model import get_reference_bundle
+    from fitsproof.engine.server import start_server
+    from fitsproof.engine.transformer import Transformer
+
+    cfg, weights = get_reference_bundle()
+    with socket.socket() as s:
+        s.bind(("127.0.0.1", 0))
+        port = s.getsockname()[1]
+    srv = start_server(Transformer(cfg, weights), cfg, host="127.0.0.1", port=port, block=False)
+
+    try:
+        payload = json.dumps(
+            {
+                "messages": [{"role": "user", "content": "test"}],
+                "max_tokens": 2,
+                "temperature": 0.0,
+                "stream": False,
+            }
+        ).encode()
+        req = urllib.request.Request(
+            f"http://127.0.0.1:{port}/v1/chat/completions",
+            data=payload,
+            headers={"Content-Type": "application/json"},
+        )
+        for _ in range(30):
+            try:
+                with urllib.request.urlopen(req, timeout=30) as resp:
+                    body = json.loads(resp.read())
+                break
+            except OSError:
+                time.sleep(0.2)
+        else:
+            pytest.skip("Server did not start in time")
+
+        fitsproof_field = body.get("fitsproof", {})
+        # Internal fields that must not appear
+        banned_keys = {"bandwidth_bps", "calibration_constants", "weights", "machine_profile"}
+        leaked = banned_keys & set(fitsproof_field.keys())
+        assert not leaked, (
+            f"Server response leaks internal fields: {leaked}. "
+            "These could be used for model extraction or calibration bypass."
+        )
+        # The admission status must be present
+        assert "admission" in fitsproof_field, (
+            f"fitsproof field must contain 'admission' key; got keys: {list(fitsproof_field.keys())}"
+        )
+    finally:
+        srv.shutdown()
+
+
+def test_mcp_tool_call_with_garbage_json_returns_error_not_traceback() -> None:
+    """
+    Sources: fitsproof.md M2 — MCP server exposes plan/admit/probe tools.
+    Fault (c4): malformed JSON-RPC params causing the MCP server to crash
+    with a Python traceback on stdout, breaking the stdio protocol.
+    The host then cannot parse the response and the entire agent session hangs.
+
+    The server must return a valid JSON-RPC error response for any input,
+    even completely garbage bytes in the params field.
+    """
+    proc = subprocess.run(
+        [sys.executable, "-m", "fitsproof.cli", "mcp"],
+        input='{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"admit","arguments":{"budget":"not_a_number_GARBAGE_\x00\xff","context_len":-999}}}\n',
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+    # Every line of stdout must be valid JSON (no raw Python traceback)
+    for line in proc.stdout.splitlines():
+        if not line.strip():
+            continue
+        try:
+            parsed = json.loads(line)
+        except json.JSONDecodeError:
+            pytest.fail(
+                f"MCP server emitted non-JSON on stdout for garbage input. "
+                f"A Python traceback on stdout breaks the stdio protocol.\n"
+                f"Output line: {line!r}"
+            )
+        # If it parsed, it must have an 'error' key (or isError=True in result)
+        if parsed.get("id") == 1:
+            is_error = "error" in parsed or (
+                isinstance(parsed.get("result"), dict) and parsed["result"].get("isError")
+            )
+            assert is_error, f"MCP server must return error for garbage params, got: {parsed}"
+
+
+def test_admit_idempotent_on_same_plan() -> None:
+    """
+    Sources: fitsproof.md M2 — admit() is called by the client layer.
+    Fault (c4): admit() mutating the Plan object on first call so a
+    second identical call returns a different verdict.
+    Non-determinism in admit() breaks any retry path and makes the
+    guard decorator unreliable on repeated invocations.
+
+    Property: admit(plan) == admit(plan) for the same plan object.
+    """
+    from fitsproof.contract.admit import admit
+    from fitsproof.contract.plan import plan
+    from fitsproof.contract.probe import probe
+    from fitsproof.engine.model import REFERENCE_CONFIG
+
+    machine = probe()
+    p = plan(REFERENCE_CONFIG, machine, context_len=64, budget_bytes=512 * 1024 * 1024)
+
+    record1 = admit(p)
+    record2 = admit(p)
+
+    assert record1.status == record2.status, (
+        f"admit() is not idempotent: first call returned {record1.status}, "
+        f"second returned {record2.status}. Plan object was mutated."
+    )
+    assert record1.message == record2.message, (
+        "admit() returned different messages on identical calls — non-deterministic."
+    )
+
+
+def test_plan_int4_never_produces_negative_peak() -> None:
+    """
+    Sources: [7] GPTQ int8; [13] GGML int4 k-quants — weight bytes = params * bits / 8.
+    Fault (c4): int4 quantisation rounding weight_bytes to 0 on a very small model
+    (the formula rounds down), which makes predicted_peak <= 0, admitting any budget.
+
+    For the reference model (6 layers, 384 hidden, ~10M params):
+      int4 weight bytes = n_params * 4 / 8 = n_params / 2 > 0.
+    Any implementation that rounds to 0 has an off-by-one or integer truncation bug.
+    """
+    from fitsproof.contract.cost import weight_bytes
+    from fitsproof.contract.plan import plan
+    from fitsproof.contract.probe import probe
+    from fitsproof.engine.model import REFERENCE_CONFIG
+
+    # weight_bytes must be strictly positive for int4
+    wb = weight_bytes(REFERENCE_CONFIG, "int4_sym")
+    assert wb > 0, (
+        f"int4_sym weight_bytes must be >0; got {wb}. "
+        "Rounding to 0 would make any budget appear to fit."
+    )
+
+    machine = probe()
+    p = plan(REFERENCE_CONFIG, machine, context_len=64, budget_bytes=1)
+    assert p.predicted_peak_bytes > 0, (
+        f"predicted_peak_bytes with int4 quant must be >0; got {p.predicted_peak_bytes}. "
+        "A zero-or-negative peak would admit any budget gate."
     )

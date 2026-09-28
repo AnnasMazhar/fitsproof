@@ -1,7 +1,9 @@
 # GitHub topic tags for fitsproof (8-20 required; one per line).
 # Chosen per specs/LAUNCH-PLAN.md Phase A item 3: mix purpose / stack / field
 # tags, plus the good-first-issue topic from item 6.
+fitsproof
 llm-inference
+inference-contract
 local-llm
 llm
 inference-engine
