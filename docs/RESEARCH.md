@@ -2074,3 +2074,651 @@ What observation would prove this pass's findings wrong:
    If MAPE at real-model scale shrinks below 20% after the cost-model fix
    (embedding size + head_dim correction), the F-1 finding is resolved and the
    adoption-blocker analysis in ADOPTION.md §5 must be updated.
+
+---
+
+## Cycle 3 — Pass 1 — GROUND TRUTH DEEPENING (c3-p1)
+
+*Dispatched 2026-09-28T04:00Z. This pass extends the research base for the v0.2
+MANDATE and the open calibration/cost-model questions carried from cycle 2. Sources
+35–44 are new. Five (35, 36, 37, 38, 40) receive the full treatment required by
+QUALITY-CONTRACT §3: exact method, equations with notation explained, assumptions,
+documented failure modes. All links re-checked with curl on 2026-09-28 (raw output
+at the end of this section). This pass targets the five areas still lacking formal
+grounding after cycle 2:*
+
+1. *Chinchilla / Hoffmann et al. 2022 — prefill FLOPs derivation used in cost.py*
+2. *DeepSeek-V2 MLA (Multi-head Latent Attention) — KV cache compression formula for the ridgepoint comparison*
+3. *Speculative sampling (Chen et al. 2023) — the speed-up guarantee and acceptance algorithm*
+4. *LLM.int8() / Dettmers et al. 2022 — vector-wise quantisation error analysis*
+5. *YaRN (Peng et al. 2023) — the NTK-aware RoPE frequency-domain modification*
+
+*Sources 41–44 are lighter supporting entries.*
+
+---
+
+### 35. Chinchilla: Training Compute-Optimal LLMs — DEEP [drives cost.py prefill FLOPs] — c3-p1
+
+**Hoffmann, J., Borgeaud, S., Mensch, A., et al. (2022).** Training Compute-Optimal
+Large Language Models. arXiv:2203.15556.
+https://arxiv.org/abs/2203.15556
+
+**Claim it supports:** The prefill FLOPs formula in `cost.py`:
+```
+flops_prefill = 2 * n_params * seq_len
+```
+Kaplan et al. (source 6, arXiv:2001.08361) derives `2N` FLOPs per token from
+counting the forward-pass matrix multiplications. Chinchilla does not re-derive
+this formula but uses it as the basis for all training-compute comparisons
+(Section 2, equation C(N, D) = 6ND — a factor of 6 for the forward + two backward
+passes; inference is the forward pass only ≈ 2ND). This is the authoritative scaling-
+laws citation for the `2N` factor actually used in fitsproof's prefill estimate.
+
+**Equation extracted (notation explained):**
+```
+C(N, D) = 6 N D    (Chinchilla equation, Section 2)
+  N = model parameters (excluding embeddings, consistent with Kaplan et al.)
+  D = number of training tokens
+  6 = 2 (forward pass) + 4 (two backward passes, ~2x forward each)
+
+For inference (forward pass only):
+  FLOPs_per_token = 2 * N
+  FLOPs_prefill   = 2 * N * seq_len
+```
+This is the cost model's `prefill_flops` in `cost.py`; the actual TPOT from prefill
+is then `FLOPs_prefill / effective_FLOPS`.
+
+**Assumptions:**
+- Embeddings are excluded from N (their FLOPs are negligible at scale).
+- The `2N` factor counts only weight-matrix multiply-accumulates; LayerNorm and
+  softmax are negligible at transformer scale.
+- For single-batch inference the prefill phase is compute-bound only when
+  `FLOPs_prefill / effective_FLOPS > kv_cache_bytes / bandwidth`; below that
+  crossover the formula overstates the compute cost.
+
+**Known failure mode (per the literature):**
+- The factor of 2 is an approximation. For attention, the exact FLOP count is
+  `4 * seq * d_model + 2 * seq^2 * d_model / n_heads` per layer; the `2N`
+  formula omits the `seq^2` term which dominates at very long contexts. For the
+  fitsproof reference model (seq ≤ 512) this is negligible, but at seq > 4096
+  on a large model it becomes the leading term.
+- Chinchilla's optimal-compute recipe (equal scaling of N and D) applies to
+  training, not inference. For inference the only relevant result is the `2N`
+  FLOPs/token formula; do not cite Chinchilla for training-regime arguments
+  about fitsproof.
+
+**How fitsproof uses this:** `cost.py` uses `prefill_flops = 2 * n_params * seq_len`
+directly. The known failure mode (seq^2 term at long context) is documented in
+the README Limitations ("KV cache bandwidth not included in decode formula" is a
+parallel gap; the analogous gap here is "attention FLOPs not included in prefill
+formula").
+
+---
+
+### 36. DeepSeek-V2: Multi-head Latent Attention (MLA) — DEEP [grounds ridgepoint comparison; documents MLA KV formula] — c3-p1
+
+**DeepSeek-AI (2024).** DeepSeek-V2: A Strong, Economical, and Efficient Mixture-of-
+Experts Language Model. arXiv:2405.04434.
+https://arxiv.org/abs/2405.04434
+
+**Claim it supports:** The statement in source 22 (ridgepoint) that ridgepoint is
+"KV cache formula correct to the byte for both GQA and MLA attention types." This
+is the primary reference for MLA's compression ratio (93.3% KV cache reduction vs
+standard MHA), which grounds the ridgepoint competitor analysis in COMPARISONS.md.
+Also informs why fitsproof's own GQA formula (source 4) is not MLA — MLA is out
+of scope for v0.1, noted in source 4's known failure modes.
+
+**Method extracted — MLA KV cache formula (Section 2.2 of the paper):**
+
+Standard MHA per-token KV cache:
+```
+KV_MHA_bytes = 2 * n_heads * head_dim * elem_bytes   (per token, per layer)
+total = 2 * n_layers * n_heads * head_dim * seq_len * elem_bytes
+```
+
+MLA replaces per-head K and V with a single low-dimensional latent vector `c_KV`:
+```
+c_KV ∈ R^{d_c}   where d_c << n_kv_heads * head_dim
+
+KV_MLA_bytes = d_c * elem_bytes            (per token, per layer; stores only c_KV)
+total = 2 * n_layers * d_c * seq_len * elem_bytes
+```
+The paper sets `d_c = 512` (vs `n_heads * head_dim = 128 * 128 = 16384` for
+DeepSeek-V2's full MHA), giving a **32× per-token reduction** in KV bytes, reported
+as 93.3% KV cache reduction.
+
+At runtime, K and V are reconstructed:
+```
+K = c_KV * W_K^up    (learned up-projection back to n_kv_heads * head_dim)
+V = c_KV * W_V^up
+```
+The up-projection weights `W_K^up`, `W_V^up` are loaded once per layer (not per
+token), so they do not appear in the KV cache size formula; they appear in the
+weight-load cost per decode step.
+
+**Notation:**
+- `d_c`: latent KV dimension (the compressed bottleneck size, chosen by model design)
+- `elem_bytes`: 2 for fp16/bf16, 4 for fp32
+- `n_layers`, `n_heads`, `head_dim`: standard transformer dimensions
+
+**Assumptions:**
+- The `d_c` must be known from the model's config; it is not computable from
+  `n_heads * head_dim`. For models using MLA, cost.py must accept `kv_latent_dim`
+  as an explicit parameter rather than computing from `n_kv_heads`.
+- The reconstruction step adds to the prefill compute cost but not to the
+  decode KV-bandwidth cost (the KV data streamed per decode step is `d_c`, not
+  `n_heads * head_dim`).
+
+**Known failure mode:**
+- A cost model that applies the GQA formula (`kv_size = 2 * n_kv_heads * head_dim`)
+  to an MLA model will over-predict KV cache size by ~32× for DeepSeek-V2 scale
+  models. This is source F-1's underlying cause at a formula level: the real
+  gemma3:4b does not use MLA, but this shows why head_dim and n_kv_heads defaults
+  must be checked against the actual model config before prediction.
+- fitsproof v0.1 does not implement MLA and does not claim to. The limitation is
+  documented in source 4 (GQA known failure mode) and in README Limitations.
+
+---
+
+### 37. Speculative Sampling (Chen et al. 2023) — DEEP [drives speculative.py acceptance algorithm] — c3-p1
+
+**Chen, C., Borgeaud, S., Irving, G., Lespiau, J-B., Sifre, L., Jumper, J. (2023).**
+Accelerating Large Language Model Decoding with Speculative Sampling.
+arXiv:2302.01318.
+https://arxiv.org/abs/2302.01318
+
+**Claim it supports:** The algorithm in `speculative.py:speculative_generate`, and
+the proof that greedy (temperature=0) speculative decoding is output-equivalent to
+non-speculative greedy decoding (acceptance criterion 4, source 9 / Leviathan et al.
+2023). Chen et al. formalise the acceptance/rejection sampling algorithm and the
+speed-up theorem, which Leviathan et al. (source 9) also derive independently.
+
+**Exact method — Algorithm 1 (Speculative Sampling, notation explained):**
+```
+Given:
+  p(x)  = target model's probability distribution over next token
+  q(x)  = draft model's probability distribution over next token
+  gamma = number of draft tokens to speculate (lookahead window)
+
+For each speculative step:
+  1. Draft model generates gamma tokens: x_1, ..., x_gamma
+     Each sampled from q(x | context)
+  2. Target model scores ALL gamma tokens in one forward pass:
+     p(x_1), ..., p(x_gamma) (parallel, comparable cost to sampling 1 token from p)
+  3. For each draft token x_i (in order):
+       Accept x_i with probability min(1, p(x_i) / q(x_i))
+       On rejection: sample replacement token from the adjusted distribution
+                     p'(x) = norm(max(0, p(x) - q(x)))
+                     (normalisation constant = sum of max(0, p(x) - q(x)))
+  4. Emit all accepted tokens + the replacement token on first rejection.
+
+Greedy special case (temperature=0):
+  At temperature=0, p and q are delta distributions on the argmax token.
+  Accept if argmax(q) == argmax(p) [both drafts are accepted trivially].
+  On mismatch: emit argmax(p) [the target's greedy token].
+  → Output stream = target greedy stream. No stochasticity. No rejection sampling needed.
+```
+
+**Speed-up theorem (Section 3, informal statement):**
+Under the assumption that the draft model is `alpha`-aligned (accepts with expected
+probability α), generating gamma draft tokens gives expected tokens per step:
+```
+E[tokens_per_step] = (1 - alpha^{gamma+1}) / (1 - alpha)
+```
+For alpha=0.9 and gamma=4: E ≈ (1 - 0.9^5) / (1 - 0.9) = (1 - 0.59049) / 0.1 ≈ 4.1
+i.e., 4.1 tokens at the cost of 1 target-model step + 1 cheap draft step.
+Observed speedup in the paper: 2–2.5× on Chinchilla 70B.
+
+**Why fitsproof implements only the greedy special case:**
+The v0.1 claim is "greedy speculative decoding is output-identical to non-speculative
+greedy decoding." This requires only that when `argmax(q) == argmax(p)` the token
+is accepted and when they disagree the target's greedy token is emitted — no
+probability arithmetic needed. The probabilistic acceptance path (Algorithm 1,
+temperature > 0) is not implemented and not claimed (source 9, README Limitations).
+
+**Assumptions:**
+- The draft model must share vocabulary with the target.
+- The target model scores a speculative batch (gamma tokens) in one forward pass;
+  this requires that the attention mask allows the speculative positions to attend
+  to each other only up to their own position (causal masking), not to future positions.
+- The speed-up guarantee assumes draft generation is cheap (significantly faster than
+  the target). For fitsproof's reference model the draft is the same architecture
+  but with fewer heads — the speed-up is not demonstrated at this scale.
+
+**Known failure modes:**
+- If `alpha` (acceptance rate) is low (draft and target distributions differ),
+  E[tokens_per_step] → 1 (no speedup, just overhead from drafting). A draft model
+  too different from the target degrades to worse than non-speculative.
+- Memory cost doubles (both draft and target models must be resident), which can
+  violate the declared budget if the budget was calibrated for a single model. The
+  contract must account for both models in `plan()` when speculative mode is
+  requested.
+
+---
+
+### 38. LLM.int8(): Vector-wise Quantisation and Emergent Outliers — DEEP [grounds int8 design choices in quant.py] — c3-p1
+
+**Dettmers, T., Lewis, M., Belkada, Y., Zettlemoyer, L. (2022).** LLM.int8():
+8-bit Matrix Multiplication for Transformers at Scale.
+arXiv:2208.07339.
+https://arxiv.org/abs/2208.07339
+
+**Claim it supports:** The int8 quantisation error analysis in `quant.py`, specifically:
+(a) why per-channel (source 7, GPTQ) and per-vector scales are used rather than
+per-tensor scales, and (b) why fitsproof's `int8_sym` and `int8_asym` modes are
+acknowledged to be less accurate than Dettmers' mixed-precision approach at large scale.
+
+**Method extracted — the emergent outlier finding:**
+```
+Observation (Section 3): at model scale >= ~6B parameters, a small fraction (~0.1%)
+of feature dimensions develop systematically large activation values ("outliers")
+with magnitude ~60× larger than typical values.
+
+Consequence: a per-tensor scale that accommodates the outliers wastes most of the
+8-bit range on the typical values.
+
+LLM.int8() decomposition:
+  W = W_{int8} + W_{fp16_outlier}
+  where W_{fp16_outlier} contains columns corresponding to the outlier feature dimensions (fp16),
+        W_{int8} contains all other columns (int8, per-vector scale).
+
+Quantisation:
+  int8 path:   s_row = max(|A_row|) / 127   (row scale for activation A)
+               s_col = max(|W_col|) / 127   (column scale for weight W)
+               W_q = round(W / s_col) ∈ [-127, 127]
+               A_q = round(A / s_row) ∈ [-127, 127]
+               output = (A_q @ W_q) * s_row * s_col   (in fp32 accumulation)
+
+Error bound (informal, Section 4):
+  Rounding error per element: |e_ij| <= max(A_row) / (2 * 127)
+  For typical values this is negligible; for outlier dimensions it is not.
+  The mixed-precision decomposition is what keeps top-1 agreement near 100%.
+```
+
+**Why fitsproof uses per-channel not per-vector (explicit design decision):**
+Dettmers uses per-vector (per-row for activations, per-column for weights) because
+the outlier pattern is per-feature-dimension, not per-output-channel. fitsproof's
+`int8_sym` uses per-output-channel scales (one scale per row of W) because:
+1. fitsproof quantises weights at load time, not activations at runtime.
+2. The reference model is tiny (~10M params) and is randomly initialised — it has
+   no emergent outliers by construction.
+3. Per-channel weight quantisation is implementable with one scale vector; the
+   mixed-precision path requires runtime outlier detection which adds complexity
+   incompatible with the NumPy-only design.
+
+The known limitation: per-channel scales are less accurate than per-group scales
+(GPTQ, source 7) or mixed-precision decomposition (LLM.int8()) on real trained models
+with emergent outliers. fitsproof's quantisation quality claims are only valid for
+the reference model (random init, no outliers). This is documented in README
+Limitations.
+
+**Assumptions:**
+- Emergent outliers appear only in models ≥ 6B parameters (empirical, not proven).
+- The mixed-precision path requires identifying the outlier dimensions, which requires
+  calibration data (forward passes over real text). fitsproof does not have this.
+
+**Known failure modes:**
+- Per-channel symmetric int8 applied to a large real model with emergent outliers
+  degrades quality significantly (the paper measures ~15–30% accuracy drop vs
+  LLM.int8() on perplexity-sensitive tasks). This is the fault
+  `tests/engine/test_quant.py` must name in its docstring: "fault = per-tensor or
+  per-channel quantisation applied to a model with outlier feature dimensions loses
+  accuracy; this test detects it by asserting top-1 agreement on the reference model,
+  which has no outliers."
+
+---
+
+### 39. SmoothQuant: Quantisation Difficulty Migration — supporting entry — c3-p1
+
+**Xiao, G., Lin, J., Seznec, M., Wu, H., Demouth, J., Han, S. (2022).**
+SmoothQuant: Accurate and Efficient Post-Training Quantization for Large Language
+Models. *ICML 2023.* arXiv:2211.10438.
+https://arxiv.org/abs/2211.10438
+
+**Claim it supports:** The design decision to quantise weights but not activations
+in fitsproof's `quant.py`. SmoothQuant establishes that simultaneous weight+activation
+INT8 (W8A8) requires migrating outlier difficulty from activations to weights via a
+mathematically equivalent per-channel scale transformation. fitsproof does not
+implement W8A8 — only weight-only quantisation — which avoids this complexity at the
+cost of not achieving the activation-quantisation memory savings.
+
+**Method extracted (the smooth transformation, Section 3.2):**
+```
+Let s ∈ R^{d} be a per-channel smoothing scale (one per feature dimension).
+
+Transformed matmul:
+  Y = X W = (X / s) * (W * s)   [mathematically equivalent]
+  X_smooth = X / s               (activations divided by s)
+  W_smooth = W * s               (weights multiplied by s)
+
+s is chosen so that max(|X_smooth|) ≈ max(|W_smooth|) per channel — equalising
+the quantisation difficulty between activations and weights.
+
+After smoothing:
+  Both X_smooth and W_smooth can be quantised to INT8 without accuracy loss.
+  s is a constant per channel, absorbed into the weight at calibration time.
+  At runtime, the extra cost is zero (the weight W_smooth is stored int8).
+```
+
+**Why fitsproof does not implement this:** Calibration data (a sample of real inputs)
+is required to estimate the smoothing scale `s`. The fitsproof reference model is
+randomly initialised — calibration would be arbitrary. The v0.1 scope is weight-only
+quantisation, which avoids the need for calibration data entirely.
+
+**Documented failure mode (per the paper):** Without smoothing, naive W8A8 quantisation
+loses 15–30% accuracy on BLOOM/OPT models due to activation outliers; with smoothing
+the degradation is < 1%. This is why weight-only int8 is safer for a gate like
+fitsproof that must never false-admit: the error direction from weight-only int8 is
+well-understood and small.
+
+---
+
+### 40. YaRN: NTK-aware RoPE Frequency-Domain Scaling — DEEP [grounds the max_seq_len limitation] — c3-p1
+
+**Peng, B., Quesnelle, J., Fan, H., Shippole, E. (2023).**
+YaRN: Efficient Context Window Extension of Large Language Models.
+arXiv:2309.00071.
+https://arxiv.org/abs/2309.00071
+
+**Claim it supports:** The documented limitation in README ("No NTK-aware RoPE
+scaling") and source 3's known failure mode. YaRN is the community method that
+avoids fine-tuning for context extension (unlike Position Interpolation, source 16),
+making it the most practical path for fitsproof to support longer contexts. This
+source grounds why the limitation exists and what the implementation cost would be.
+
+**Exact method — YaRN frequency-domain interpolation (Section 3, notation explained):**
+
+Standard RoPE frequency schedule (source 3, equation 15):
+```
+theta_i = base^{-2i/d},   i ∈ [0, d/2),   base = 10000
+```
+
+YaRN modifies the interpolation factor α differently for each frequency dimension,
+based on wavelength:
+```
+wavelength_i = 2 pi / theta_i = 2 pi * base^{2i/d}
+
+Interpolation factor r_i ∈ [1, L'/L]:
+  r_i = L'/L              if wavelength_i > beta     (long-wavelength dims: full interpolation)
+  r_i = 1                 if wavelength_i < alpha    (short-wavelength dims: no interpolation)
+  r_i = linear blend      if alpha <= wavelength_i <= beta   (partial interpolation)
+
+where:
+  L  = original context length (training max_seq_len)
+  L' = target extended context length
+  alpha = 1     (typical)   short wavelength threshold
+  beta  = 32    (typical)   long wavelength threshold (empirically tuned)
+
+YaRN then applies a temperature scaling s to attention scores:
+  s = 0.1 * ln(L'/L) + 1    (empirical formula from the paper)
+  Attention = softmax(Q K^T / (sqrt(d_k) * s)) V
+```
+
+**Why this is the NTK-aware approach:**
+- The Neural Tangent Kernel (NTK) analysis shows that training under one frequency
+  regime and inferring at a different regime changes the effective kernel — i.e., the
+  model "sees" a different geometry. YaRN mitigates this by:
+  1. Leaving high-frequency (short-wavelength) dimensions unscaled (they capture
+     local position patterns, which remain valid at any extension).
+  2. Fully interpolating low-frequency (long-wavelength) dimensions (they encode
+     global position, which must be rescaled to the new range).
+  3. Blending in between, with the temperature correction preventing sharpness loss.
+
+**Assumptions:**
+- The empirical values alpha=1, beta=32 work for LLaMA-class models trained at
+  max_seq_len=4096. They are not derived from first principles and may need tuning
+  for other training lengths or architectures.
+- The temperature parameter s is empirically fitted; no analytic guarantee that it
+  prevents attention score collapse for arbitrary extension ratios.
+- The paper reports 10× fewer training tokens and 2.5× fewer training steps than
+  Position Interpolation (source 16) to reach comparable perplexity at extended
+  context — the gain comes from not starting from random weights for the extended
+  range.
+
+**Known failure modes:**
+- Without the temperature correction, attention dot products at extended positions
+  become uniformly small (all keys contribute equally), degrading the model to
+  averaging rather than attention. The paper observes this as "entropy collapse" in
+  the attention distribution.
+- The alpha/beta thresholds degrade quality if the model was trained at a context
+  length not near a power-of-2 boundary, or if head_dim is very small (the
+  frequency-wavelength relationship changes with `d`).
+- **fitsproof's specific failure mode:** without YaRN, the reference model silently
+  degrades at `pos >= max_seq_len = 512` (standard RoPE extrapolation). The rope
+  frequencies wrap around in float32, producing garbage attention weights, not an
+  error. The README Limitations states this explicitly; the v0.2 improvement path
+  is to implement YaRN's modified frequency schedule with no fine-tuning required.
+
+**Implementation sketch for fitsproof:**
+```python
+# in attention.py:_rope_freqs (currently standard RoPE)
+def _rope_freqs_yarn(d: int, max_seq_len: int, extended_len: int,
+                     alpha: float = 1.0, beta: float = 32.0) -> np.ndarray:
+    """YaRN frequency schedule for context extension."""
+    L, Lp = max_seq_len, extended_len
+    freqs = 1.0 / (BASE ** (np.arange(0, d, 2) / d))   # standard
+    wavelengths = 2 * np.pi / freqs
+    # per-dimension interpolation factor
+    r = np.where(wavelengths < alpha, 1.0,
+        np.where(wavelengths > beta, L / Lp,
+        (wavelengths - alpha) / (beta - alpha) * (L / Lp - 1.0) + 1.0))
+    return freqs * r   # multiply (== rescale the position index)
+```
+This is illustrative; the actual implementation requires wiring `extended_len`
+through the transformer constructor and adjusting the attention temperature.
+
+---
+
+### 41. Speculative Decoding: The Original Proposal (Leviathan et al. 2023) — supporting entry — c3-p1
+
+Already source 9 in this file. This cycle-3 entry deepens the cross-citation:
+Chen et al. 2023 (source 37) and Leviathan et al. 2023 (source 9) were published
+concurrently and are independent derivations of the same algorithm with consistent
+notation. The key addition for cycle 3:
+
+**The speed-up theorem from Leviathan et al. (Theorem 1, informal):**
+```
+Let gamma = lookahead window, alpha = E[acceptance probability].
+Expected output tokens per speculative step:
+  E[T] = (1 - alpha^{gamma+1}) / (1 - alpha)
+  Optimal gamma* = argmax_gamma [ E[T] / cost(gamma) ]
+  where cost(gamma) = 1 (target step) + 1/S (draft step, with S = speedup of draft vs target)
+```
+For fitsproof's reference model: draft = same architecture, so S ≈ 1 (no speedup
+expected unless the draft is genuinely smaller). This falsifies the idea that
+speculative decoding helps at reference-model scale; the implementation is a
+correctness test, not a performance claim.
+
+---
+
+### 42. Multi-Query Attention (Shazeer 2019) — supporting entry; grounds the GQA lineage — c3-p1
+
+**Shazeer, N. (2019).** Fast Transformer Decoding: One Write-Head is All You Need.
+arXiv:1911.02150.
+https://arxiv.org/abs/1911.02150
+
+**Claim it supports:** The design lineage GQA (source 4) → MQA → standard MHA, and
+why GQA is the operationally important variant for the 4–8 GB VRAM class. MQA
+(n_kv_heads = 1) is the extreme case of GQA; most modern consumer-class models use
+GQA with n_kv_heads = 4 or 8, not MQA. The GQA KV formula (source 4) simplifies to
+MQA when n_kv_heads = 1, confirming the formula's degenerate case.
+
+**Equation (MQA KV cache — the base case):**
+```
+KV_MQA_bytes = 2 * n_layers * 1 * head_dim * seq_len * elem_bytes
+```
+i.e., GQA formula (source 4) with n_kv_heads = 1. The memory saving vs full MHA
+is a factor of n_heads (all query heads share one KV head pair).
+
+**Failure mode:** MQA degrades output quality for large head ratios; GQA is the
+practical compromise that this architecture (n_kv_heads > 1) addresses.
+
+---
+
+### 43. The GGML Model Format (ggml.ai documentation) — supporting entry — c3-p1
+
+**Gerganov, G. et al. (2023).** GGML model format specification and k-quants.
+https://github.com/ggerganov/ggml/blob/master/docs/gguf.md
+
+**Claim it supports:** The storage efficiency claims in quant.py and the GGUF k-quants
+entry (source 13). The GGUF format packs two 4-bit values per byte (the same packing
+as fitsproof's `_int4_pack`), and stores a single fp32 scale per block of 32 weights.
+This is the storage-format counterpart to GPTQ's per-group-32 accuracy claim.
+
+**Memory reduction formula (derived from the format specification):**
+```
+fp32 weight:  4 bytes / weight
+int4 packed:  0.5 bytes / weight  (two values per byte, no scale overhead per weight)
+              + 4 bytes / 32 weights = 0.125 bytes / weight (fp32 scale per block)
+net:          0.5 + 0.125 = 0.625 bytes / weight → 84% reduction vs fp32
+
+int8 packed:  1.0 bytes / weight
+              + 4 bytes / 32 weights = 0.125 bytes / weight
+net:          1.125 bytes / weight → 72% reduction vs fp32
+```
+fitsproof's measured memory reduction in `test_quant.py` must agree with these
+formulas within 1% for the reference model.
+
+**Failure mode relevant to fitsproof:** the block-scale overhead is proportional to
+model size / 32; for very small models the overhead is material. The reference model
+at ~10M params has 2.5M scale values for int4 quantisation — the scale overhead is
+~10 MB for int4 vs ~5 MB for the pure-packed weights. This is why the measured
+memory reduction on the reference model is less dramatic than on a 7B model.
+
+---
+
+### 44. Two-Phase Prefill Cost Model for LLM Inference — supporting entry — c3-p1
+
+**Agrawal, A., Kedia, N., Panwar, A., Mohan, J., et al. (2024).** Taming
+Throughput-Latency Tradeoff in LLM Inference with Sarathi-Serve.
+*OSDI 2024.* arXiv:2403.02310.
+https://arxiv.org/abs/2403.02310
+
+**Claim it supports:** The two-phase model in `cost.py` — prefill is compute-bound
+(TTFT dominated by attention + FFN FLOPs), decode is bandwidth-bound (TPOT dominated
+by weight streaming). Sarathi-Serve formalises this as the "chunked prefill" problem
+and establishes that prefill and decode are in tension: prefill preempts decode if
+they share a GPU, because prefill is compute-intensive.
+
+**Key finding (Section 3):**
+```
+TTFT (time-to-first-token):
+  Dominated by the attention + FFN FLOPs over seq_len tokens.
+  Bottleneck: compute (GEMM throughput), not bandwidth.
+  TTFT ≈ FLOPs_prefill / peak_FLOPS = 2 * N * seq_len / GFLOPS
+
+TPOT (time-per-output-token, decode):
+  Dominated by streaming all weight bytes once per token.
+  Bottleneck: bandwidth.
+  TPOT ≈ weight_bytes / effective_bandwidth
+```
+This is the analytic two-phase separation that `cost.py:estimate()` implements.
+Sarathi's empirical finding: on an A100, TTFT grows linearly with seq_len (confirms
+the compute-bound formula) and TPOT is approximately constant vs seq_len (confirms
+the bandwidth-bound formula) for seq_len ≤ 8192 and batch=1.
+
+**Assumptions:**
+- Single-batch (batch=1). Batch > 1 shifts prefill into increasingly parallel GEMM
+  territory and can exceed peak FLOPS, making the formula an upper bound not a
+  lower bound.
+- Weight bytes fit in VRAM (no CPU→GPU streaming). For fitsproof's CPU-only path,
+  `effective_bandwidth` = DRAM bandwidth, not GPU HBM bandwidth.
+
+**Known failure mode:** At very long prefill sequences (> 16k tokens), the
+`seq^2` attention term dominates over the `2N*seq_len` FFN term, invalidating the
+formula unless the attention FLOP count is added explicitly. This is a known gap in
+fitsproof's `cost.py` (the same gap noted in source 35 / Chinchilla), documented in
+README Limitations.
+
+---
+
+### Link verification — raw output (2026-09-28T04:00Z, curl)
+
+All new links verified with `curl -sL -o /dev/null -w '%{http_code} %{url_effective}\n'
+-A Mozilla/5.0 --max-time 25`:
+
+```
+# c3-p1 new sources
+200 https://arxiv.org/abs/2203.15556   [35: Chinchilla]
+200 https://arxiv.org/abs/2405.04434   [36: DeepSeek-V2 MLA]
+200 https://arxiv.org/abs/2302.01318   [37: Speculative Sampling Chen et al.]
+200 https://arxiv.org/abs/2208.07339   [38: LLM.int8()]
+200 https://arxiv.org/abs/2211.10438   [39: SmoothQuant]
+200 https://arxiv.org/abs/2309.00071   [40: YaRN]
+200 https://arxiv.org/abs/1911.02150   [42: MQA Shazeer]
+200 https://github.com/ggerganov/ggml/blob/master/docs/gguf.md  [43: GGUF spec]
+200 https://arxiv.org/abs/2403.02310   [44: Sarathi-Serve]
+# Previously verified 403 (bot-blocked) — unchanged:
+403 https://dl.acm.org/doi/10.1145/1498765.1498785   [1: Roofline Williams 2009]
+# Crossref confirms the paper exists (DOI resolves):
+200 https://doi.org/10.1145/1498765.1498785   [via doi.org redirect, Cloudflare wall — same as c2-p1]
+# Note: dl.acm.org is consistently bot-blocked to curl. The DOI resolves via doi.org,
+# and the Crossref metadata confirms: title "Roofline", CACM, [2009, 4].
+# Consistent with c2-p1 observation; not a dead link.
+```
+
+---
+
+### Cycle 3 — Pass 1 — Falsification
+
+New falsifiers added this pass. Existing open falsifiers from c2-p3 remain open
+(items 6, 16, 17 in the c2-p3 closure table) and are not re-listed here unless
+this pass's new sources change their status.
+
+**New falsifiers (c3-p1):**
+
+1. **Prefill TTFT does not scale linearly with seq_len on this CPU.**
+   Source 44 (Sarathi) confirms linear scaling on A100; this must hold for
+   fitsproof's CPU path too (DRAM bandwidth dominates at single-batch). If measured
+   TTFT grows faster than linear with seq_len (e.g., super-linear due to cache
+   effects), the `2N * seq_len / GFLOPS` formula underpredicts. Observable: run
+   `probe.py` with varied seq_len and plot TTFT vs seq_len. Not yet measured.
+
+2. **int8_sym quantisation on a real trained model with emergent outliers shows
+   >15% top-1 accuracy drop vs fp32.**
+   Source 38 (LLM.int8()) establishes this threshold empirically. For fitsproof's
+   reference model (random init, no outliers) this should not occur — the test in
+   `test_quant.py` catches it. If the threshold is exceeded on any model the
+   user points fitsproof at, the int8_sym admission confidence must be flagged as
+   "valid for reference model only, may degrade on real trained models."
+   Not yet observable (reference-model-only tests pass).
+
+3. **YaRN's alpha/beta thresholds (1 and 32) produce visible quality degradation
+   for the reference model's head_dim = 64.**
+   Source 40 derives the thresholds empirically on LLaMA (head_dim = 128). The
+   wavelength formula `2π * base^{2i/d}` depends on d; at d=64 the frequency
+   distribution shifts. If implementing YaRN for v0.2 and the perplexity on
+   extended-context generation is worse than Position Interpolation (source 16),
+   the thresholds need tuning. Not yet observable (YaRN not implemented).
+
+4. **Speculative decoding on the reference model achieves no speed-up (S ≈ 1).**
+   Source 37's speed-up theorem requires the draft to be significantly cheaper
+   than the target. The fitsproof reference model uses the same architecture for
+   draft and target — so E[T] ≈ 1 regardless of gamma, and the speculative path
+   is strictly slower (one extra draft forward pass per target step). Observable:
+   compare tok/s with and without speculative mode on the reference model. The
+   implementation is still correct (output-identical); the speed-up claim cannot
+   be made for same-architecture draft/target pairs.
+
+5. **The cost model's `prefill_flops` formula is inaccurate at seq_len > 256 for
+   the reference model because the seq^2 attention term is non-negligible.**
+   Source 35 (Chinchilla) and source 44 (Sarathi) both note the seq^2 term.
+   For the reference model (6 layers, 384 hidden, 4 heads, head_dim=96):
+   ```
+   seq^2 attention FLOPs per layer = 4 * seq^2 * head_dim * n_heads
+                                   = 4 * seq^2 * 96 * 4 = 1536 * seq^2
+   2N * seq FFN FLOPs (approx)     = 2 * 10M * seq = 20M * seq
+   Crossover seq: 1536 * seq^2 ≈ 20M * seq → seq ≈ 13000
+   ```
+   At seq=512, attention FLOPs = 1536 * 512^2 ≈ 400M, and 2N * seq ≈ 10B — the
+   seq^2 term is 4% of total, which is negligible. The formula is accurate
+   at the reference model's max_seq_len=512. Observable: if the reference model
+   ever runs at seq > 4096, re-check.
+
+6. **MLA compression formula (source 36) applied to a non-MLA model with a
+   low-rank bottleneck (e.g., some int4 GQA configs) overstates the KV memory.**
+   The GQA formula in `cost.py` uses `n_kv_heads * head_dim` regardless of whether
+   the model uses a bottleneck. Any model where the weight matrix `W_K` is
+   low-rank will have a smaller effective KV footprint than the formula predicts.
+   Observable: run `fitsproof plan` on a real MLA model and compare predicted vs
+   measured peak KV memory. Not yet testable with fitsproof's current model support.
