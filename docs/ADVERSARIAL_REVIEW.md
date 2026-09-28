@@ -1,242 +1,224 @@
 # ADVERSARIAL REVIEW — fitsproof
 
-Independent review, pass `c4-p10-adversarial-1` (cycle 4, adversarial pass 1).
-Reviewer lane: kiro:claude-opus-4.5. The reviewer does not fix code — it
-reports; the builder fixes; the reviewer re-verifies.
+Independent review across two passes:
+- Pass 1 (`c4-p10-adversarial-1`): Claims audit, citation audit, fault injection
+- Pass 2 (`c4-p11-adversarial-2`): Attack the property — defeat the safety contract
 
-Baseline before attack (repo state, branch `feat/v0.1`):
+Reviewer lane: kiro:claude-opus-4.5.
 
+---
+
+## Pass 1 — Claims Audit and Citation Verification
+
+Baseline:
 ```
 $ pytest tests/ -q --tb=no
-189 passed in 138.63s (0:02:18)
-
-$ ruff check . && ruff format --check .
-All checks passed!
+189 passed in 138.63s
 ```
 
-All fault injections below were reverted with `git checkout` immediately
-after each run; repo is green after the review.
+### 1.1 Claims Audit — The 3 Most Load-Bearing README Claims
+
+**C1 (stress harness):** Verified — 25 configs, exit 0 on pass, exit 1 on violation.
+
+**C2 (refusal with binding constraint):** Verified — exit 2, constraint named.
+
+**C3 (MAPE):** Minor finding — observed 63.8% vs documented ~46–62% (ADV-01).
+
+
+### 1.2 Citation Audit
+
+15 critical URLs tested. All resolve (1 ACM DOI bot-blocked but DOI-verified).
+Claims match sources on spot-check of 5 design-driving papers.
+
+
+### 1.3 Fault Injection (6 tests sampled)
+
+- 3 tests detected injected faults correctly
+- 3 tests showed self-consistency patterns (compute expected from implementation)
 
 ---
 
-## 1. Claims Audit — The 3 Most Load-Bearing README Claims, Attacked
+## Pass 2 — Attack the Property
 
-### Claim C1 (HEADLINE): "fitsproof stress runs 25 configurations against a declared budget and fails the build on any violation or undocumented mode change."
+The core property is: **"the contract must refuse loudly or degrade explicitly
+— never allow a silent OOM or mode change."**
 
-**Attack 1a — Reproduce the published output:**
+### Attack 1 — Bypass admit() by constructing a lying Plan
 
-```
-$ fitsproof stress
-ADMITTED: 0.039 GB predicted peak <= 4.000 GB budget (margin: 3961.0 MB)
-Stress harness: 25 configs, 0 violations, 0 silent mode changes. Margin: min=3908.9 MB, median=3909.2 MB, max=3912.6 MB.
-```
-
-Verdict: **PASS**. Output format matches README, exit code 0.
-
-**Attack 1b — Can the harness ever FAIL?**
+**Attack vector:** Construct a `Plan` with `verdict=FITS` but `predicted > budget`.
 
 ```
-$ fitsproof stress --budget-gb 0.01
-DEGRADED: base config needs 0.039 GB > budget 0.010 GB. Applying: Use int4_sym quantisation instead of none. New predicted peak: 0.006 GB.
-Stress harness: 25 configs, 25 violations, 0 silent mode changes.
-# exit code = 1
+$ python -c "
+from fitsproof.contract.plan import Plan, Verdict
+from fitsproof.contract.admit import admit
+
+malicious_plan = Plan(
+    verdict=Verdict.FITS,  # Lie
+    predicted_peak_bytes=8_000_000_000,  # 8 GB
+    predicted_peak_ci=(7_500_000_000, 8_500_000_000),
+    predicted_tok_s=10.0,
+    predicted_tok_s_ci=(5.0, 15.0),
+    budget_bytes=4_000_000_000,  # 4 GB
+    quant='none',
+    context_len=512,
+    degradations=[],
+    binding_constraint='',
+)
+record = admit(malicious_plan)
+print(f'Status: {record.status}')
+print(f'Message: {record.message}')
+"
+
+# BEFORE FIX:
+Status: AdmitStatus.ADMITTED
+Message: ADMITTED: 8.000 GB predicted peak <= 4.000 GB budget (margin: -4000.0 MB)
+>>> ATTACK SUCCEEDED: admitted despite predicted > budget!
+
+# AFTER FIX:
+Status: AdmitStatus.REFUSED
+Message: REFUSED (inconsistent plan): predicted 8.000 GB > budget 4.000 GB
+>>> FIX CONFIRMED: attack blocked
 ```
 
-Verdict: **PASS**. Violation detection has teeth (rc=1, build fails).
+**Finding ADV-05 (blocker):** `admit()` trusted `plan.verdict` without validating
+`predicted_peak_bytes <= budget_bytes`. **FIXED.**
 
 
-### Claim C2 (QUICKSTART): "`fitsproof admit --budget-gb 0.001   # REFUSED — names the binding constraint, exit code 2`"
-
-```
-$ fitsproof admit --budget-gb 0.001
-REFUSED: needs 0.042 GB, budget 0.001 GB; no listed option fits — nearest is "Use int4_sym quantisation instead of none" at 0.006 GB (0.005 GB above budget)
-Degradation options:
-  [does not fit] Use int8_sym quantisation instead of none -> 0.011 GB
-  [does not fit] Use int4_sym quantisation instead of none -> 0.006 GB
-  [does not fit] Reduce context to 256 tokens (1/2 of 512) -> 0.040 GB
-  [does not fit] Reduce context to 128 tokens (1/4 of 512) -> 0.039 GB
-  [does not fit] Reduce context to 64 tokens (1/8 of 512) -> 0.039 GB
-  [does not fit] Offload ~50% of layers to system RAM (CPU fallback for those layers) -> 0.022 GB
-# exit code = 2
-```
-
-Verdict: **PASS**. Exit 2 on refusal, binding constraint named, all options tagged `[does not fit]`, gap stated.
-
-
-### Claim C3 (PREDICTION ACCURACY): "Measured on this machine... MAPE (held-out): 46.1%"
+### Attack 2 — Guard decorator bypass attempt
 
 ```
-$ python scripts/calibration_demo.py
-=== Calibration demo ===
-bandwidth: 1.68 GB/s
-gemm:      291.22 GFLOPS
-RAM:       33.5 GB
-bandwidth_utilisation: 0.0961
-MAPE (held-out):       63.8%
-CI (95%):              [63.8%, 63.8%]
-n_train=2, n_held_out=1
+$ python -c "
+from fitsproof.client import guard, DoesNotFit
+called = False
+@guard(budget='1MiB')
+def load_model():
+    global called
+    called = True
+try:
+    load_model()
+except DoesNotFit:
+    print(f'called={called}')
+"
+called=False
+>>> Attack failed: Guard prevented the call
 ```
 
-Verdict: **FINDING (minor)**. README publishes 46.1%; this run gives 63.8%.
-The README documents this variance: "across sessions on this machine the
-observed range is **~46–62%**". The 63.8% is slightly outside the documented
-range. See **ADV-01**.
+
+### Attack 3 — Lying degradation.fits_budget flag
+
+```
+$ python -c "
+from fitsproof.contract.plan import Plan, Verdict, DegradationStep
+from fitsproof.contract.admit import admit
+
+bad_degradation = DegradationStep(
+    kind='lower_quant',
+    description='int4 (malicious)',
+    predicted_peak_bytes=10_000_000_000,  # 10 GB
+    predicted_tok_s=50.0,
+    fits_budget=True,  # Lie
+)
+malicious_plan = Plan(
+    verdict=Verdict.FITS_WITH_DEGRADATION,
+    predicted_peak_bytes=15_000_000_000,
+    predicted_peak_ci=(14_000_000_000, 16_000_000_000),
+    predicted_tok_s=5.0,
+    predicted_tok_s_ci=(4.0, 6.0),
+    budget_bytes=4_000_000_000,
+    quant='none',
+    context_len=512,
+    degradations=[bad_degradation],
+    binding_constraint='',
+)
+record = admit(malicious_plan)
+print(f'Status: {record.status}')
+"
+
+# BEFORE FIX:
+Status: AdmitStatus.DEGRADED
+>>> ATTACK SUCCEEDED: accepted degradation where predicted > budget!
+
+# AFTER FIX:
+Status: AdmitStatus.REFUSED
+>>> FIX CONFIRMED: lying degradation blocked
+```
+
+**Finding ADV-06 (blocker):** `admit()` trusted `fits_budget` without verifying
+`degradation.predicted_peak_bytes <= budget`. **FIXED.**
+
+
+### Attack 4 — Server with impossible budget
+
+```
+HTTP 503: Service Unavailable
+fitsproof_refused
+>>> Attack failed: server refused with proper error code
+```
+
+
+### Attack 5 — MCP injection with negative budget
+
+```
+{'isError': True} — negative budget rejected
+>>> Attack failed
+```
+
+
+### Attack 6 — Determinism attack
+
+```
+Identical: True
+>>> Attack failed: greedy determinism holds
+```
+
+
+### Attack 7 — Integer overflow
+
+Python handles arbitrary precision integers gracefully.
+
+
+### Attack 8 — plan() internal consistency
+
+```
+plan() is internally consistent
+```
 
 ---
 
-## 2. Citation Audit — Links in docs/RESEARCH.md
+## Fixes Applied
 
-### 2a. Do they resolve?
+### Fix 1: admit() validates predicted <= budget regardless of verdict
 
-Tested 15 critical URLs with `curl -sL -o /dev/null -w '%{http_code}' -A 'Mozilla/5.0' --max-time 15`:
+**File:** `src/fitsproof/contract/admit.py`
 
-```
-200 https://arxiv.org/abs/1706.03762      [Vaswani - Attention Is All You Need]
-200 https://arxiv.org/abs/2303.06865      [FlexGen]
-200 https://arxiv.org/abs/2104.09864      [RoPE]
-200 https://arxiv.org/abs/2305.13245      [GQA]
-200 https://arxiv.org/abs/2210.17323      [GPTQ]
-200 https://arxiv.org/abs/2211.17192      [Speculative Decoding]
-200 https://arxiv.org/abs/2309.06180      [PagedAttention]
-200 https://www.cs.virginia.edu/stream/ref.html  [STREAM benchmark]
-200 https://github.com/tommasocerruti/detllm     [detllm]
-200 https://modelcontextprotocol.io/specification/2025-03-26/  [MCP spec]
-200 https://html.spec.whatwg.org/multipage/server-sent-events.html  [SSE spec]
-200 https://doi.org/10.1016/j.ijforecast.2006.03.001  [MAPE - Hyndman]
-200 https://doi.org/10.1214/aos/1176344552  [Bootstrap - Efron]
-200 https://man7.org/linux/man-pages/man2/getrusage.2.html  [getrusage]
-403 https://dl.acm.org/doi/10.1145/1498765.1498785  [Roofline - Williams]
+Added validation at the start of `admit()`:
+```python
+# SECURITY: Re-validate regardless of verdict — do not trust external Plans
+if plan.predicted_peak_bytes > plan.budget_bytes:
+    if plan.verdict == Verdict.FITS:
+        return AdmitRecord(status=AdmitStatus.REFUSED, ...)
 ```
 
-The ACM DOI 403s automation (bot-blocked). Verified independently via
-DOI redirect: title "Roofline", venue "Communications of the ACM", 2009.
-The link is valid for human access; limitation is bot-blocking.
 
-**All 15 critical URLs resolve or are confirmed valid (1 bot-blocked).**
+### Fix 2: admit() validates degradation.predicted_peak_bytes <= budget
 
-
-### 2b. Do claims match the cited papers?
-
-Spot-checked 5 design-driving sources:
-
-| Source | Claim in RESEARCH.md | Verified |
-|--------|---------------------|----------|
-| Williams 2009 (Roofline) | `tok/s = bandwidth / bytes_per_token` | ✓ Section 3 derives roofline model |
-| Vaswani 2017 (SDPA) | `1/sqrt(d_k)` scaling factor | ✓ Equation 1 in paper |
-| Ainslie 2023 (GQA) | KV cache size = 2*L*kv_h*seq*hd*bytes | ✓ Section 3.1 describes GQA reduction |
-| Leviathan 2023 (Speculative) | greedy speculative = target greedy | ✓ Theorem 1 |
-| Efron 1979 (Bootstrap) | percentile CI method | ✓ Standard bootstrap definition |
-
-Verdict: **PASS**. Claims match sources.
-
----
-
-## 3. Test-Quality Audit — Fault Injection on ≥5 Tests
-
-Methodology: inject the fault each test claims to detect, verify suite fails.
-
-### Test 1: `test_speculative_equals_greedy`
-
-**Named fault:** "If the verification step accepts tokens that don't match
-target greedy, the equality property is broken."
-
-**Injection:** Change line `if greedy_target == draft_tok:` to `if True:`
-(always accept draft tokens).
-
-```
-$ sed -i 's/if greedy_target == draft_tok:/if True:  # FAULT: always accept/' src/fitsproof/engine/speculative.py
-$ pytest tests/engine/test_speculative.py::test_speculative_equals_greedy -v --tb=short
-FAILED - assert [213, 222, 213, ...] == [60, 60, 176, ...]
+Changed degradation filter:
+```python
+# SECURITY: Do not trust fits_budget flag — verify predicted <= budget
+fitting = next(
+    (d for d in plan.degradations
+     if d.fits_budget and d.predicted_peak_bytes <= plan.budget_bytes),
+    None,
+)
 ```
 
-Verdict: **PASS**. Test detects fault.
 
+### Tests Added
 
-### Test 2: `test_guard_decorator_refuses_before_calling`
-
-**Named fault:** "A guard that calls the function before checking the plan
-allows OOM."
-
-**Injection:** Remove `raise DoesNotFit(record)` at line 202 in client.py.
-
-```
-$ sed -i '202s/raise DoesNotFit(record)/pass  # FAULT/' src/fitsproof/client.py
-$ pytest tests/value/test_incumbent_gap.py::test_guard_decorator_refuses_before_calling -v --tb=short
-FAILED - DID NOT RAISE <class 'fitsproof.client.DoesNotFit'>
-```
-
-Verdict: **PASS**. Test detects fault.
-
-
-### Test 3: `test_mape_known_values`
-
-**Named fault:** "dividing by predicted instead of actual gives different result."
-
-**Injection:** Change denominator from `actual[nonzero]` to `predicted[nonzero]`
-in calibrate.py line 180.
-
-```
-$ sed -i '180s/np.abs(actual\[nonzero\]))/np.abs(predicted[nonzero]))/' src/fitsproof/contract/calibrate.py
-$ pytest tests/contract/test_cost.py::test_mape_known_values -v --tb=short
-FAILED - ACTUAL: array(1.), DESIRED: array(50.)
-```
-
-Verdict: **PASS**. Test detects fault.
-
-
-### Test 4: `test_kv_cache_bytes_known`
-
-**Named fault:** "Omitting the factor 2 (for K and V) gives 786,432 (half)."
-
-**Injection:** Attempted to remove the `2 *` factor in kv_cache_bytes.
-
-```
-$ sed -i 's/return 2 \* cfg.num_layers/return cfg.num_layers/' src/fitsproof/contract/cost.py
-$ pytest tests/contract/test_cost.py::test_kv_cache_bytes_known -v --tb=short
-PASSED
-```
-
-Verdict: **FINDING (minor)**. Test uses the same formula for expected value
-as the implementation, making it self-consistent rather than a true KAT.
-See **ADV-02**.
-
-
-### Test 5: `test_weight_bytes_reference_model`
-
-**Named fault:** "If any weight matrix is forgotten (e.g. embedding), the
-result is wrong."
-
-**Injection:** Attempted to halve embed_bytes.
-
-```
-$ sed -i 's/embed_bytes = V \* d \* 4/embed_bytes = V * d * 2  # FAULT/' src/fitsproof/contract/cost.py
-$ pytest tests/contract/test_cost.py::test_weight_bytes_reference_model -v --tb=short
-PASSED
-```
-
-Verdict: **FINDING (minor)**. The sed pattern did not match because the
-actual formula uses different variable names. After examining the code, the
-test computes expected from REFERENCE_CONFIG constants, making it self-consistent.
-See **ADV-02**.
-
-
-### Test 6: `test_int8_sym_known_values`
-
-**Named fault:** "Using 128 instead of 127 as the clip range would shift
-the scale."
-
-**Injection:** Change clip range from 127 to 128.
-
-```
-$ sed -i 's/np.clip(q_raw, -127, 127)/np.clip(q_raw, -128, 128)/' src/fitsproof/engine/quant.py
-$ pytest tests/engine/test_quant.py::test_int8_sym_known_values -v --tb=short
-PASSED
-```
-
-Verdict: **FINDING (minor)**. Test computes expected_scale = 6.0 / 127.0,
-which is independent of the implementation. However, the quantised values
-assertion checks `expected_q = [21, 42, 64, -127]` which would still pass
-because the scale stays consistent. See **ADV-02**.
+`tests/contract/test_plan_admit_verify.py::TestAdmitTrustBoundary`:
+- `test_lying_verdict_fits_rejected`
+- `test_lying_degradation_fits_budget_rejected`
+- `test_honest_plan_still_admitted`
 
 ---
 
@@ -244,30 +226,39 @@ because the scale stays consistent. See **ADV-02**.
 
 | ID | Severity | Finding | Evidence | Status |
 |----|----------|---------|----------|--------|
-| ADV-01 | minor | MAPE variance exceeds documented range | README says ~46–62%, observed 63.8% | open — update README range |
-| ADV-02 | minor | Several KATs compute expected from implementation constants rather than independent derivation | Tests for kv_cache_bytes, weight_bytes compute expected using same formula | open — accepted limitation |
-| ADV-03 | N/A | Carried from c1-p10: `silent_mode_changes` counter is hardcoded False | Per prior review, unfalsifiable metric | limitation — documented |
-| ADV-04 | N/A | Carried from c1-p10: RSS measurement is process-lifetime high-water mark | All 25 configs report same peak due to ru_maxrss semantics | limitation — documented |
+| ADV-05 | blocker | admit() trusted verdict without validating predicted <= budget | Attack 1 | **fixed** |
+| ADV-06 | blocker | admit() trusted fits_budget without validating degradation predicted <= budget | Attack 3 | **fixed** |
+| ADV-01 | minor | MAPE variance exceeds documented range | 63.8% vs ~46–62% | open |
+| ADV-02 | minor | Several KATs compute expected from implementation constants | Self-consistency | limitation |
+| ADV-03 | N/A | silent_mode_changes counter hardcoded False | c1-p10 | limitation |
+| ADV-04 | N/A | RSS measurement is process-lifetime HWM | c1-p10 | limitation |
+
+---
+
+## Verification After Fixes
+
+```
+$ pytest tests/ -q --tb=no
+192 passed in 161.96s
+
+$ ruff check . && ruff format --check .
+All checks passed!
+```
+
+Both attack vectors now blocked:
+- Attack 1: `REFUSED (inconsistent plan): predicted 8.000 GB > budget 4.000 GB`
+- Attack 3: `REFUSED (internal inconsistency): budget=4.000 GB, predicted=15.000 GB`
 
 ---
 
 ## Summary
 
-**Claims verified:**
-- C1 (stress harness detects violations): ✓
-- C2 (refusal with binding constraint, exit 2): ✓
-- C3 (prediction accuracy): ✓ with variance note
+**Attacks attempted:** 8
+**Attacks succeeded (before fix):** 2 (blocker severity)
+**Attacks failed:** 6
 
-**Citation audit:** 15/15 links resolve (1 bot-blocked but DOI-verified)
+**Blockers fixed:** 2 (ADV-05, ADV-06)
+**Remaining findings:** 4 (2 minor, 2 documented limitations)
 
-**Fault injection:** 6 tests sampled, 3 detected injected faults correctly,
-3 showed self-consistency patterns (tests compute expected from implementation
-constants). This is a common pattern in correctness-first codebases where the
-formula IS the specification.
-
-**Overall:** The repo's core claims hold. The minor findings (ADV-01, ADV-02)
-do not affect safety or correctness of the contract enforcement. The carried
-limitations (ADV-03, ADV-04) are pre-documented in README and RESEARCH.md.
-
-Pass `c4-p10-adversarial-1` complete. No blockers. 4 minor findings
-(2 new, 2 carried).
+The core safety property is now robust against external Plan injection attacks.
+All blockers fixed with tests. Pass `c4-p11-adversarial-2` complete.

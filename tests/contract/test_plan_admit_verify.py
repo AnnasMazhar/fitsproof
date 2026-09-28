@@ -96,7 +96,7 @@ from hypothesis import given, settings
 from hypothesis import strategies as st
 
 from fitsproof.contract.admit import AdmitRecord, AdmitStatus, admit
-from fitsproof.contract.plan import Verdict, plan
+from fitsproof.contract.plan import DegradationStep, Plan, Verdict, plan
 from fitsproof.contract.verify import run_stress_harness, verify_run
 from fitsproof.engine.model import REFERENCE_CONFIG, generate_reference_model, get_reference_bundle
 
@@ -1038,3 +1038,108 @@ def test_cli_admit_exits_2_on_refusal() -> None:
     assert "REFUSED" in proc.stdout, (
         f"admit output on refusal must contain 'REFUSED', got: {proc.stdout!r}"
     )
+
+
+# =============================================================================
+# ADVERSARIAL TESTS — Attacks discovered in c4-p11-adversarial-2
+# =============================================================================
+
+
+class TestAdmitTrustBoundary:
+    """
+    Tests that admit() does NOT trust externally constructed Plan objects.
+
+    Attack vector: An attacker constructs a Plan with verdict=FITS but
+    predicted_peak_bytes > budget_bytes. Before the fix, admit() would
+    blindly trust the verdict and ADMIT the config, allowing OOM.
+
+    Fault detected: if admit() trusts verdict without validation, a malicious
+    Plan bypasses the resource contract.
+    """
+
+    def test_lying_verdict_fits_rejected(self) -> None:
+        """
+        Attack: verdict=FITS but predicted (8GB) > budget (4GB).
+        Expected: admit() REFUSES despite the lying verdict.
+        """
+        malicious_plan = Plan(
+            verdict=Verdict.FITS,  # Lie
+            predicted_peak_bytes=8_000_000_000,  # 8 GB
+            predicted_peak_ci=(7_500_000_000, 8_500_000_000),
+            predicted_tok_s=10.0,
+            predicted_tok_s_ci=(5.0, 15.0),
+            budget_bytes=4_000_000_000,  # 4 GB
+            quant="none",
+            context_len=512,
+            degradations=[],
+            binding_constraint="",
+        )
+
+        record = admit(malicious_plan)
+
+        assert record.status == AdmitStatus.REFUSED, (
+            f"admit() should REFUSE a Plan where predicted > budget, got {record.status}"
+        )
+        assert "inconsistent" in record.message.lower(), (
+            f"Refusal message should mention inconsistency, got: {record.message}"
+        )
+
+    def test_lying_degradation_fits_budget_rejected(self) -> None:
+        """
+        Attack: degradation.fits_budget=True but predicted (10GB) > budget (4GB).
+        Expected: admit() REFUSES because the degradation doesn't actually fit.
+        """
+        lying_degradation = DegradationStep(
+            kind="lower_quant",
+            description="int4 (malicious)",
+            predicted_peak_bytes=10_000_000_000,  # 10 GB - doesn't fit
+            predicted_tok_s=50.0,
+            fits_budget=True,  # Lie
+        )
+
+        malicious_plan = Plan(
+            verdict=Verdict.FITS_WITH_DEGRADATION,
+            predicted_peak_bytes=15_000_000_000,  # 15 GB base
+            predicted_peak_ci=(14_000_000_000, 16_000_000_000),
+            predicted_tok_s=5.0,
+            predicted_tok_s_ci=(4.0, 6.0),
+            budget_bytes=4_000_000_000,  # 4 GB
+            quant="none",
+            context_len=512,
+            degradations=[lying_degradation],
+            binding_constraint="",
+        )
+
+        record = admit(malicious_plan)
+
+        assert record.status == AdmitStatus.REFUSED, (
+            f"admit() should REFUSE when degradation.fits_budget lies, got {record.status}"
+        )
+
+    def test_honest_plan_still_admitted(self) -> None:
+        """
+        Regression test: a correctly constructed Plan where predicted <= budget
+        should still be ADMITTED.
+        """
+        honest_plan = Plan(
+            verdict=Verdict.FITS,
+            predicted_peak_bytes=2_000_000_000,  # 2 GB
+            predicted_peak_ci=(1_800_000_000, 2_200_000_000),
+            predicted_tok_s=50.0,
+            predicted_tok_s_ci=(40.0, 60.0),
+            budget_bytes=4_000_000_000,  # 4 GB - plenty of room
+            quant="none",
+            context_len=512,
+            degradations=[],
+            binding_constraint="",
+        )
+
+        record = admit(honest_plan)
+
+        assert record.status == AdmitStatus.ADMITTED, (
+            f"admit() should ADMIT an honest Plan, got {record.status}"
+        )
+        # Margin should be positive
+        assert honest_plan.budget_bytes - honest_plan.predicted_peak_bytes > 0, (
+            "Test setup error: margin should be positive"
+        )
