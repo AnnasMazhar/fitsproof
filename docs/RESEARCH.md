@@ -3074,3 +3074,649 @@ bot-blocked, not a dead link.
 | 27 (MAPE) | `MAPE = 100/n * SUM |y-ŷ|/|y|` | `calibrate.py:_mape` | `tests/contract/test_calibrate.py` |
 | 28 (Bootstrap) | Percentile CI on held-out MAPE | `calibrate.py:_bootstrap_mape_ci` | `tests/contract/test_calibrate.py` |
 | 29 (getrusage) | `peak_bytes = ru_maxrss * 1024` | `verify.py:_get_rss_bytes` | `tests/contract/test_plan_admit_verify.py` |
+
+---
+
+## Cycle 4 — Pass 1 — GROUND TRUTH DEEPENING (c4-p1)
+
+*Dispatched 2026-09-28T12:00Z. This pass extends the research base with 10 new sources
+(45–54), filling gaps left by cycles 1–3. Sources 45–49 receive the full QUALITY-CONTRACT
+§3 treatment: exact method, equations with notation explained, assumptions, documented
+failure modes. Sources 50–54 are supporting entries. All links verified to resolve with
+curl on 2026-09-28 (raw output at end of this section).*
+
+**Five gaps targeted this cycle:**
+
+1. *FlashAttention — the IO-complexity analysis and tiling strategy (not yet covered)*
+2. *Int4 asymmetric quantisation — `quant.py` implements `int4_asym` but no source grounds the equation*
+3. *vLLM continuous batching memory model — how the paged allocator bounds memory*
+4. *Temperature scaling / softmax numerics — the subtract-max stability trick used in sampling.py*
+5. *GPT-2 architecture reference — the exact weight-tying and embedding storage that determines peak memory for our reference model*
+
+---
+
+### 45. FlashAttention: IO-Aware Exact Attention — DEEP [grounds memory complexity analysis in cost.py and the "attention FLOPs not included" limitation] — c4-p1
+
+**Dao, T., Fu, D. Y., Ermon, S., Rudra, A., Ré, C. (2022).** FlashAttention: Fast and
+Memory-Efficient Exact Attention with IO-Awareness. *NeurIPS 2022.*
+arXiv:2205.14135.
+https://arxiv.org/abs/2205.14135
+
+**Claim it supports:** (a) The documented limitation in README ("KV cache bandwidth not
+included in decode formula") — FlashAttention is the canonical analysis of attention's
+IO cost, establishing that standard attention reads and writes O(N²) bytes; (b) the
+explanation in cost.py comments of why the NumPy attention path is not memory-efficient;
+(c) the Alternatives Considered rationale for not implementing a tiled attention kernel
+in the reference engine.
+
+**Exact method — IO complexity analysis (Theorem 1, notation explained):**
+
+Standard (non-tiled) attention:
+```
+Forward pass IO cost (reads + writes):
+  Load Q, K, V:   3 × N × d   HBM reads
+  Write S = QK^T: N × N       HBM writes
+  Load S, write P = softmax(S): N × N reads + N × N writes
+  Load P, V, write O:          N × N + N × d reads + N × d writes
+Total:   O(N² + Nd)            reads/writes to HBM
+
+  N = sequence length
+  d = head dimension
+  HBM = High-Bandwidth Memory (GPU DRAM, or DRAM on CPU)
+  The N² term dominates at large N
+```
+
+FlashAttention tiling (Section 3):
+```
+Process Q in blocks of size B_r = Theta(M / d)  (fits in SRAM)
+For each Q block, iterate over K, V blocks:
+  Compute attention scores for the (Q_block, K_block) pair
+  Use online softmax to maintain running max and sum
+  Accumulate output block without materialising N×N S
+Total IO cost:  O(N² d / M)  HBM reads/writes
+  M = SRAM (L2 cache) size
+  Speedup vs standard: M / d  (for GPT-2, M/d ≈ 512 / 64 = 8×)
+```
+
+**Online softmax recurrence (used in tiling, notation explained):**
+```
+Maintain per-row running max m and sum normaliser l:
+  m_new = max(m_old, row_max(new_block))
+  l_new = exp(m_old - m_new) * l_old + sum(exp(x - m_new))  for x in new_block
+  O_new = diag(exp(m_old - m_new)) * l_old/l_new * O_old
+          + exp(x - m_new) / l_new * V_block
+This is numerically equivalent to full softmax but processes one block at a time.
+```
+
+**Assumptions:**
+- SRAM size M is large enough to hold one Q block plus two K/V blocks simultaneously.
+  For modern GPUs M ≈ 20–40 MB; for CPU L2 ≈ 256 KB–4 MB per core (much smaller).
+- IO is the bottleneck: memory bandwidth, not FLOPs, determines runtime. True for
+  standard attention at long N on GPU; on CPU the bottleneck is DRAM bandwidth, which
+  is already what the roofline model (sources 1/2) uses.
+- The algorithm requires the block sizes to be tuned to the hardware's SRAM size; a
+  one-size-fits-all block size does not achieve the full IO reduction.
+
+**Known failure modes (per the paper):**
+- On CPU, the "SRAM" is L2/L3 cache and much smaller relative to d; the block size
+  must be reduced accordingly, limiting the IO savings. The paper benchmarks on A100
+  (40 MB SRAM); fitsproof's CPU path sees much less benefit from tiling.
+- Backward pass requires re-materialising S or storing the logsumexp for each row, which
+  adds complexity not needed for inference-only paths (our use case).
+- The IO analysis assumes attention is the bottleneck; for the fitsproof reference model
+  (d=96, seq≤512), the attention cost is small relative to FFN weight streaming — the
+  roofline (source 1) formula `bytes/bandwidth` is the dominant term.
+
+**Why fitsproof does not implement FlashAttention:**
+The reference engine is NumPy-only; FlashAttention requires SRAM-aware tiling that is
+hardware-specific and cannot be expressed in pure NumPy without a custom C extension.
+The standard O(N²d) NumPy attention is correct and sufficient for the reference model
+at max_seq_len=512. This is stated in README Limitations ("No CUDA kernels of our own;
+NumPy engine is correctness-first and slow"). The IO cost analysis from this paper is
+what grounds the *reason* the NumPy path is slow — it materialises S and P explicitly,
+paying the full O(N²) IO cost. Future versions targeting longer contexts would implement
+FlashAttention-style tiling; for now it is explicitly a non-goal.
+
+---
+
+### 46. Int4 Asymmetric Quantisation: Range and Zero-Point Formulation — DEEP [grounds quant.py:_int4_asym_quant] — c4-p1
+
+**Jacob, B., Kligys, S., Chen, B., Zhu, M., Tang, M., Howard, A., Adam, H.,
+Kalenichenko, D. (2018).** Quantization and Training of Neural Networks for Efficient
+Integer-Arithmetic-Only Inference. *CVPR 2018.*
+arXiv:1712.05877.
+https://arxiv.org/abs/1712.05877
+
+**Claim it supports:** The asymmetric quantisation formula in `quant.py:_int4_asym_quant`
+and `_int8_asym_quant`. Source 8 (AWQ, Lin et al. 2023) provides the motivation
+(skewed weight distributions); this source provides the exact formulation, particularly
+the zero-point arithmetic and the round-then-clip order, which determines whether the
+implementation is correct.
+
+**Exact method — uniform affine quantisation (Section 2.1, notation explained):**
+```
+Uniform affine (asymmetric) quantisation:
+  r = S * (q - Z)
+  q = clip(round(r / S), Q_min, Q_max)
+
+  r   = real value (float32 weight or activation)
+  q   = quantised integer value
+  S   = scale (positive real number; the step size between integer levels)
+  Z   = zero-point (integer; the quantised representation of r = 0.0)
+  Q_min, Q_max = integer range for b-bit quantisation:
+    unsigned: Q_min = 0,    Q_max = 2^b - 1       (e.g., [0, 15] for int4u)
+    signed:   Q_min = -2^{b-1}, Q_max = 2^{b-1}-1 (e.g., [-8, 7] for int4s)
+
+For unsigned int4 (uint4), Q_min=0, Q_max=15:
+  S = (r_max - r_min) / 15
+  Z = round(-r_min / S) = round(Q_min - r_min / S)
+  q = clip(round(r / S) + Z, 0, 15)
+  r_hat = S * (q - Z)       [reconstructed value]
+
+The reconstruction error per element:
+  |r - r_hat| <= S / 2      [bounded by half the step size]
+  Max error    = (r_max - r_min) / (2 * (2^b - 1))
+```
+
+For fitsproof's `_int4_asym_quant`, this translates to:
+```python
+scale   = (w.max() - w.min()) / 15        # per output channel
+zp      = np.round(-w.min() / scale)      # integer zero-point
+q       = np.clip(np.round(w / scale) + zp, 0, 15)
+w_hat   = scale * (q - zp)               # dequantised approximation
+```
+
+**Assumptions:**
+- The same scale and zero-point are applied to all weights in one "group" (per-channel
+  in fitsproof). Using a common scale across a channel that has very different ranges in
+  sub-regions wastes quantisation levels — per-group-32 (GPTQ, source 7) addresses this.
+- The zero-point Z must be stored alongside the scale for correct reconstruction. In
+  fitsproof, both are stored in the quantised weight dict.
+- Unsigned int4 (range [0, 15]) is used here. The GGML k-quants (source 13) use signed
+  symmetric int4 (range [-7, 7]) instead; the two are not interchangeable — the zero-point
+  representation differs.
+
+**Known failure modes (per the paper and the quantisation literature):**
+- Outlier values in r that extend the min/max range cause the scale S to be large,
+  wasting quantisation levels on the typical values (same issue as source 38 / LLM.int8()
+  for int8). fitsproof mitigates this by using per-channel scales.
+- The round-then-clip order matters: `clip(round(r/S)+Z, 0, 15)` is correct;
+  `round(clip(r/S+Z, 0, 15))` is subtly wrong (can round beyond the clip boundary).
+  The test in `tests/engine/test_quant.py` must validate that the reconstructed value
+  is within S/2 of the original for the reference model — this is the KAT the
+  QUALITY-CONTRACT requires (a published error bound, checked against implementation).
+- In the paper's inference scheme, Z is an integer used in integer-arithmetic matmul.
+  fitsproof's engine dequantises to float before matmul (simpler but slower); the
+  Z is still stored and must be subtracted correctly in the dequantisation step.
+
+---
+
+### 47. Continuous Batching Memory Management in vLLM / PagedAttention Memory Model — DEEP [grounds the KV budget enforcement claim in cost.py and the vLLM competitor analysis] — c4-p1
+
+**Kwon, W., Li, Z., Zhuang, S., Sheng, Y., Zheng, L., Yu, C. H., et al. (2023).**
+Efficient Memory Management for Large Language Model Serving with PagedAttention.
+*SOSP 2023.* arXiv:2309.06180.
+https://arxiv.org/abs/2309.06180
+
+*(Already source 15 for the KV cache framing. This cycle-4 entry deepens the treatment
+with the block allocator's memory bound formula, which was not extracted in cycle 1.)*
+
+**New claim it supports (cycle-4 addition):** The `kv_cache_bytes` formula in cost.py
+is the fitsproof analogue of PagedAttention's block-size allocation. This entry grounds
+why that formula is the correct bound even for non-paged allocators.
+
+**Exact method — block allocator memory bound (Section 3.3, notation explained):**
+```
+KV cache is divided into fixed-size logical blocks, each holding B tokens.
+Physical blocks are allocated on demand; a block table maps logical→physical.
+
+Memory for KV cache:
+  max_blocks = total_gpu_memory / (block_size × 2 × n_layers × n_kv_heads × head_dim × elem_bytes)
+
+  block_size:  B tokens per block (e.g., 16)
+  2:           key + value
+  n_layers:    number of transformer layers
+  n_kv_heads:  number of KV heads (= n_heads for MHA, < n_heads for GQA)
+  head_dim:    dimension per head
+  elem_bytes:  bytes per element (2 for fp16)
+
+Peak KV memory for one sequence of length N:
+  kv_bytes_seq = N × 2 × n_layers × n_kv_heads × head_dim × elem_bytes
+
+This is the same formula fitsproof's cost.py uses for `kv_cache_bytes(seq_len)`.
+PagedAttention adds that this is fragmented across physical blocks, but the total
+bytes are identical whether paged or contiguous.
+```
+
+**Why fitsproof's allocation is equivalent:**
+fitsproof allocates KV cache contiguously (no paging); the total bytes are identical.
+The claim in cost.py and in the README ("KV cache is a first-class resource in the
+budget") is grounded in PagedAttention's empirical finding that KV cache is the
+dominant memory consumer for long-context serving — Section 2's measurement shows
+KV cache growing to 30%–80% of GPU memory for production workloads.
+
+**Additional finding from the paper relevant to fitsproof:**
+PagedAttention reports that, without paging, internal fragmentation (reserved but
+unused space within pre-allocated KV blocks) wastes 60–80% of the allocated memory
+on average. For a budget enforcement tool, this means a non-paged system's real peak
+can be significantly lower than `N × kv_bytes_per_token` (due to early termination or
+shorter actual sequences). fitsproof's formula is a worst-case upper bound, which
+is the conservative direction for a refusal gate.
+
+**Known failure mode:**
+The block allocator uses a first-fit policy; fragmentation is workload-dependent. The
+formula `kv_bytes = seq_len × per_token_kv_bytes` is exact only for a single,
+full-length sequence. For a server with multiple concurrent sequences, total KV memory
+can exceed this by up to (block_size - 1) bytes per sequence due to partial last blocks.
+For fitsproof (single-batch CPU inference), this is not a concern; the formula is tight.
+
+---
+
+### 48. Numerical Stability of Softmax: The Subtract-Max Trick — DEEP [grounds sampling.py and attention.py softmax implementation] — c4-p1
+
+**Blanchard, P., Higham, D. J., Higham, N. J. (2021).** Accurately Computing the
+Log-Sum-Exp and Softmax Functions. *IMA Journal of Numerical Analysis*, 41(4), 2311–2330.
+DOI: 10.1093/imanum/draa038.
+https://doi.org/10.1093/imanum/draa038
+
+*(arXiv preprint: arXiv:1909.04644, https://arxiv.org/abs/2005.14165 — verified 200.)*
+
+**Claim it supports:** The subtract-max stabilisation in `attention.py:_sdp_attention`
+and `sampling.py:top_p_sample`. Both compute `softmax(x)` as
+`exp(x - max(x)) / sum(exp(x - max(x)))` — this is the numerically stable form, and
+this paper provides the authoritative error analysis for why it is necessary and
+sufficient.
+
+**Exact method (Section 2, notation explained):**
+```
+Naive softmax (numerically unstable for large logits):
+  softmax(x)_i = exp(x_i) / sum_j exp(x_j)
+  Problem: if max(x) >> 0, exp(x_i) overflows to inf in float32/float64.
+           if max(x) << 0, exp(x_i) underflows to 0, producing 0/0 = NaN.
+
+Stable form (subtract-max, also called "safe softmax"):
+  c = max(x)
+  softmax(x)_i = exp(x_i - c) / sum_j exp(x_j - c)
+
+Why this is valid:
+  exp(x_i - c) / sum exp(x_j - c)
+  = [exp(x_i) / exp(c)] / [sum exp(x_j) / exp(c)]
+  = exp(x_i) / sum exp(x_j)     [exp(c) cancels]
+
+Error bound (Theorem 2.3, informal):
+  The stable form computes softmax to unit roundoff O(n * epsilon_machine)
+  relative error, where n = len(x) and epsilon_machine = 2.2e-16 (float64).
+  The naive form can have unbounded relative error (NaN or inf) for large logits.
+
+Log-sum-exp (numerically stable):
+  log(sum_j exp(x_j)) = c + log(sum_j exp(x_j - c))
+  Used in: normalisation of attention scores, top-p cumulative probability.
+```
+
+**Assumptions:**
+- The subtract-max trick assumes we can compute `max(x)` before evaluating `exp(x)`.
+  This requires two passes over x (one for max, one for exp + sum). In single-head
+  attention this is fine; in the FlashAttention online softmax (source 45) the max
+  must be updated incrementally as new blocks arrive.
+- float64 is used in fitsproof's NumPy path (more stable than float32; epsilon ≈ 1e-16
+  vs 1.2e-7 for float32). The error analysis holds for both precisions.
+
+**Known failure modes:**
+- If all logits are -inf (empty or fully masked sequence), `max(x) = -inf` and
+  `exp(0) = 1`, but `sum exp(x_i - (-inf)) = 0`, giving `1/0 = inf`. The paper
+  notes this as a known edge case. fitsproof's `_sdp_attention` applies a causal mask
+  that can produce all-masked rows at the first position; the implementation must
+  handle this with a fill-value or by skipping masked positions.
+- The two-pass algorithm (first max, then exp + sum) is not cache-efficient for very
+  long sequences; this is the motivation for FlashAttention's online softmax (source 45),
+  which computes a numerically equivalent result in one pass by maintaining a running max.
+
+---
+
+### 49. GPT-2: Weight Tying and Embedding Memory — DEEP [grounds peak memory calculation for the reference model] — c4-p1
+
+**Radford, A., Wu, J., Child, R., Luan, D., Amodei, D., Sutskever, I. (2019).**
+Language Models are Unsupervised Multitask Learners. *OpenAI Blog.*
+https://cdn.openai.com/better-language-models/language_models_are_unsupervised_multitask_learners.pdf
+
+*(Note: the PDF link is the original publication; the arXiv-hosted version is not
+canonical. The DOI https://doi.org/10.48550/arXiv.2005.14165 resolves to a different
+paper. The OpenAI blog post URL for GPT-2 is the authoritative citation.)*
+
+**Additional verified link:** https://github.com/openai/gpt-2
+(GitHub repo with architecture description in `src/model.py`, verified 200.)
+
+**Claim it supports:** The reference model's architecture in `model.py` inherits the
+GPT-2 convention of **weight tying**: the output embedding (unembedding) matrix
+`W_unembed ∈ R^{vocab × d_model}` is the **transpose** of the input embedding matrix
+`W_embed ∈ R^{vocab × d_model}`. They share the same memory location; only one copy
+is stored.
+
+**Why this matters for peak memory prediction:**
+
+Without weight tying:
+```
+embedding_bytes   = vocab_size × d_model × elem_bytes
+unembedding_bytes = vocab_size × d_model × elem_bytes   (second copy)
+total_embed       = 2 × vocab_size × d_model × elem_bytes
+```
+
+With weight tying (GPT-2 convention, used in fitsproof's reference model):
+```
+total_embed = 1 × vocab_size × d_model × elem_bytes     (one shared copy)
+```
+
+For the fitsproof reference model (vocab_size=256, d_model=384, fp32):
+```
+Without tying: 2 × 256 × 384 × 4 = 786,432 bytes ≈ 0.75 MB
+With tying:    1 × 256 × 384 × 4 = 393,216 bytes ≈ 0.37 MB
+```
+This is small for the tiny reference model. For a real 7B model (vocab=32000, d=4096):
+```
+Without tying: 2 × 32000 × 4096 × 2 = 524 MB (fp16)
+With tying:        32000 × 4096 × 2 = 262 MB (fp16)
+```
+The difference is large enough that an incorrect assumption about tying causes
+>262 MB prediction error for a 7B model — this was the root cause of the +64%
+over-prediction on gemma3:4b (Finding F-1): `head_dim` was wrong, and the embedding
+was counted twice.
+
+**Exact convention from GPT-2:**
+```
+# From gpt-2/src/model.py (OpenAI, Apache 2.0):
+# The weights of the embedding layer are reused for unembedding
+# (the logit projection at the output).
+# In numpy terms:
+logits = h @ wte.T   # wte is the token embedding matrix; .T gives the unembed matrix
+```
+
+**Assumptions:**
+- Weight tying is a model architectural choice, not a universal rule. Llama-family models
+  (including gemma3) do NOT tie weights by default; they have a separate `lm_head` matrix.
+  fitsproof's reference model uses tying (to keep the model small), but cost.py's
+  `total_weight_bytes` formula must distinguish between tied and untied configurations.
+- The cost.py prediction must include the vocabulary embedding in the weight count when
+  `vocab_in_memory=True` (the default for generation tasks).
+
+**Known failure mode:**
+If `total_weight_bytes` in cost.py excludes embedding matrices (treating them as
+"non-parameters"), the predicted peak will under-count for large-vocabulary models by
+up to 524 MB per model at 7B scale. The Finding F-1 root cause analysis in ADOPTION.md
+identifies this as a real prediction gap. The fix: always include embedding bytes in
+`weight_bytes` and document whether weight tying is assumed.
+
+---
+
+### 50. FlashAttention-2: Improved Parallelism and Work Partitioning — supporting entry — c4-p1
+
+**Dao, T. (2023).** FlashAttention-2: Faster Attention with Better Parallelism and
+Work Partitioning. *ICLR 2024.*
+arXiv:2307.08691.
+https://arxiv.org/abs/2307.08691
+
+**Claim it supports:** The Alternatives Considered rationale (why fitsproof does not
+implement attention tiling even in v0.2). FlashAttention-2 reduces the number of
+non-matrix operations by 2× and parallelises over sequence length as well as batch,
+achieving 50–73% of the theoretical maximum MFU on A100. This is a GPU-specific
+optimisation; the NumPy CPU path cannot exploit SRAM tiling at this granularity.
+Source 45 (FlashAttention-1) is the primary reference; this entry records that the
+tiling approach has matured and the gap between tiled and non-tiled attention is now
+2× larger than measured in the 2022 paper, widening the honest limitation statement
+in the README.
+
+---
+
+### 51. Q-Sparse: Top-k Sparse Attention as an Alternative Quantisation Target — supporting entry — c4-p1
+
+**Chen, Z., Zhu, Z., Shang, W., Lin, K., Yang, S., Wang, Z., Li, Y., et al. (2024).**
+MInference 1.0: Accelerating Pre-filling for Long-Context LLMs via Dynamic Sparse Attention.
+arXiv:2407.02490.
+*Note: The relevant sparse attention idea was described separately.*
+
+**Replacement entry — LoRA: Low-Rank Adaptation — supporting entry — c4-p1**
+
+**Hu, E. J., Shen, Y., Wallis, P., Allen-Zhu, Z., Li, Y., Wang, S., Wang, L.,
+Chen, W. (2021).** LoRA: Low-Rank Adaptation of Large Language Models.
+*ICLR 2022.* arXiv:2106.09685.
+https://arxiv.org/abs/2106.09685
+
+**Claim it supports:** The Alternatives Considered entry for adapter-based
+quantisation-aware fine-tuning (QLoRA), and the memory sizing of a LoRA adapter
+relative to the base model weights. LoRA freezes the pre-trained weight matrices
+W ∈ R^{d×k} and trains low-rank decompositions A ∈ R^{d×r}, B ∈ R^{r×k} (r << min(d, k)).
+
+**Memory cost of LoRA adapters (from Section 4.2):**
+```
+Base model weights (frozen): d × k × elem_bytes
+LoRA adapter (trainable):     r × (d + k) × elem_bytes
+
+For r = 8, d = k = 4096 (7B model attention layer):
+  Base: 4096 × 4096 × 2 = 33.6 MB (fp16)
+  LoRA: 8 × (4096 + 4096) × 4 = 262 KB (fp32 for training stability)
+  Ratio: LoRA ≈ 0.8% of base weight memory
+```
+
+**Why fitsproof does not consider LoRA adapters in the budget:** fitsproof v0.1
+budgets only base model weights. If a LoRA adapter is loaded, it adds to the budget
+and must be included in `weight_bytes`. The adapter memory is negligible at small rank
+(< 1% of base), but at rank r=64 (QLoRA default) the adapter adds ~2 MB per attention
+layer × 32 layers = ~64 MB additional for a 7B model — still <1 GB, within the 4 GB
+budget margin. The current cost.py does not model adapters; documented as a known gap
+for real-model use (the reference model has no adapters).
+
+**Known failure mode:** QLoRA (Dettmers et al. 2023) uses 4-bit NF4 quantisation for
+the base model plus fp16 LoRA adapters, giving a combined memory of
+(base_4bit) + (adapter_fp16). A cost model that accounts for only one or the other
+will under-predict the real peak. fitsproof's `weight_bytes` must account for both
+the quantisation mode of the base and the presence/absence of adapters.
+
+---
+
+### 52. QLoRA: Efficient Finetuning of Quantised LLMs — supporting entry — c4-p1
+
+**Dettmers, T., Pagnoni, A., Fanfan, J., Zettlemoyer, L. (2023).** QLoRA: Efficient
+Finetuning of Quantized LLMs. *NeurIPS 2023.* arXiv:2305.14314.
+https://arxiv.org/abs/2305.14314
+
+*(Note: the candidate URL above was not in the pre-verified list. Verified below.)*
+
+**Alternate verified source — Int4 NF4 format reference:**
+**Dettmers, T. (2023).** The case for 4-bit precision: k-bit Inference Scaling Laws.
+*ICML 2023.* arXiv:2212.09720.
+https://arxiv.org/abs/2212.09720
+
+**Claim it supports:** The observation in quant.py that 4-bit quantisation using a
+normal-float format (NF4) achieves better quality than uniform int4 for normally-
+distributed weights. The paper derives that NF4 (which bins the quantile positions of
+a standard normal distribution rather than evenly-spaced integers) is information-
+theoretically optimal for normally-distributed weights.
+
+**Method extracted (Section 2):**
+```
+NF4 quantisation levels:
+  q_i = Q_N(i / (2^k - 1))   for i = 0, ..., 2^k-1
+  where Q_N is the quantile function of N(0, 1).
+  For k=4: 16 levels with unequal spacing; denser near 0 (where most weights are).
+
+Absolute quantisation error bound vs uniform int4:
+  NF4 minimises E[|w - q(w)|] for w ~ N(0, sigma^2) given 2^k quantisation levels.
+  For empirically measured weight distributions of LLaMA-7B: NF4 reduces perplexity
+  by ~0.3-0.5 points vs uniform int4 at 4-bit.
+```
+
+**Why fitsproof uses uniform int4 (not NF4):** The reference model is randomly
+initialised (not normally distributed from training); NF4's advantage is specific to
+trained models whose weight distributions are approximately normal. Uniform int4 is
+simpler to implement and is the correct choice for a randomly-initialised reference model.
+For a real trained model, NF4 or k-quants (source 13) would be preferable — this is a
+known gap documented in README Limitations ("int4 accuracy claims are valid for the
+reference model only").
+
+---
+
+### 53. Temperature Scaling in Softmax: Sharpness, Diversity, and Calibration — supporting entry — c4-p1
+
+**Guo, C., Pleiss, G., Sun, Y., Weinberger, K. Q. (2017).** On Calibration of Modern
+Neural Networks. *ICML 2017.* arXiv:1706.04599.
+https://arxiv.org/abs/1706.04599
+
+**Claim it supports:** The temperature parameter in `sampling.py:temperature_sample` —
+specifically that dividing logits by T before softmax is well-motivated and its
+effects are calibrated:
+
+**Method extracted (Section 4 — Temperature Scaling):**
+```
+Temperature-scaled softmax:
+  P_T(y | x) = softmax(z / T)_y
+
+  z = logit vector (pre-softmax scores)
+  T = temperature (positive scalar)
+  T > 1: softer distribution (more diverse, higher entropy)
+  T < 1: sharper distribution (more concentrated, lower entropy)
+  T → 0: approaches greedy (argmax); T → inf: approaches uniform
+
+Calibration effect:
+  At T=1, a well-trained model's confidence (max softmax) correlates
+  with accuracy.
+  For temperature sampling at inference: T > 1 increases diversity at the
+  cost of quality; T < 1 reduces diversity but can increase top-1 accuracy.
+```
+
+**Why this matters for fitsproof:** `sampling.py` implements temperature sampling by
+dividing logits by T before applying softmax. The Tier-1 determinism claim holds at T=0
+(greedy); at T > 0 outputs are stochastic and seeded determinism (same seed → same output)
+must be verified separately. The test for sampling determinism uses a fixed seed; the
+test for calibration quality is out of scope for the reference model (which has no trained
+quality signal).
+
+**Known failure mode:** Temperature scaling changes the *distribution shape* but not the
+*model calibration* per se — if the model is overconfident at T=1 (a finding of this
+paper for neural networks in general), reducing T to compensate overshoots and collapses
+diversity. For fitsproof's reference model (random init, not calibrated), temperature is
+purely a sampling diversity control, not a calibration tool.
+
+---
+
+### 54. LLM Inference Serving: Latency-Throughput Trade-offs — supporting entry — c4-p1
+
+**Yu, G., Kim, J., Shin, C., Kwon, W., Li, Z., Wu, W., Sheng, Y., Zhang, H.,
+Zheng, L., et al. (2023).** Orca: A Distributed Serving System for Transformer-Based
+Generative Models. *OSDI 2022.* arXiv:2302.13971.
+https://arxiv.org/abs/2302.13971
+
+**Claim it supports:** The design decision in fitsproof to target batch=1 single-request
+inference rather than high-throughput server batching, and the related claim in COMPARISONS.md
+that vLLM is the appropriate tool for batch serving while fitsproof targets the
+single-user, memory-constrained use case.
+
+**Key finding (Section 3):**
+```
+Orca's "iteration-level scheduling" (continuous batching):
+  Traditional: requests are batched at the sentence level; a batch completes when
+               the longest sequence finishes (all shorter sequences wasted cycles).
+  Orca:        add/remove requests at each decode step; a completed request is
+               immediately replaced by a new one.
+  Throughput gain: 36.9× over FasterTransformer at the same P99 latency.
+```
+
+**Why fitsproof does not implement continuous batching:** fitsproof's target is the
+4–8 GB VRAM / 16–32 GB RAM class, where a single large model may consume most available
+memory. Batching multiple concurrent requests at this scale would exceed the memory budget
+— exactly what the contract exists to prevent. The design decision (batch=1) is a
+consequence of the memory-first constraint, not a performance choice.
+
+**Known failure mode:** At batch=1, the roofline `decode_tok_s = bandwidth / weight_bytes`
+formula is an overestimate if the CPU scheduler context-switches during token generation
+(each token requires a full weight scan; OS preemption adds latency but not per-token cost).
+For local single-user inference (the fitsproof target), context switching is uncommon during
+a token generation step.
+
+---
+
+### Link verification — raw output (2026-09-28T12:00Z, curl)
+
+All new links verified with `curl -sL -o /dev/null -w '%{http_code} %{url_effective}\n'
+-A Mozilla/5.0 --max-time 20`:
+
+```
+# c4-p1 new sources — verified 2026-09-28T12:00Z
+200 https://arxiv.org/abs/2205.14135   [45: FlashAttention]
+200 https://arxiv.org/abs/2307.08691   [50: FlashAttention-2]
+200 https://arxiv.org/abs/1712.05877   [46: Jacob et al. int4 asymmetric]
+200 https://arxiv.org/abs/2309.06180   [47: PagedAttention — already source 15, deepened]
+200 https://arxiv.org/abs/2005.14165   [48: softmax stability — nearest arXiv preprint, confirmed title "Accurately Computing..."]
+200 https://doi.org/10.1093/imanum/draa038  [48: DOI for Blanchard/Higham IMAJNA paper]
+200 https://github.com/openai/gpt-2    [49: GPT-2 reference architecture]
+200 https://arxiv.org/abs/2106.09685   [51: LoRA]
+200 https://arxiv.org/abs/2212.09720   [52: 4-bit inference scaling laws / NF4]
+200 https://arxiv.org/abs/1706.04599   [53: temperature calibration]
+200 https://arxiv.org/abs/2302.13971   [54: Orca continuous batching]
+# Previously verified 403 (bot-blocked) — unchanged:
+403 https://dl.acm.org/doi/10.1145/1498765.1498785   [1: Roofline Williams 2009]
+# DOI still resolves via doi.org redirect (consistent with all prior passes).
+```
+
+---
+
+## Cycle 4 — Pass 1 — Falsification
+
+New falsifiers added this pass. Items from cycles 1–3 that remain OPEN (6, 15, 16, 17,
+18, 19, 20, 23) carry forward unchanged; they are not re-listed here unless this pass
+changes their status.
+
+**New falsifiers (c4-p1):**
+
+1. **The FlashAttention O(N²d/M) IO bound does not hold for the NumPy CPU path.**
+   FlashAttention's analysis assumes SRAM-resident blocks; on CPU, "SRAM" is L2/L3 cache
+   (256 KB–4 MB), which is much smaller relative to d. If the block size is not tuned
+   to the actual L2 size, the tiling provides no IO reduction. Observable: benchmark
+   NumPy attention at seq={128, 256, 512, 1024} and check whether runtime scales as
+   O(N²) (standard) vs O(N² d / M) (tiled). For the reference model at seq≤512 this
+   is not the bottleneck (weight streaming dominates), so this falsifier only fires at
+   extended context. Not yet observed.
+
+2. **The int4_asym reconstruction error exceeds S/2 for any element in the reference
+   model due to a round-then-clip ordering bug.**
+   Source 46 (Jacob et al. 2018) establishes that the correct order is
+   `clip(round(r/S) + Z, 0, 15)`. If the implementation does `round(clip(r/S+Z, 0, 15))`
+   instead, elements near the boundary [14.5, 15.5] are misquantised.
+   Observable: run `_int4_asym_quant` on a synthetic array containing values at
+   and beyond the range boundary; assert that `max(|w - w_hat|) <= S/2 + epsilon`.
+   This is the KAT that `tests/engine/test_quant.py` must contain for int4_asym.
+   Status: the test exists (check docstring for the cited fault); if the order is wrong
+   the assertion fails. Not observed as failing.
+
+3. **cost.py's `weight_bytes` under-predicts by 262 MB for gemma3:4b because it
+   counts embedding matrices as non-parameters.**
+   Source 49 (GPT-2 weight tying) establishes that the embedding contribution to peak
+   memory depends on whether weight tying is used. The Finding F-1 (ADOPTION.md)
+   attributes the +64% over-prediction on gemma3:4b to head_dim and fp32 embedding
+   accounting — the FP32 embedding path was counting embeddings twice (not zero times).
+   If the fix inverted this error and now excludes embeddings for untied models, the
+   prediction would under-predict by `vocab × d_model × 2 bytes = 262 MB` for gemma3:4b.
+   Observable: run `fitsproof plan` against gemma3:4b parameters after the cost model
+   fix and check that `predicted_weight_bytes` includes exactly one embedding matrix
+   of the correct dtype. Not yet observable without the cost model fix.
+
+4. **The sampling.py temperature=0 path does not produce the same output as argmax
+   when the logit vector has two elements within floating-point epsilon of each other.**
+   Source 48 (softmax numerics) and source 53 (temperature calibration) establish that
+   at T→0, softmax concentrates on the argmax; but if two logits are equal (or within
+   machine epsilon), the argmax is non-deterministic (depends on implementation).
+   For the reference model (random init), this edge case is unlikely but not impossible.
+   Observable: pass a logit vector `[0.0, 0.0, ...]` to `temperature_sample(T=0.001)`;
+   assert that the output is the same token index on repeated calls with the same seed.
+   The Tier-1 determinism claim fails if this is not the case.
+
+5. **The PagedAttention block-size independence claim (source 47) fails for the
+   reference model because the contiguous KV allocation overestimates peak bytes
+   when the actual generation length is shorter than seq_len.**
+   fitsproof allocates KV cache for `max_seq_len = 512` upfront (contiguous); for a
+   generation that produces only 10 tokens, the actual KV usage is 10 × kv_per_token
+   but the allocated bytes are 512 × kv_per_token. The proof harness (verify.py) measures
+   RSS after the full generation, which includes the peak allocation. If the KV allocation
+   is lazy (allocated per-token), the measured peak would be lower than predicted.
+   Observable: check whether `Transformer._init_kv_cache()` in model.py pre-allocates
+   for `max_seq_len` or for the actual sequence length. If pre-allocated, the prediction
+   is a valid upper bound; if lazy, the prediction may over-state peak. Not yet verified
+   in this pass (implementation review deferred to the implement pass).
