@@ -627,7 +627,7 @@ footprint.
 
 ### 8.5 The single most likely reason someone would NOT adopt it — cycle 3 update
 
-No change from §5. The prediction accuracy (MAPE 46–60% across sessions, +64% on the
+No change from §5. The prediction accuracy (MAPE 46–62% across sessions, +64% on the
 one real-model test) remains the adoption blocker. The contract surfaces (L2–L4) work
 correctly; the number the contract enforces is the weak link.
 
@@ -636,3 +636,14 @@ The path to closing this is narrow and clear: correct the cost model's head_dim 
 embedding/unembedding fp32 double-count, then re-measure against gemma3:4b. If the
 resulting MAPE drops below 20% on the one real-model calibration point, the F-1 finding
 is resolved and the adoption-blocker analysis changes.
+
+### 8.6 Changes in c3-p09-improve-2 (2026-09-28T09:00Z)
+
+| Item | Before | After |
+|---|---|---|
+| README Limitations MAPE range | "~46–50%" | "~46–62%" (matches observed range across sessions including today's 61.9% run) |
+| README calibration section | No note on why example shows 46.1% | Explicit note: low bandwidth (1.92 GB/s) = loaded box; MAPE varies 46–62% across sessions |
+| README stress output | Slightly stale median (3909.5 MB) | Updated to match fresh run (3909.7 MB) |
+| `test_calibration_demo_runs` | Missing | Added to `tests/test_packaging.py`; asserts the README-referenced script exits 0 and emits all required output fields |
+| Test count | 177 | **178** (+1) |
+| `ruff check .` | clean | clean |

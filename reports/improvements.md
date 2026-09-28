@@ -1,6 +1,115 @@
 # Improvement log — fitsproof
 
-## Pass c3-p08-improve-1 (2026-09-28) — surviving mutations in admit.py format string arithmetic
+## Pass c3-p09-improve-2 (2026-09-28) — MAPE range accuracy, calibration benchmark traceability, star count refresh
+
+### Finding fixed
+
+**The biggest credibility gap a skeptical reviewer would find: README Limitations claimed
+MAPE `~46–50%` at reference scale, but the actual observed range is 46–62% across sessions.**
+
+Evidence: ADOPTION.md §8.1 previously documented "50.3–60.1% across multiple sessions" and §8.5 said
+"46–60% across sessions". A fresh run of `calibration_demo.py` this pass produced 61.9% MAPE. The
+README's "~46–50%" understated the range by 12 percentage points. A reviewer who ran the demo and
+got 62% would conclude the benchmark was cherry-picked from one favorable session.
+
+The README's calibration section also showed a specific run with `bandwidth: 1.92 GB/s,
+MAPE: 46.1%` — low bandwidth from a loaded machine, which naturally produces lower MAPE.
+With no explanation, this looked like the best-case result, not a representative run.
+
+### Fixes
+
+**README.md — Prediction accuracy section:**
+- Added explicit note: "The bandwidth reading above (1.92 GB/s) is low because the box was
+  under load when this transcript was recorded. MAPE varies with bandwidth measurement: across
+  sessions on this machine the observed range is **~46–62%** (documented in `docs/ADOPTION.md`
+  §8.1 and F-3). Run `calibration_demo.py` yourself; your number will differ."
+- Updated stress harness output: median was slightly stale (3909.5 MB → 3909.7 MB) from
+  fresh run on 2026-09-28.
+
+**README.md — Limitations section:**
+- Updated "Held-out MAPE is ~46–50% at reference scale" → "~46–62% at reference scale
+  (n_held_out=1, varies with machine load at measurement time — see F-3 in `docs/ADOPTION.md`)".
+  Matches the documented observed range with accurate context.
+
+**docs/ADOPTION.md:**
+- §8.5 updated: "MAPE 46–60% across sessions" → "MAPE 46–62% across sessions".
+- §8.6 added: change log for this pass.
+
+**tests/test_packaging.py — new test `test_calibration_demo_runs`:**
+The README claims `python scripts/calibration_demo.py` is the reproducible command for the
+calibration benchmark. No test verified this script ran correctly. The new test:
+- Verifies `calibration_demo.py` exits 0.
+- Asserts all required output fields appear: `bandwidth:`, `MAPE (held-out):`, `CI (95%):`,
+  `n_train=`, `n_held_out=`.
+A stale or broken demo script would now fail CI, keeping the README claim honest.
+
+**COMPARISONS.md:**
+- Star counts refreshed at 2026-09-28T09:00:18Z: llama.cpp 129,731→129,745 (+14),
+  vLLM 92,825→92,843 (+18); all others unchanged.
+- Timestamp updated.
+
+### Before/after metrics
+
+| Metric | Before (c3-p08-improve-1) | After | Delta |
+|---|---|---|---|
+| `pytest -q` test count | 177 | **178** | +1 |
+| `pytest -q` failures | 0 | 0 | — |
+| README MAPE range (Limitations) | "~46–50%" | "~46–62%" | fixed (12pp gap closed) |
+| README calibration section explains loaded-box artifact | NO | YES | added |
+| `test_calibration_demo_runs` | missing | present | added |
+| ADOPTION.md §8.5 MAPE range | "46–60%" | "46–62%" | fixed |
+| COMPARISONS.md star counts | as of 04:31Z | as of 09:00Z (+14/+18) | refreshed |
+| `ruff check .` | clean | clean | — |
+| `ruff format --check .` | clean | clean | — |
+| `check_research_traceability.py` | TRACEABILITY OK | TRACEABILITY OK | — |
+
+### Terminal evidence
+
+```
+$ source .venv/bin/activate && python scripts/calibration_demo.py
+=== Calibration demo ===
+bandwidth: 6.94 GB/s
+gemm:      303.31 GFLOPS
+RAM:       33.5 GB
+bandwidth_utilisation: 0.0253
+MAPE (held-out):       61.9%
+CI (95%):              [61.9%, 61.9%]
+n_train=2, n_held_out=1
+
+$ fitsproof stress
+ADMITTED: 0.039 GB predicted peak <= 4.000 GB budget (margin: 3961.0 MB)
+Stress harness: 25 configs, 0 violations, 0 silent mode changes. Margin: min=3909.4 MB, median=3909.7 MB, max=3913.1 MB.
+
+$ python -m pytest tests/test_packaging.py -v
+============================= test session starts ==============================
+platform linux -- Python 3.11.15, pytest-8.3.5, pluggy-1.6.0
+rootdir: /home/openclaw/portfolio/fitsproof
+configfile: pyproject.toml
+testpaths: tests
+plugins: cov-6.1.0, hypothesis-6.135.0, platformdirs-4.12.0
+collected 3 items
+
+tests/test_packaging.py::test_pyproject_version_matches_package_version PASSED [ 33%]
+tests/test_packaging.py::test_cli_reports_version PASSED                 [ 66%]
+tests/test_packaging.py::test_calibration_demo_runs PASSED               [100%]
+
+============================== 3 passed in 6.44s ==============================
+
+$ python -m pytest tests/ -q --tb=no 2>&1 | tail -3
+======================== 178 passed in 103.29s (0:01:43) ========================
+
+$ ruff check . && ruff format --check .
+All checks passed!
+39 files already formatted
+
+$ python scripts/check_research_traceability.py
+TRACEABILITY OK (core only): all core test files cite valid research sources.
+Checked 44 source IDs from RESEARCH.md. PAPER-TRACEABILITY.md table validated (15 IMPLEMENTED rows).
+```
+
+---
+
+
 
 ### Finding source
 

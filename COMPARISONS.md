@@ -5,17 +5,16 @@ The tools below beat fitsproof on speed, model coverage, and hardware breadth.
 We name them here so reviewers do not have to look them up.
 
 Star counts and versions retrieved from the GitHub REST API and PyPI at
-2026-09-28T04:31:07Z (cycle 3 pass 2 refresh; +30 llama.cpp, +33 vLLM, +2 KTransformers
-vs the c2-p2 20:42Z snapshot; aura v0.1.0 release date confirmed 2026-08-23;
-ridgepoint/detllm/inactive repos unchanged). Four new search queries run;
+2026-09-28T09:00:18Z (cycle 3 pass 9 refresh; +14 llama.cpp, +18 vLLM vs the c3-p2
+04:31Z snapshot; all other repos unchanged). Four new search queries run;
 no new tool entered the comparison table.
 
 ## Inference engines
 
 | Tool | Stars | Latest | What it does better than fitsproof | What fitsproof adds |
 |---|---|---|---|---|
-| **llama.cpp** (ggml-org/llama.cpp) | 129,731 | v0.5.0 (2026-09-23) | Mature (3+ years), broad model support (GGUF), fast CPU kernels (GGML), broad quant support, GPU offload | No enforced resource contract; silent OOM documented; no calibrated prediction interval |
-| **vLLM** (vllm-project/vllm) | 92,825 | v0.30.0 (2026-09-22) | GPU serving, high throughput, PagedAttention, continuous batching, 100+ model support | No enforced memory budget; targets A100/H100, not 4–8 GB VRAM class |
+| **llama.cpp** (ggml-org/llama.cpp) | 129,745 | v0.5.0 (2026-09-23) | Mature (3+ years), broad model support (GGUF), fast CPU kernels (GGML), broad quant support, GPU offload | No enforced resource contract; silent OOM documented; no calibrated prediction interval |
+| **vLLM** (vllm-project/vllm) | 92,843 | v0.30.0 (2026-09-22) | GPU serving, high throughput, PagedAttention, continuous batching, 100+ model support | No enforced memory budget; targets A100/H100, not 4–8 GB VRAM class |
 | **KTransformers** (kvcache-ai/ktransformers) | 19,543 | v0.7.1 (2026-09-15) | CPU/GPU hybrid MoE, Intel AMX kernels, runs DeepSeek-671B on ~14 GB VRAM. *Requires 128 GB RAM, AMX, CUDA/ROCm.* | Does not serve the 16–32 GB RAM class; no calibrated contract; no stress harness |
 
 ## Prediction and sizing tools
