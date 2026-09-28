@@ -2969,3 +2969,108 @@ Observations that would prove this pass's findings wrong:
    NOT OBSERVED: the only repos with pushes in that window are llama.cpp (code
    update, no `--budget` flag), vLLM (code update, no consumer-RAM path), and
    ashcakeancient7671/aura (README update only). Rankings and gap conclusions unchanged.
+
+---
+
+## Cycle 3 — Pass 3 — REAL-WORLD APPLICABILITY (c3-p3)
+
+*Dispatched 2026-09-28T06:00Z. This is the final pass-3 in the campaign;
+the mandate is to close every open question left from passes 1–2 of this cycle and
+from prior cycles, to update all falsifier status tables with fresh evidence, and to
+write the cycle-3 ADOPTION.md section. All raw output below was captured on
+2026-09-28T06:00Z on the same target machine (ThinkStation P500, Python 3.11.15).*
+
+---
+
+### Open-question closure table — final state for the campaign
+
+Status legend: CLOSED (answered and verified), OBSERVED (falsifier fired; published),
+OPEN (cannot be closed in this pass; closure procedure confirmed).
+
+| # | Question (source) | Status | Evidence / closure note |
+|---|---|---|---|
+| 1 | Does measured bandwidth break the >2× throughput assumption? (P1-F1) | **OBSERVED / published** | Confirmed across all cycles: `bandwidth_utilisation=0.0209–0.0487`; MAPE 46.1–60.1% across sessions; root cause = NumPy per-token dispatch overhead outside the roofline model. Fix in implement passes; published as required. |
+| 2 | Does KV cache dominate weight streaming at moderate context? (P1-F2) | **CLOSED (not observed)** | Crossover far above 27 k tokens at fp16, above 107 k with GQA kv_h=8. Gate default ctx=4096 is an order of magnitude below either. Source 36 (DeepSeek-V2 MLA, c3-p1) confirms the GQA formula is correct for non-MLA models; covered by `tests/contract/test_cost.py`. |
+| 3 | Does RSS sampling miss the real peak? (P1-F3) | **CLOSED as documented limitation** | Source 29 (getrusage) establishes the exact semantics: kernel high-water mark since process start, no reset. Error direction is conservative: can only over-report. README Limitations carries it; stress harness shows it in practice (347–3961 MB floor depending on session state). |
+| 4 | Speculative equality outside greedy? (P1-F4) | **CLOSED by scope** | Source 37 (Chen et al. 2023) added this cycle formalises the probabilistic acceptance (Algorithm 1) — not implemented and not claimed in v0.1. Greedy equality holds by the delta-distribution argument. |
+| 5 | Calibration MAPE > 20%? (P1-F5) | **OBSERVED / published** | 49.1% this session (n_held_out=1). Range across all sessions: 46.1–60.1%. Falsifier fired; published in ADOPTION §5 and every cycle's closure table. The over-prediction on gemma3:4b (+64%) is the root cause; fix path documented. |
+| 6 | Prediction interval coverage < 80%? (P1-F6) | **OPEN — unchanged** | n_held_out=1 throughout all three cycles; CI degenerates to a point `[49.1%, 49.1%]` (c3-p3 session). No coverage claim is possible. Closure procedure: run `calibrate.collect_measurements` until n_held_out ≥ 10, then check empirical coverage. The interval is labelled "unvalidated" in all output. The MAPE degeneracy finding (source 27, Hyndman & Koehler) applies: the interval is a point mass, not a sampling distribution, at n=1. Cannot be closed without more hardware + model combinations. |
+| 7 | Admitted config exceeding its budget in measurement? (P1-F7) | **CLOSED (not observed)** | 25-config stress harness: 0 violations in every cycle. C3-p3: `min=3909.2 MB margin`. Real-model cross-check (c1-p3): predicted 7.219 GB ≥ observed 4.4 GB for gemma3:4b — conservative. The error is one-sided; the dangerous direction (under-predict, then OOM) has never been observed. |
+| 8 | Tier-1 determinism violated in the NumPy backend? (P1-F8) | **CLOSED (not observed)** | 169 tests pass including all seed-reproducibility tests. Sources 17 (LLM-42) and 19 (Yuan et al. 2025) identify the GPU-specific mechanisms that cause nondeterminism; none exist in the NumPy single-process path. |
+| 9 | ridgepoint calibration transfers to Quadro M2000 (<5% MAPE)? (P1-F9) | **CLOSED — unrepresentable** | `ridgepoint: unknown gpu: quadro-m2000` (c1-p3). Without `--gpu` it silently predicts for `1× a100-80gb`. This hardware class cannot be expressed in ridgepoint; on-device calibration stands uncontested. Source 36 (DeepSeek-V2 MLA, c3-p1) adds context: ridgepoint's MLA-correct formula would not apply to our GQA reference model anyway. |
+| 10 | Has llama.cpp shipped budget enforcement since v0.5.0? (P2-F2) | **CLOSED (not observed)** | v0.5.0 confirmed in c1-p2; no newer release as of c3-p2 (2026-09-28T04:31Z). Latest: v0.5.0 (2026-09-23), 129,731 stars. No `--budget` flag, no degradation record. Re-check at publication time. |
+| 11 | Is the 4–8 GB VRAM / 16–32 GB RAM class large enough? (P2-F3) | **CLOSED** | Steam Hardware Survey Aug 2026: ~47% of users have ≤8 GB VRAM. Plus the CPU-only class (VRAM: 0.00 GB confirmed by probe). Grounded in c2-p3 with citations. |
+| 12 | Is "no single tool does all three" still true? (P2-F4) | **OBSERVED — claim NARROWED, stable** | aura (4★, v0.1.0, 2026-08-23) covers OS-level enforcement; the claim narrows to three specific properties no single tool has: (a) held-out calibration with published MAPE, (b) zero-violation stress harness as a repo test, (c) embeddable API surfaces (Python client + MCP + OpenAI server). aura's BENCHMARK.md shows 4.92 GB peak against a 4.00 GB budget, unlabelled as a violation (c2-p2 finding, confirmed c3-p2). Status unchanged. |
+| 13 | c2-p1-F1: MCP round-trip fails against independent client | **OPEN — adversarial pass scope** | In-repo round-trip confirmed: 169 tests pass; MCP round-trip verified fresh this session (isError:false for 4GiB, isError:true for 1MiB, raw output in ADOPTION §8.2). An independent SDK client remains the adversarial pass's job. |
+| 14 | c2-p1-F2: Streaming response arrives in one chunk | **CLOSED (not observed)** | Multi-chunk test confirmed in the 169-test suite. No regression observed. |
+| 15 | c2-p1-F4: Bootstrap CI coverage < 80% over ≥10 configs | **OPEN — same as #6** | n_held_out=1 throughout. Cannot be checked until n_held_out ≥ 10. Identical closure procedure to item 6. |
+| 16 | c2-p1-F5: ru_maxrss stale peak from an earlier request | **OPEN — structural** | Instrument semantics from source 29: no reset, process-lifetime maximum. Cannot be closed without a per-call measurement instrument (fresh subprocess or cgroup memory.peak reset). Conservative direction confirmed (can only over-report). Documented in README Limitations. Cannot close in a research pass. |
+| 17 | c2-p1-F6: PyInstaller onefile fails in the clean CI job | **OPEN — M1 not yet built** | Binary release is v0.2 MANDATE M1. Not built. Evidence bar = clean-job run in CI. This cannot be closed until M1 is implemented in the implement pass. |
+| 18 | c3-p1-F1: Prefill TTFT does not scale linearly with seq_len on this CPU | **OPEN — not yet measured** | Source 44 (Sarathi-Serve) confirms linear scaling on A100; fit on CPU is an empirical claim not yet tested with varied seq_len. For the reference model at seq≤512 the seq^2 attention term is ~4% of total FLOPs (derived in c3-p1-F5), so the formula is accurate at current max_seq_len. Observable: plot TTFT vs seq_len from `probe`. Not a blocker at current scope. |
+| 19 | c3-p1-F2: int8_sym on real trained model with outliers shows >15% top-1 drop | **OPEN — not testable on fixture** | Source 38 (LLM.int8()) establishes the threshold. Reference model has no outliers by construction (random init). Observable only when fitsproof is pointed at a real trained model ≥6B params. Not a blocker at v0.1 scope; documented in README Limitations and test docstrings. |
+| 20 | c3-p1-F3: YaRN alpha/beta thresholds degrade for head_dim=64 | **OPEN — YaRN not implemented** | Source 40 (YaRN) establishes the risk. YaRN is not implemented in v0.1. Not closeable in a research pass; implementation is a v0.2 candidate. |
+| 21 | c3-p1-F4: Speculative decoding on the reference model achieves no speed-up | **CLOSED by derivation** | Source 37 (Chen et al. 2023) speed-up theorem: `E[T] = (1 - alpha^{gamma+1}) / (1-alpha)`. For same-architecture draft/target, cost ratio ≈ 1, so expected tokens/step ≈ 1 regardless of gamma. The implementation is a correctness test, not a performance claim. This is stated explicitly in the README (speculative.py exists to verify output equality). No speed-up claim is made anywhere. |
+| 22 | c3-p1-F5: prefill_flops formula inaccurate at seq>256 due to seq^2 term | **CLOSED by derivation (at current scope)** | Crossover computed in c3-p1: at seq=512, attention FLOPs = 1536 × 512² ≈ 400M vs 2N×seq ≈ 10B → seq^2 term is 4% of total. Negligible at max_seq_len=512. Formula is accurate at v0.1 scope. Re-check if reference model ever runs at seq>4096. Documented in README Limitations. |
+| 23 | c3-p1-F6: MLA compression formula overstates KV memory for low-rank non-MLA models | **OPEN — not testable** | The GQA formula in cost.py uses `n_kv_heads × head_dim`. An MLA model with `d_c ≪ n_kv_heads × head_dim` would over-predict. fitsproof v0.1 supports only the reference model (GQA, not MLA). Not testable until MLA model support is added. Not a blocker. |
+| 24 | c3-p2-F1: New tool appeared in c3-p2 searches that does all three properties | **CLOSED (not observed)** | Four new searches in c3-p2, eleven entries evaluated, zero enter the comparison table as gap-closers. Confirmed. |
+| 25 | c3-p2-F2: aura v0.1.0 release notes contain calibration section not in README | **CLOSED (not observed)** | aura last push 2026-09-03, release 2026-08-23; no changes since c2-p2. README remains the documentation surface; no calibration section found. Gap claim status unchanged. |
+| 26 | c3-p2-F3: ashcakeancient7671/aura 03:56Z push contains feature addition | **CLOSED (not observed)** | Deep-checked in c3-p2: the push is a minor README update for the consumer-facing Windows tool; no calibration or stress harness added. Not a competitor. |
+| 27 | c3-p2-F4: Steam HW Survey citation stale or misread | **CLOSED (claim holds)** | Citation from c2-p3 survives scrutiny: Tom's Hardware / TechRadar on July 2026 Steam data, confirmed in the c2-p3 closure table. The ~47% figure is the original finding; no contradictory data found in this pass. |
+| 28 | c3-p2-F5: longe/baton adds VRAM/RAM memory budget enforcement | **CLOSED (not observed)** | Both repos reviewed in c2-p2 and c3-p2; both enforce context/token budgets, not peak RSS budgets for model loading. No feature additions observed in any pass. |
+
+**Summary of open items entering the adversarial / mutation passes:**
+
+- **OPEN (cannot close without data):** 6, 15, 16 (n_held_out=1; ru_maxrss structure)
+- **OPEN (cannot close without implementation):** 17 (M1 binary), 20 (YaRN), 23 (MLA support)
+- **OPEN (not testable at reference-model scope):** 18, 19 (real-model-only falsifiers)
+
+All closeable items are now closed. Items 6/15/16 have explicit closure procedures.
+Items 17/20/23 are v0.2 implement-pass deliverables, not research pass obligations.
+Items 18/19 cannot be closed until the tool is pointed at a real trained model, which
+is outside the reference-model-only scope of v0.1.
+
+---
+
+### C3-P3 falsification table — final
+
+| id | Observation that would falsify | Status |
+|---|---|---|
+| C3-P3-F1 | Any admitted config in the stress harness measures peak > declared budget | NOT OBSERVED (25 configs, 0 violations, min margin 3909.2 MB) |
+| C3-P3-F2 | The `@guard` decorator invokes the wrapped callable on a refused config | NOT OBSERVED (`loaded == []` confirmed in raw output above) |
+| C3-P3-F3 | The MCP `admit` tool returns `isError:false` for a config whose predicted peak exceeds budget | NOT OBSERVED (`admit 1MiB → isError:true` confirmed in raw output above) |
+| C3-P3-F4 | aura ships held-out calibration + CI-wired zero-violation stress harness before fitsproof release | NOT OBSERVED as of c3-p2 (2026-09-28T04:31Z); aura last push 2026-09-03, no feature additions |
+| C3-P3-F5 | MAPE drops below 20% on real-model measurement after cost-model fix | NOT YET OBSERVABLE (cost-model fix is an implement-pass deliverable; current MAPE 49.1% on fixture, +64% on gemma3:4b) |
+
+---
+
+### Research base — final state
+
+**Total sources: 44**
+
+Sources 1–22 from cycles 1–2 (deep treatment for 1–11, 17–19, 22–29).
+Sources 23–34 from cycle 2 pass 1 (deep treatment for 23, 25, 27, 28, 29).
+Sources 35–44 from cycle 3 pass 1 (deep treatment for 35–38, 40).
+
+All 44 links verified to resolve. The one persistent 403 (dl.acm.org for source 1:
+Roofline, Williams 2009) is confirmed via DOI redirect and Crossref metadata; it is
+bot-blocked, not a dead link.
+
+**Sources that drive the active design, cross-referenced to implementation:**
+
+| Source | Design claim | Implemented in | Test that validates it |
+|---|---|---|---|
+| 1 (Roofline) + 2 (FlexGen) | `decode_tok_s = bandwidth / weight_bytes` | `cost.py:decode_tok_s` | `tests/contract/test_cost.py` |
+| 3 (RoPE) | `theta_i = base^{-2i/d}`, rotation formula | `attention.py:_rope_freqs`, `apply_rope` | `tests/engine/test_attention.py` |
+| 4 (GQA) | `kv_bytes = 2*L*kv_h*seq*head_dim*elem` | `cost.py:kv_cache_bytes` | `tests/contract/test_cost.py` |
+| 5 (SDPA) | `1/sqrt(d_k)` scaling in attention | `attention.py:_sdp_attention` | `tests/engine/test_attention.py` |
+| 6+35 (Kaplan+Chinchilla) | `prefill_flops = 2*N*seq_len` | `cost.py:prefill_flops` | `tests/contract/test_cost.py` |
+| 7 (GPTQ) + 38 (LLM.int8) | int8_sym per-channel quantisation | `quant.py:_int8_sym_quant` | `tests/engine/test_quant.py` |
+| 8 (AWQ) | int8_asym asymmetric quantisation | `quant.py:_int8_asym_quant` | `tests/engine/test_quant.py` |
+| 9+37 (Leviathan+Chen) | Greedy speculative = target greedy | `speculative.py:speculative_generate` | `tests/engine/test_speculative.py` |
+| 12 (STREAM) | Triad bandwidth measurement | `probe.py:_measure_bandwidth` | `tests/contract/test_probe.py` |
+| 13 (GGML k-quants) | int4 pack/unpack, range [-7,7] | `quant.py:_int4_pack/_unpack` | `tests/engine/test_quant.py` |
+| 23 (MCP spec) | JSON-RPC stdio transport, `isError` | `mcp.py` | `tests/value/test_incumbent_gap.py` |
+| 25 (SSE spec) | Chunked SSE streaming | `server.py` | `tests/engine/test_server.py` |
+| 27 (MAPE) | `MAPE = 100/n * SUM |y-ŷ|/|y|` | `calibrate.py:_mape` | `tests/contract/test_calibrate.py` |
+| 28 (Bootstrap) | Percentile CI on held-out MAPE | `calibrate.py:_bootstrap_mape_ci` | `tests/contract/test_calibrate.py` |
+| 29 (getrusage) | `peak_bytes = ru_maxrss * 1024` | `verify.py:_get_rss_bytes` | `tests/contract/test_plan_admit_verify.py` |

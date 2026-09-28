@@ -455,3 +455,184 @@ the binary release exists, the install requires Python (§1 recipe above).
 | L3 — in-process guard | `@guard(budget=...)` in Python services | **works today** (new this cycle) |
 | L4 — agent-facing | `fitsproof mcp`, agent calls `admit` before loading | **works today** (new this cycle) |
 | L5 — drop-in binary | single executable, SHA256 release | v0.2 M1 pending |
+
+---
+
+## 8. Cycle 3 — Pass 3 — State as of 2026-09-28T06:00Z
+
+*All commands run fresh on the ThinkStation P500, Python 3.11.15, branch feat/v0.1.*
+
+### 8.1 What changed since cycle 2
+
+| Item | Cycle 2 (c2-p3, 2026-09-27T22:34Z) | Cycle 3 (c3-p3, 2026-09-28T06:00Z) |
+|---|---|---|
+| Test count | 155 passed | **169 passed** (+14) |
+| MAPE (held-out) | 50.3–60.1% across sessions | **49.1%** this session (n_held_out=1) |
+| Stress harness | 25 configs, 0 violations | 25 configs, 0 violations (confirmed) |
+| Stress margin | min=3698.0 MB | min=3909.2 MB (run-to-run variation in bandwidth measurement) |
+| CLI plan/admit | Distinct commands (c2-p09) | Unchanged |
+| Python client (L3) | Working | Confirmed working |
+| MCP server (L4) | Working | Confirmed working: admit 4GiB → `isError:false`, admit 1MiB → `isError:true` |
+| Binary release (L5) | Not built | **Still not built** — v0.2 MANDATE M1 pending |
+
+The MAPE variation (46.1% → 60.1% → 49.1% across three cycles' sessions) is within
+the expected run-to-run spread documented as F-3 (bandwidth drift with machine state).
+The underlying instrument has not changed; the number fluctuates because the bandwidth
+probe is sensitive to load at measurement time.
+
+### 8.2 Raw output — 2026-09-28T06:00Z
+
+```
+$ source .venv/bin/activate && python scripts/calibration_demo.py
+=== Calibration demo ===
+bandwidth: 6.62 GB/s
+gemm:      89.64 GFLOPS
+RAM:       33.5 GB
+bandwidth_utilisation: 0.0209
+MAPE (held-out):       49.1%
+CI (95%):              [49.1%, 49.1%]
+n_train=2, n_held_out=1
+```
+
+```
+$ fitsproof probe
+Probing machine...
+  bandwidth:  6.57 GB/s
+  gemm:       44.96 GFLOPS
+  RAM:        33.55 GB
+  VRAM:       0.00 GB
+```
+
+```
+$ fitsproof stress
+ADMITTED: 0.039 GB predicted peak <= 4.000 GB budget (margin: 3961.0 MB)
+Stress harness: 25 configs, 0 violations, 0 silent mode changes. Margin: min=3909.2 MB, median=3909.4 MB, max=3912.8 MB.
+```
+
+```
+$ fitsproof admit --budget-gb 4
+ADMITTED: 0.042 GB predicted peak <= 4.000 GB budget (margin: 3958.3 MB)
+
+$ fitsproof admit --budget-gb 0.001
+REFUSED: needs 0.042 GB, budget 0.001 GB; no listed option fits — nearest is "Use int4_sym quantisation instead of none" at 0.006 GB (0.005 GB above budget)
+Degradation options:
+  [does not fit] Use int8_sym quantisation instead of none -> 0.011 GB
+  [does not fit] Use int4_sym quantisation instead of none -> 0.006 GB
+  [does not fit] Reduce context to 256 tokens (1/2 of 512) -> 0.040 GB
+  [does not fit] Reduce context to 128 tokens (1/4 of 512) -> 0.039 GB
+  [does not fit] Reduce context to 64 tokens (1/8 of 512) -> 0.039 GB
+  [does not fit] Offload ~50% of layers to system RAM (CPU fallback for those layers) -> 0.022 GB
+(exit: 2)
+```
+
+```
+$ fitsproof plan --budget-gb 4
+predicted peak:  0.042 GB  (95% CI: [0.033, 0.050] GB)
+predicted tok/s: 107.5  (95% CI: [75.3, 139.8])
+budget:          4.000 GB
+verdict:         fits
+```
+
+Python client and guard:
+
+```
+$ python -c "
+from fitsproof.client import DoesNotFit, FitsproofClient, guard
+client = FitsproofClient()
+record = client.admit(client.plan(context_len=512, budget_bytes='4GiB'))
+print(record.message)
+print('ram_gb:', client.metrics()['ram_gb'])
+loaded = []
+@guard(budget='1MiB')
+def load_model():
+    loaded.append('allocated')
+try:
+    load_model()
+except DoesNotFit as e:
+    print('refused:', str(e)[:80])
+print('loaded ==', loaded)
+"
+ADMITTED: 0.042 GB predicted peak <= 4.295 GB budget (margin: 4253.3 MB)
+ram_gb: 33.548316672
+refused: REFUSED: needs 0.042 GB, budget 0.001 GB; no listed option fits — nearest is "Us
+loaded == []
+```
+
+MCP server (admitted and refused):
+
+```
+$ python -c "
+import json, subprocess, sys
+messages = [
+    {'jsonrpc':'2.0','id':1,'method':'initialize','params':{}},
+    {'jsonrpc':'2.0','id':2,'method':'tools/list','params':{}},
+    {'jsonrpc':'2.0','id':3,'method':'tools/call',
+     'params':{'name':'admit','arguments':{'budget':'4GiB','context_len':512}}},
+    {'jsonrpc':'2.0','id':4,'method':'tools/call',
+     'params':{'name':'admit','arguments':{'budget':'1MiB','context_len':512}}},
+]
+proc = subprocess.run([sys.executable,'-m','fitsproof.cli','mcp'],
+    input='\n'.join(json.dumps(m) for m in messages)+'\n',
+    capture_output=True, text=True, timeout=60)
+replies = [json.loads(l) for l in proc.stdout.splitlines() if l.strip()]
+print('server:', replies[0]['result']['serverInfo']['name'])
+print('tools:', sorted(t['name'] for t in replies[1]['result']['tools']))
+print('admit 4GiB isError:', replies[2]['result']['isError'])
+print('admit 1MiB isError:', replies[3]['result']['isError'])
+"
+server: fitsproof-mcp
+tools: ['admit', 'plan', 'probe']
+admit 4GiB isError: False
+admit 1MiB isError: True
+```
+
+Test suite:
+
+```
+$ python -m pytest tests/ -q --tb=no
+169 passed in 107.65s (0:01:47)
+```
+
+### 8.3 Failure modes — cycle 3 status
+
+No new failure modes were observed in cycle 3. The five documented failure modes from
+ADOPTION §3 (F-1 through F-6) remain open or closed per the prior cycle's state:
+
+| Finding | Status | C3 observation |
+|---|---|---|
+| F-1: +64% over-prediction on real GGUF models | **Open** (cost model fix in implement pass) | Not re-tested against ollama this cycle; MAPE at 49.1% on fixture (within prior range) |
+| F-2: Refusal names a non-fitting config | **Fixed** (c1-p09-improve-2) | Confirmed fixed: "no listed option fits — nearest is..." correctly named in CLI output above |
+| F-3: Bandwidth drift with machine state | **Open / documented** | Today's probe: 6.57 GB/s vs 3.94–7.18 GB/s across sessions. Operational rule (re-probe on load change) documented in §3 |
+| F-4: CPU roofline tok/s invalid for GPU-backed engines | **Open / documented** | Not re-tested; not changed since cycle 2 |
+| F-5: VRAM unmeasured (probe shows 0.00 GB) | **Open / documented** | Confirmed: `VRAM: 0.00 GB` in probe output above |
+| F-6: Gate fails closed when ollama daemon is down | **Open / documented** | Not re-tested; gate code unchanged |
+
+The most adoption-critical finding remains **F-1**: the +64% over-prediction on real
+GGUF models produces false DEGRADED verdicts in the 4.4–7.2 GB budget range. This is
+the fix target for the cycle 3 implement pass. Until the cost model is corrected, the
+operational guidance from §5 applies: treat DEGRADED as refuse-by-default, and confirm
+any ADMITTED verdict is at a budget above the predicted peak, not merely above the true
+footprint.
+
+### 8.4 Adoption maturity table — final state for cycle 3
+
+| Level | What the team does | Status |
+|---|---|---|
+| L0 — try it | clone, `probe`, `plan` against a budget | Works today |
+| L1 — gate the box | `ollama_gate.py && ollama run` | Works today (strict mode) |
+| L2 — CLI gate | `fitsproof admit` in shell scripts / CI | Works today; exit 0 / exit 2 |
+| L3 — in-process guard | `@guard(budget=...)` in Python services | Works today; DoesNotFit raised before callable invoked |
+| L4 — agent-facing | `fitsproof mcp`, agent calls `admit` before loading | Works today; `isError:false` / `isError:true` |
+| L5 — drop-in binary | single executable, SHA256 release | v0.2 MANDATE M1 — not built yet |
+
+### 8.5 The single most likely reason someone would NOT adopt it — cycle 3 update
+
+No change from §5. The prediction accuracy (MAPE 46–60% across sessions, +64% on the
+one real-model test) remains the adoption blocker. The contract surfaces (L2–L4) work
+correctly; the number the contract enforces is the weak link.
+
+The path to closing this is narrow and clear: correct the cost model's head_dim default
+(use the model config's `attention.key_length`, not `hidden_size / num_heads`) and the
+embedding/unembedding fp32 double-count, then re-measure against gemma3:4b. If the
+resulting MAPE drops below 20% on the one real-model calibration point, the F-1 finding
+is resolved and the adoption-blocker analysis changes.
