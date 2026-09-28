@@ -1,6 +1,125 @@
 # Improvement log — fitsproof
 
-## Pass c3-p09-improve-2 (2026-09-28) — MAPE range accuracy, calibration benchmark traceability, star count refresh
+## Pass c4-p08-improve-1 (2026-09-28) — ADV-16: server crash on oversized max_tokens, test strengthened
+
+### Finding fixed
+
+**ADV-16 (major) — server crashed with a broadcasting `ValueError` when
+`max_tokens > cfg.max_seq_len - len(prompt_ids)`.**
+
+Identified by the adversarial reviewer in pass c3-p11 (property attack P3-A19):
+
+```
+$ # Attack: POST /v1/chat/completions with max_tokens=1_000_000
+Server crashed with ValueError: could not broadcast input array from shape (1,6,0,32)
+  into shape (1,6,1,32)
+```
+
+Root cause: `Transformer.generate()` iterates over a precomputed RoPE frequency array
+of size `max_seq_len`. When `prompt_len + max_new_tokens > max_seq_len`, the offset
+index exceeds the array bounds at `attention.py:apply_rope`, raising a broadcasting
+`ValueError`. The server's request handler propagated this exception uncaught, killing
+the response thread and dropping the TCP connection mid-request.
+
+The fix (applied in c4-p04) added a clamping block in `server.py:_handle_completion`:
+
+```python
+max_available = cfg.max_seq_len - len(prompt_ids)
+if max_available <= 0:
+    # 400 — prompt fills the context; no room for generation
+    ...
+_SERVER_DECODE_CAP = 64
+max_tokens = min(max_tokens_raw, max_available, _SERVER_DECODE_CAP)
+```
+
+This was already in the code when this improvement pass ran. The test that was added
+in c4-p04 was weak: it only asserted `status != 500`, which would not catch the crash
+because a connection drop raises `TimeoutError`/`URLError`, not a 500 status code.
+
+### Improvement in this pass
+
+The test `test_max_tokens_exceeds_max_seq_len_does_not_crash` was strengthened with:
+
+1. `urllib.error.URLError` catch with an explicit `AssertionError` message — so a
+   server crash (connection drop) produces a clear failure with the regression label,
+   not an opaque exception traceback.
+
+2. `assert status == 200` — a successful clamped response, not just "not 500".
+
+3. `assert completion_tokens is not None` and `assert completion_tokens <= 128` —
+   the falsifiable correctness assertion: the clamped token count must not exceed
+   `max_seq_len`. This is the assertion that distinguishes "request was processed
+   correctly" from "request was processed in a way that avoided the crash but
+   produced garbage metadata".
+
+### Fault injection proof
+
+```
+# Removed the clamping block from server.py (max_tokens = raw unclamped)
+# POST max_tokens=9999 to server
+
+FAILED tests/engine/test_server.py::test_max_tokens_exceeds_max_seq_len_does_not_crash
+  TimeoutError: timed out
+  (captured stderr: ValueError: could not broadcast input array from shape (1,6,0,32)
+   into shape (1,6,1,32) — the exact ADV-16 crash in attention.py:apply_rope)
+1 failed in 17.16s
+
+# After restoring the fix:
+tests/engine/test_server.py::test_max_tokens_exceeds_max_seq_len_does_not_crash PASSED
+```
+
+The `TimeoutError` is caught by the `except urllib.error.URLError` block, which raises
+an `AssertionError: ADV-16 regression: server crashed on max_tokens=9999, dropping the
+connection instead of returning a response.` — the correct failure mode.
+
+### Before/after metrics
+
+| Metric | Before (c4-p04) | After | Delta |
+|---|---|---|---|
+| `pytest -q` test count | 188 | 188 | — (test replaced, not added) |
+| `pytest -q` failures | 0 | 0 | — |
+| Test asserts `status != 500` only (weak) | YES | NO | removed |
+| Test catches `URLError` (actual crash mode) | NO | YES | added |
+| Test asserts `status == 200` | NO | YES | added |
+| Test asserts `completion_tokens <= max_seq_len` | NO | YES | added — falsifiable |
+| ADV-16 fault injection kills test | NO (timeout leaked through) | YES (caught as AssertionError) | fixed |
+| ADV-16 status in ADVERSARIAL_REVIEW.md | open | **fixed** | closed |
+| `ruff check src/ tests/` | clean | clean | — |
+| `ruff format --check src/ tests/` | clean | clean | — |
+| `check_research_traceability.py` | TRACEABILITY OK | TRACEABILITY OK | — |
+
+### Terminal evidence
+
+```
+$ .venv/bin/pytest tests/engine/test_server.py::test_max_tokens_exceeds_max_seq_len_does_not_crash -v
+tests/engine/test_server.py::test_max_tokens_exceeds_max_seq_len_does_not_crash PASSED [100%]
+1 passed in 4.86s
+
+# Fault injected (clamping removed):
+$ .venv/bin/pytest tests/engine/test_server.py::test_max_tokens_exceeds_max_seq_len_does_not_crash -v
+FAILED tests/engine/test_server.py::test_max_tokens_exceeds_max_seq_len_does_not_crash
+    AssertionError: ADV-16 regression: server crashed on max_tokens=9999, ...
+    TimeoutError: timed out
+    (stderr: ValueError: could not broadcast input array from shape (1,6,0,32)
+             into shape (1,6,1,32))
+1 failed in 17.16s
+
+# Fault reverted, full suite:
+$ .venv/bin/pytest -q --tb=no 2>&1 | tail -3
+======================== 188 passed in 127.28s (0:02:07) ========================
+
+$ .venv/bin/ruff check src/ tests/ && .venv/bin/ruff format --check src/ tests/
+All checks passed!
+36 files already formatted
+
+$ .venv/bin/python scripts/check_research_traceability.py
+TRACEABILITY OK (core only): all core test files cite valid research sources.
+Checked 44 source IDs from RESEARCH.md. PAPER-TRACEABILITY.md table validated (15 IMPLEMENTED rows).
+```
+
+---
+
+
 
 ### Finding fixed
 

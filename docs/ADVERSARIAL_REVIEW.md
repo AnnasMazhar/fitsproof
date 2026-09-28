@@ -1847,7 +1847,7 @@ See ADV-17 (minor).
 | ADV-13 | minor | Empty config list passes stress harness | **limitation** — CLI generates 25 |
 | ADV-14 | minor | test_rope_known_values doesn't exercise default theta | **new — c3-p10** |
 | ADV-15 | minor | test_decode_tok_s_known_answer bypasses formula path | **new — c3-p10** |
-| ADV-16 | major | Server crashes on max_tokens > max_seq_len - prompt_len | **new — c3-p11, open** |
+| ADV-16 | major | Server crashes on max_tokens > max_seq_len - prompt_len | **fixed (c4-p04/c4-p08)** — clamp applied in server.py; strengthened test verifies completion_tokens <= max_seq_len |
 | ADV-17 | minor | Budget string "4" without unit treated as 4 bytes | **new — c3-p11, limitation** — UX quirk, contract correct |
 | ADV-18 | minor | MCP server does not validate jsonrpc version field | **new — c3-p11, limitation** — lenient, not a security issue |
 
@@ -1881,10 +1881,10 @@ See ADV-17 (minor).
   (all documented as limitations or minor issues).
 - Repo left green: 178 passed, ruff clean.
 
-ADV-16 (server crash on huge max_tokens) is a new major finding. The server should
-clamp `max_tokens` to `cfg.max_seq_len - len(prompt_ids)` before passing to generate().
-This is a robustness issue (denial of service via malformed request) but does not
-compromise the core safety property (the contract is not bypassed — the request
-crashes before any budget check).
+ADV-16 (server crash on huge max_tokens) was fixed in c4-p04 (server.py clamp) and
+the test was strengthened in c4-p08-improve-1 to assert `completion_tokens <= max_seq_len`,
+providing a falsifiable correctness assertion (not just "didn't crash"). Fault injection
+confirmed: removing the clamp causes a `TimeoutError` (connection drop from the unhandled
+ValueError in `generate()`), which the strengthened test catches as an `AssertionError`.
 
 PASS_c3-p11-adversarial-2 COMPLETE
