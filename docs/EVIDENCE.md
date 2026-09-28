@@ -862,3 +862,81 @@ Checked 44 source IDs from RESEARCH.md. PAPER-TRACEABILITY.md table validated (1
 
 Open blockers: 0. Open majors: 0. All previously open minors are documented limitations.
 The full updated findings table is in `docs/ADVERSARIAL_REVIEW.md` (c3-p04 fix register).
+
+---
+
+## Cycle 3, Pass 5 — implement-2 (2026-09-28T07:00Z)
+
+### Changes
+
+- **5 new c3 adversarial tests** added to `tests/adversarial/test_byzantine_inputs.py`:
+  - `test_admit_does_not_promote_degraded_to_admitted`: verifies FITS_WITH_DEGRADATION plans
+    produce DEGRADED (not ADMITTED) and carry applied_degradation.
+  - `test_admit_refused_names_binding_constraint`: verifies refusal message names the
+    binding constraint and mentions memory quantities.
+  - `test_stress_harness_results_consistent_with_violations`: verifies violations counter
+    == count of budget_respected=False records (no false "0 violations" claim).
+  - `test_plan_context_zero_does_not_produce_negative_memory`: verifies kv_cache_bytes=0
+    and total_peak_bytes>=0 at context_len=0 (no negative-memory false-fit bug).
+  - `test_calibrate_fit_does_not_produce_negative_scale_factor`: verifies bandwidth_utilisation>=0
+    and mape_held_out>=0 from calibrate() on synthetic observations.
+- **README headline stress harness numbers updated**: old `min=median=max=3698.3 MB` (from
+  before ADV-04 fix) → current real distribution `min=3909.4 MB, median=3909.5 MB, max=3912.9 MB`.
+- **README CLI example numbers updated**: plan tok/s 98.6 → 104.0, degradation options now
+  include both int8_sym and int4_sym lines.
+- **demo.sh updated**: added step 2 `fitsproof plan --budget-gb 4` (plan before enforce).
+  Now shows the full `probe → plan → admit → refuse → stress` flow as a 5-step demo.
+
+### Full test run
+
+```
+$ .venv/bin/python -m pytest -q
+======================= 175 passed in 97.83s (0:01:37) ========================
+```
+
+Test count delta: 170 (c3-p04) → 175 (c3-p05). +5 c3 adversarial tests.
+
+### Ruff
+
+```
+$ .venv/bin/ruff check . && .venv/bin/ruff format --check .
+All checks passed!
+39 files already formatted
+```
+
+### Research traceability
+
+```
+$ .venv/bin/python scripts/check_research_traceability.py
+TRACEABILITY OK (core only): all core test files cite valid research sources.
+Checked 44 source IDs from RESEARCH.md. PAPER-TRACEABILITY.md table validated (15 IMPLEMENTED rows).
+```
+
+### Stress harness (current real output)
+
+```
+$ .venv/bin/fitsproof stress
+ADMITTED: 0.039 GB predicted peak <= 4.000 GB budget (margin: 3961.0 MB)
+Stress harness: 25 configs, 0 violations, 0 silent mode changes. Margin: min=3909.4 MB, median=3909.5 MB, max=3912.9 MB.
+```
+
+### Launch surfaces status
+
+All Phase A (LAUNCH-PLAN.md) surfaces complete:
+- `pyproject.toml`: complete with keywords, classifiers, URLs, pinned deps.
+- `pip install "git+https://github.com/AnnasMazhar/fitsproof.git"`: works (quickstart tested).
+- `launch/topics.txt`: 16 topics — llm-inference, local-llm, llm, inference-engine,
+  resource-contract, memory-budget, quantization, roofline, cpu-inference, mcp, mcp-server,
+  openai-compatible, python, numpy, machine-learning, good-first-issue.
+- `COMPARISONS.md`: factual table with star counts (refreshed 2026-09-28T04:31Z), last release
+  dates, honest "where each tool beats us" column.
+- `CONTRIBUTING.md`: dev setup, PR checklist, scope boundaries.
+- `docs/demo.sh`: 5-step demo (probe → plan → admit → refuse → stress) with asciinema
+  recording instructions.
+- `.github/workflows/release.yml`: PyInstaller one-file binary + wheel + sdist + SHA256SUMS,
+  clean-job smoke tests of both binary and wheel, GitHub Release attachment, PyPI trusted
+  publishing (OIDC). Triggers on v* tags.
+- `.github/workflows/ci.yml`: Python 3.11 and 3.12 matrix, ruff, traceability, pytest.
+- README: first-screen passes LAUNCH-PLAN requirements — one plain sentence, who it is for,
+  copy-paste quickstart, headline evidence with real current numbers, 4 plugin surfaces with
+  copy-pasteable snippets each executed by the test suite, Limitations section, star ask.

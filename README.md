@@ -29,7 +29,7 @@ violation or undocumented mode change. Real output:
 ```
 $ fitsproof stress
 ADMITTED: 0.039 GB predicted peak <= 4.000 GB budget (margin: 3961.0 MB)
-Stress harness: 25 configs, 0 violations, 0 silent mode changes. Margin: min=3698.3 MB, median=3698.3 MB, max=3698.3 MB.
+Stress harness: 25 configs, 0 violations, 0 silent mode changes. Margin: min=3909.4 MB, median=3909.5 MB, max=3912.9 MB.
 ```
 
 ## Prediction accuracy — the benchmark, published even though it is unflattering
@@ -228,7 +228,7 @@ Example — inspect the prediction, then enforce:
 ```
 $ fitsproof plan --budget-gb 4
 predicted peak:  0.042 GB  (95% CI: [0.033, 0.050] GB)
-predicted tok/s: 98.6  (95% CI: [69.0, 128.2])
+predicted tok/s: 104.0  (95% CI: [72.8, 135.1])
 budget:          4.000 GB
 verdict:         fits
 
@@ -237,11 +237,12 @@ ADMITTED: 0.042 GB predicted peak <= 4.000 GB budget (margin: 3958.3 MB)
 
 $ fitsproof plan --budget-gb 0.001
 predicted peak:  0.042 GB  (95% CI: [0.033, 0.050] GB)
-predicted tok/s: 103.8  (95% CI: [72.6, 134.9])
+predicted tok/s: 106.3  (95% CI: [74.4, 138.2])
 budget:          0.001 GB
 verdict:         does_not_fit
 degradation options:
-  [does not fit] Use int4_sym quantisation instead of none -> 0.006 GB  (724.2 tok/s)
+  [does not fit] Use int8_sym quantisation instead of none -> 0.011 GB  (400.0 tok/s)
+  [does not fit] Use int4_sym quantisation instead of none -> 0.006 GB  (741.6 tok/s)
   ...
 # plan exits 0 — it describes; admit enforces (exit 2 on does_not_fit)
 ```

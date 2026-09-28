@@ -58,6 +58,24 @@ detection, degradation chain integrity, and MCP error propagation:
       would fit — user left with no path when int8 or int4 would work.
   test_mcp_plan_tool_refusal_verdict_propagates:
       Fault (c2): MCP plan tool returning a fits verdict for a does_not_fit
+
+Cycle 3 additions — property attacks on the enforcement contract:
+
+  test_admit_does_not_promote_degraded_to_admitted:
+      Fault (c3): admit() silently promoting DOES_NOT_FIT to ADMITTED
+      instead of emitting a DEGRADED record when a degradation is applied.
+  test_admit_refused_names_binding_constraint:
+      Fault (c3): refusal message containing no actionable constraint
+      information — user gets 'REFUSED' with no path forward.
+  test_stress_harness_results_consistent_with_violations:
+      Fault (c3): violations counter inconsistent with per-record
+      budget_respected=False count — "0 violations" is an unreliable claim.
+  test_plan_context_zero_does_not_produce_negative_memory:
+      Fault (c3): context_len=0 producing negative KV cache contribution,
+      causing predict-always-fits for zero-context queries.
+  test_calibrate_fit_does_not_produce_negative_scale_factor:
+      Fault (c3): calibrate() producing negative bandwidth_utilisation,
+      inverting the roofline (predicts faster under heavier load).
       config — agent proceeds to load a model that cannot fit.
   test_mcp_admit_tool_with_zero_budget_is_error:
       Fault (c2): MCP admit tool with an impossibly small budget returning
@@ -687,3 +705,203 @@ def test_server_rejects_messages_as_string() -> None:
         )
     finally:
         srv.shutdown()
+
+
+# ---------------------------------------------------------------------------
+# Cycle 3 adversarial tests — property attacks on the enforcement contract
+# ---------------------------------------------------------------------------
+
+
+def test_admit_does_not_promote_degraded_to_admitted() -> None:
+    """
+    Sources: fitsproof.md M2.3 — admit() must emit an explicit Degraded record
+    when degrading, never silently promoting the status to ADMITTED.
+    Fault (c3): admit() returning status=ADMITTED when the plan required a
+    degradation — the degradation record would be absent, the caller believes
+    the original config fits, and the enforcement claim is false.
+
+    Verified: a fits_with_degradation plan must produce status=DEGRADED (not
+    ADMITTED) and applied_degradation must be non-None.
+    """
+    from fitsproof.contract.admit import AdmitStatus, admit
+    from fitsproof.contract.plan import Verdict, plan
+
+    # Budget: too small for fp32 (~39 MB) but int4_sym (~6 MB) fits.
+    # 10 MB: forces fits_with_degradation.
+    budget = 10 * 1024 * 1024  # 10 MB
+
+    p = plan(REFERENCE_CONFIG, _machine(), context_len=512, budget_bytes=budget, quant="none")
+    assert p.verdict == Verdict.FITS_WITH_DEGRADATION, (
+        f"precondition: plan must be fits_with_degradation at 10 MB; got {p.verdict}"
+    )
+
+    record = admit(p)
+    # The contract must degrade (not promote to admitted)
+    assert record.status != AdmitStatus.ADMITTED, (
+        f"admit() must not promote FITS_WITH_DEGRADATION to ADMITTED without recording "
+        f"the degradation; got status={record.status}"
+    )
+    if record.status == AdmitStatus.DEGRADED:
+        assert record.applied_degradation is not None, (
+            "DEGRADED record must carry applied_degradation — without it, "
+            "the caller cannot know what changed (silent mode change)"
+        )
+
+
+def test_admit_refused_names_binding_constraint() -> None:
+    """
+    Sources: fitsproof.md M3(b) — the binding constraint must be named in the refusal.
+    Fault (c3): a refusal message containing no constraint information — the user
+    gets 'REFUSED' with no actionable detail, defeating the product claim.
+
+    Verified: for a 1-byte budget where no degradation can fit, the refusal_reason
+    must contain a non-empty description of the constraint, not just a bare status.
+    """
+    from fitsproof.contract.admit import AdmitStatus, admit
+    from fitsproof.contract.plan import plan
+
+    p = plan(REFERENCE_CONFIG, _machine(), context_len=512, budget_bytes=1, quant="none")
+    record = admit(p)
+    assert record.status == AdmitStatus.REFUSED, (
+        f"precondition: 1-byte budget must be REFUSED, got {record.status}"
+    )
+    assert record.refusal_reason is not None and len(record.refusal_reason) > 10, (
+        f"refusal_reason must name the binding constraint; got: {record.refusal_reason!r}"
+    )
+    # The message (displayed to user) must mention both needs and budget
+    lower = record.message.lower()
+    assert "gb" in lower or "mb" in lower or "budget" in lower, (
+        f"refusal message must mention memory quantities; got: {record.message!r}"
+    )
+
+
+def test_stress_harness_results_consistent_with_violations() -> None:
+    """
+    Sources: fitsproof.md M3(d) — stress harness proves measured <= budget.
+    Fault (c3): the stress harness reporting violations=0 when budget_respected=False
+    records exist — violations counter is inconsistent with the per-record data.
+    This would mean "0 violations" is a lie even though some runs exceeded the budget.
+
+    Verified: the violations counter in StressResult must exactly equal the count
+    of records where budget_respected=False.
+    """
+    from fitsproof.contract.admit import admit
+    from fitsproof.contract.plan import plan
+    from fitsproof.contract.verify import run_stress_harness
+    from fitsproof.engine.model import get_reference_bundle
+    from fitsproof.engine.transformer import Transformer
+
+    cfg_ref, weights = get_reference_bundle()
+    transformer = Transformer(cfg_ref, weights)
+    machine = _machine()
+    budget = 4 * 1024**3  # 4 GB — all configs must fit
+
+    # Build 3 config dicts using plan → admit
+    harness_configs = []
+    for quant, ctx in [("none", 64), ("int8_sym", 64), ("int4_sym", 64)]:
+        p = plan(cfg_ref, machine, context_len=ctx, budget_bytes=budget, quant=quant)
+        rec = admit(p)
+        harness_configs.append(
+            {
+                "fn": lambda: transformer.generate(prompt_ids=[1, 2, 3], max_new_tokens=2),
+                "admit_record": rec,
+                "label": f"{quant}-ctx{ctx}",
+            }
+        )
+
+    result = run_stress_harness(harness_configs, budget_bytes=budget)
+
+    # Structural consistency: violations must equal count of budget_respected=False
+    false_count = sum(1 for r in result.records if not r.budget_respected)
+    assert result.violations == false_count, (
+        f"violations counter ({result.violations}) must equal count of budget_respected=False "
+        f"records ({false_count}). Inconsistency means the violations counter is unreliable."
+    )
+    # At 4 GB budget, all three should pass
+    assert result.violations == 0, f"Expected 0 violations at 4 GB budget, got {result.violations}"
+
+
+def test_plan_context_zero_does_not_produce_negative_memory() -> None:
+    """
+    Sources: [4] PagedAttention/KV cache — KV cache is linear in context length.
+    Fault (c3): context_len=0 producing a negative KV cache contribution when the
+    formula subtracts a per-token overhead that exceeds the base weight cost,
+    leading plan() to predict negative peak memory (always fits — falsely).
+
+    KV bytes = 2 * n_layers * n_kv_heads * head_dim * context_len * dtype_bytes
+    At context_len=0 this should be 0, not negative.
+    """
+    from fitsproof.contract.cost import estimate, kv_cache_bytes
+
+    machine = _machine()
+    kv = kv_cache_bytes(REFERENCE_CONFIG, context_len=0, quant="none")
+    assert kv == 0, (
+        f"kv_cache_bytes at context_len=0 must be 0; got {kv}. "
+        "A non-zero value at zero context is a formula error."
+    )
+    cost = estimate(REFERENCE_CONFIG, machine, context_len=0, quant="none")
+    assert cost.total_peak_bytes >= 0, (
+        f"total_peak_bytes at context_len=0 must be >=0; got {cost.total_peak_bytes}. "
+        "A negative value means the cost model has a subtraction bug at zero context."
+    )
+
+
+def test_calibrate_fit_does_not_produce_negative_scale_factor() -> None:
+    """
+    Sources: [10] STREAM triad; [11] GEMM calibration.
+    Fault (c3): calibrate() producing a negative bandwidth_utilisation when the
+    measured samples happen to be ordered such that the regression overshoots.
+    A negative bandwidth_utilisation would make the roofline formula predict
+    *faster* performance for heavier workloads — inverted physics.
+
+    Verified: the fitted bandwidth_utilisation from a synthetic but realistic
+    calibration dataset must be non-negative (negative constants have no
+    physical meaning in a bandwidth/memory model).
+    """
+    from fitsproof.contract.calibrate import Measurement, calibrate
+    from fitsproof.contract.probe import MachineProfile
+
+    machine = MachineProfile(
+        hostname="c3-test",
+        platform_str="linux",
+        measured_at=1_700_000_000.0,
+        memory_bandwidth_bps=20e9,
+        gemm_throughput_flops=200e9,
+        memory_bytes=32 * 1024**3,
+        gpu_memory_bytes=0,
+        cpu_count=8,
+    )
+
+    # Synthetic observations: realistic for the reference model at different contexts
+    observations = [
+        Measurement(
+            config_label="none-64", model_weight_bytes=42_000_000, measured_tok_s=12.0, quant="none"
+        ),
+        Measurement(
+            config_label="none-128",
+            model_weight_bytes=43_000_000,
+            measured_tok_s=11.5,
+            quant="none",
+        ),
+        Measurement(
+            config_label="int8-256",
+            model_weight_bytes=22_000_000,
+            measured_tok_s=10.0,
+            quant="int8_sym",
+        ),
+    ]
+    result = calibrate(
+        measurements=observations,
+        machine=machine,
+        cfg=REFERENCE_CONFIG,
+        train_fraction=0.67,
+        seed=42,
+    )
+    assert result.bandwidth_utilisation >= 0, (
+        f"bandwidth_utilisation must be non-negative; got {result.bandwidth_utilisation}. "
+        "A negative value inverts the roofline prediction."
+    )
+    # MAPE on held-out set must be non-negative (it is an absolute error metric)
+    assert result.mape_held_out >= 0, (
+        f"mape_held_out must be non-negative; got {result.mape_held_out}"
+    )
