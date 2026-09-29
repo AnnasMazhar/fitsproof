@@ -1018,7 +1018,136 @@ $ git log --oneline -2
 cbd6570 docs: publish prediction-accuracy benchmark, add aura row, --version flag
 ```
 
-## Pass c5-p08-improve-1 (2026-09-29) — ADV-01 fixed: MAPE documented range corrected + parseable-float test added
+## Pass c5-p09-improve-2 (2026-09-29) — degenerate CI explained + error messages made actionable
+
+### Biggest credibility gap fixed
+
+**The calibration demo output showed `CI (95%): [46.1%, 46.1%]` with no explanation.**
+
+A stranger reading the README for the first time sees two identical numbers and concludes
+the CI implementation is broken. The code is *correct*: `_bootstrap_mape_ci` returns `(m, m)`
+when `n_held_out < 2` because with a single held-out sample every resample returns the same
+point (Davison & Hinkley 1997 §2.4, source 58). Without that explanation in the output, the
+README was confusing a correctly-behaving degenerate interval for a broken interval.
+
+Root cause: `scripts/calibration_demo.py` printed the raw CI fields without checking
+`n_held_out`. The note was only in `docs/ADOPTION.md` F-3, not in the reproducible command
+that the README explicitly links to.
+
+### Fixes applied
+
+**`scripts/calibration_demo.py`:**
+- Added `n_held_out < 2` check: when true, appends
+  `← n_held_out=1: degenerate interval (not a range); see docs/ADOPTION.md F-3`
+  to the CI output line.
+- Also prints a follow-up note: `"Note: n_held_out=1 — the CI is a point, not an interval.
+  Collect n >= 10 held-out measurements for a meaningful interval (Davison & Hinkley 1997,
+  §2.4). The MAPE itself is still valid."`
+
+**`README.md`:**
+- Updated pre-recorded calibration transcript to include the annotation.
+- Added the explanatory paragraph between the transcript and the next section.
+- Added a dedicated Limitations bullet: "Bootstrap CI degenerates to a point at n_held_out=1."
+  with the full closure path (Davison & Hinkley 1997 §2.4, `docs/ADOPTION.md` F-3).
+
+**`tests/test_packaging.py::test_calibration_demo_runs`:**
+- Added assertion: when `n_held_out < 2`, the word "degenerate" must appear in the output.
+- Fault injection: removing the annotation causes the script to fail with `IndentationError`
+  (the `if n_held_out < 2:` block would be empty), which `returncode == 0` check catches.
+
+### Error messages made actionable (ollama_gate.py)
+
+`scripts/ollama_gate.py` previously showed `GATE ERROR: daemon unreachable ... HTTP 404`
+when a model name was wrong. Separated into two distinct cases:
+
+- **Model not found (HTTP 404):**
+  `GATE ERROR: model 'X' not found on daemon. Run ollama list to see available models, or ollama pull X`
+- **Daemon down (connection refused, timeout):**
+  `GATE ERROR: daemon unreachable ... Is ollama running? Try: ollama serve`
+
+Both messages now tell the user exactly what to do next.
+
+Fault injection proof (degenerate CI annotation):
+
+```
+# Inject: remove annotation from calibration_demo.py (leaving bare 'if' block)
+$ # [sed removed ci_note body, leaving indentation error]
+$ .venv/bin/pytest tests/test_packaging.py::test_calibration_demo_runs -v --tb=short
+FAILED tests/test_packaging.py::test_calibration_demo_runs
+  AssertionError: calibration_demo.py must exit 0; got 1.
+  stderr: IndentationError: expected an indented block after 'if' statement
+1 failed in 0.27s
+$ cp /tmp/calibration_demo_backup.py scripts/calibration_demo.py
+
+# After restore:
+$ .venv/bin/pytest tests/test_packaging.py::test_calibration_demo_runs -v
+PASSED 1 passed in 5.61s
+```
+
+### Before/after metrics
+
+| Metric | Before (c5-p08-improve-1) | After | Delta |
+|---|---|---|---|
+| `pytest -q` test count | 199 | 199 | — (test strengthened, not added) |
+| `pytest -q` failures | 0 | 0 | — |
+| Calibration demo CI line explains degenerate interval | NO | YES | added |
+| README shows explanation of point CI | NO | YES (annotation + paragraph + Limitations bullet) | added |
+| `test_calibration_demo_runs` checks for "degenerate" keyword | NO | YES | strengthened |
+| ollama_gate.py distinguishes 404 (model not found) from connection error | NO | YES | fixed |
+| ollama_gate.py 404 message says "run ollama list" | NO | YES | fixed |
+| ollama_gate.py connection error says "Is ollama running? Try: ollama serve" | NO | YES | fixed |
+| ADOPTION.md c5-p09 section | missing | present (§12) | added |
+| `ruff check src/ tests/ scripts/` | clean | clean | — |
+| `ruff format --check src/ tests/ scripts/` | clean | clean | — |
+| `check_research_traceability.py` | TRACEABILITY OK | TRACEABILITY OK | — |
+
+### Terminal evidence
+
+```
+$ .venv/bin/python scripts/calibration_demo.py
+=== Calibration demo ===
+bandwidth: 6.57 GB/s
+gemm:      330.56 GFLOPS
+RAM:       33.5 GB
+bandwidth_utilisation: 0.0360
+MAPE (held-out):       50.6%
+CI (95%):              [50.6%, 50.6%]  ← n_held_out=1: degenerate interval (not a range); see docs/ADOPTION.md F-3
+n_train=2, n_held_out=1
+Note: n_held_out=1 — the CI is a point, not an interval. Collect n >= 10 held-out measurements for a meaningful interval (Davison & Hinkley 1997, §2.4). The MAPE itself is still valid.
+
+$ .venv/bin/python scripts/ollama_gate.py nonexistent_model_xyz --budget-gb 4
+GATE ERROR: model 'nonexistent_model_xyz' not found on daemon at http://127.0.0.1:11434. Run `ollama list` to see available models, or `ollama pull nonexistent_model_xyz` to fetch it.
+exit: 1
+
+$ .venv/bin/python scripts/ollama_gate.py gemma3:4b --budget-gb 12 --context 4096
+model:   gemma3:4b (4.3B, Q4_K_M -> int4_sym)
+shape:   34L x 2560h, heads 8/4, vocab 262145, ctx 4096
+budget:  12 GB
+ADMITTED: 7.219 GB predicted peak <= 12.000 GB budget (margin: 4781.1 MB)
+exit: 0
+
+$ .venv/bin/pytest tests/test_packaging.py -v --tb=no
+tests/test_packaging.py::test_pyproject_version_matches_package_version PASSED
+tests/test_packaging.py::test_cli_reports_version PASSED
+tests/test_packaging.py::test_calibration_demo_runs PASSED
+tests/test_packaging.py::test_calibration_demo_mape_is_parseable_float PASSED
+4 passed in 9.80s
+
+$ .venv/bin/pytest -q --tb=no 2>&1 | tail -3
+======================= 199 passed in 121.98s (0:02:01) ========================
+
+$ .venv/bin/ruff check src/ tests/ scripts/ && .venv/bin/ruff format --check src/ tests/ scripts/
+All checks passed!
+39 files already formatted
+
+$ .venv/bin/python scripts/check_research_traceability.py
+TRACEABILITY OK (core only): all core test files cite valid research sources.
+Checked 65 source IDs from RESEARCH.md. PAPER-TRACEABILITY.md table validated (17 IMPLEMENTED rows).
+```
+
+---
+
+
 
 ### Finding fixed
 

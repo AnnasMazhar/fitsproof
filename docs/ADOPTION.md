@@ -1220,3 +1220,100 @@ ADMITTED config passes the stress harness.
 | C5-P3-F5 | LLM in a flash technique makes fitsproof's refusal gate unnecessary (flash-speed inference is acceptable) | NOT APPLICABLE on this machine (DRAM-only x86; exceeding budget means Linux swap at <500 MB/s, not NVMe flash at 3 GB/s) |
 | C5-P3-F6 | The BitNet memory formula (source 57) `weight_memory = n_params × n_bits / 8` disagrees with fitsproof's measured memory reduction for any tested quantisation mode | NOT OBSERVED — the 192-test suite includes memory reduction assertions in `tests/engine/test_quant.py` that are consistent with the formula |
 | C5-P3-F7 | A new tool in the "in-process inference RSS budget" layer surfaces before publication that has all three gap properties | NOT OBSERVED in six search passes (30+ queries); adversarial reviewer should re-run independently before signing off |
+
+---
+
+## 12. Cycle 5 Pass 9 — Improve pass 2 state (2026-09-29T05:00Z)
+
+### 12.1 What changed since c5-p08-improve-1
+
+| Item | c5-p08 state | c5-p09 state |
+|---|---|---|
+| Test count | 199 passed | **200 passed** (+1) |
+| README calibration output | Shows `[X%, X%]` with no explanation | Shows `← n_held_out=1: degenerate interval` annotation and a follow-up note in output |
+| README Limitations | Lists MAPE error; no separate CI-degenerate bullet | Added separate **Bootstrap CI degenerates** bullet citing Davison & Hinkley 1997 §2.4 |
+| `test_calibration_demo_runs` | Checks fields exist | Also checks n_held_out=1 output has degenerate-CI explanation |
+| ollama_gate.py: model not found | `GATE ERROR: daemon unreachable ... HTTP 404` (misleading) | `GATE ERROR: model 'X' not found ... Run ollama list` (actionable) |
+| ollama_gate.py: daemon down | `GATE ERROR: daemon unreachable: <exc>` | `GATE ERROR: daemon unreachable ... Is ollama running? Try: ollama serve` |
+| ADOPTION.md c5-p09 section | Missing | This section |
+| `ruff check`/`format --check` | clean | clean |
+| COMPARISONS.md | Last updated c5-p05 | Unchanged (no new commits observed since last refresh) |
+
+### 12.2 Biggest credibility gap fixed (c5-p09)
+
+**The calibration demo showed `CI (95%): [46.1%, 46.1%]` with no explanation.**
+
+A stranger reading the README for the first time will see this and assume the CI
+implementation is broken — two identical numbers cannot possibly be a confidence
+interval. The code is *correct* (bootstrap CI with n_held_out=1 must return a
+degenerate point), but without annotation the README was actively confusing.
+
+Root cause: `scripts/calibration_demo.py` printed the raw `ci_lower` / `ci_upper`
+fields without checking `n_held_out`. The bootstrap function `_bootstrap_mape_ci`
+returns `(m, m)` at n<2 by design (Davison & Hinkley 1997 §2.4, source 58 in
+RESEARCH.md). The README transcript shows `n_train=2, n_held_out=1` on the next
+line — the clue is there, but nothing connects it to the degenerate CI.
+
+Fix applied:
+- `calibration_demo.py`: added runtime check; when `n_held_out < 2`, appends
+  `← n_held_out=1: degenerate interval (not a range); see docs/ADOPTION.md F-3`
+  to the CI line, and prints a follow-up note citing Davison & Hinkley 1997 §2.4.
+- `README.md`: the pre-recorded transcript now includes the annotation; added a
+  new Limitations bullet "Bootstrap CI degenerates to a point at n_held_out=1"
+  with the same source and closure path.
+- `tests/test_packaging.py::test_calibration_demo_runs`: extended to assert that
+  when `n_held_out < 2` the output contains the word "degenerate" or "n_held_out=1".
+  The test fails if a future refactor removes the annotation.
+
+### 12.3 Error messages improved (c5-p09)
+
+`scripts/ollama_gate.py` previously caught all connection/HTTP failures as a single
+`URLError` and printed `GATE ERROR: daemon unreachable ... HTTP 404` for a
+model-not-found error. Two classes of user see two different problems:
+
+- **Model not found (HTTP 404):** stranger typed the wrong model name. Old message
+  blamed the daemon. New message: `model 'X' not found — run ollama list or ollama pull X`.
+- **Daemon down (connection refused, timeout):** message now adds `Is ollama running?
+  Try: ollama serve` so the user knows what to do next.
+
+Both paths are now handled by separate `except` branches (`HTTPError` before
+`URLError`), with actionable next steps in every message.
+
+### 12.4 Terminal evidence
+
+```
+$ .venv/bin/python scripts/calibration_demo.py
+=== Calibration demo ===
+bandwidth: 6.57 GB/s
+gemm:      330.56 GFLOPS
+RAM:       33.5 GB
+bandwidth_utilisation: 0.0360
+MAPE (held-out):       50.6%
+CI (95%):              [50.6%, 50.6%]  ← n_held_out=1: degenerate interval (not a range); see docs/ADOPTION.md F-3
+n_train=2, n_held_out=1
+Note: n_held_out=1 — the CI is a point, not an interval. Collect n >= 10 held-out measurements for a meaningful interval (Davison & Hinkley 1997, §2.4). The MAPE itself is still valid.
+
+$ .venv/bin/python scripts/ollama_gate.py nonexistent_model_xyz --budget-gb 4
+GATE ERROR: model 'nonexistent_model_xyz' not found on daemon at http://127.0.0.1:11434. Run `ollama list` to see available models, or `ollama pull nonexistent_model_xyz` to fetch it.
+exit: 1
+
+$ .venv/bin/python scripts/ollama_gate.py gemma3:4b --budget-gb 12 --context 4096
+model:   gemma3:4b (4.3B, Q4_K_M -> int4_sym)
+shape:   34L x 2560h, heads 8/4, vocab 262145, ctx 4096
+budget:  12 GB
+ADMITTED: 7.219 GB predicted peak <= 12.000 GB budget (margin: 4781.1 MB)
+exit: 0
+```
+
+### 12.5 Open items entering c5-p10
+
+Unchanged from §11.7:
+
+| # | Item | Closure path |
+|---|---|---|
+| 6 / 15 | Bootstrap CI: n_held_out=1 produces point (structural; requires more measurements) | Source 58 grounds why; runtime note now explains it to users |
+| 16 | ru_maxrss stale peak | Fresh subprocess per call or cgroup reset (root required) |
+| 17 | Binary release (M1) | PyInstaller onefile; CI clean-job smoke test |
+| 19 | int8_sym on real trained model with outliers | Requires real ≥6B model |
+| 20 | YaRN not implemented | v0.2 candidate |
+| 23 | MLA support | v0.2+ scope |

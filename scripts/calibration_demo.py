@@ -35,8 +35,20 @@ def main() -> int:
     # calibrate._mape already returns a percentage (50.3 == 50.3%).
     print(f"bandwidth_utilisation: {result.bandwidth_utilisation:.4f}")
     print(f"MAPE (held-out):       {result.mape_held_out:.1f}%")
-    print(f"CI (95%):              [{result.ci_lower:.1f}%, {result.ci_upper:.1f}%]")
+    ci_note = ""
+    if result.n_held_out < 2:
+        # Bootstrap CI requires n >= 2 to produce a non-degenerate interval.
+        # At n_held_out=1, every resample is the single point, so lo==hi.
+        # See docs/ADOPTION.md F-3 (source 58: Davison & Hinkley 1997 §2.4).
+        ci_note = "  ← n_held_out=1: degenerate interval (not a range); see docs/ADOPTION.md F-3"
+    print(f"CI (95%):              [{result.ci_lower:.1f}%, {result.ci_upper:.1f}%]{ci_note}")
     print(f"n_train={result.n_train}, n_held_out={result.n_held_out}")
+    if result.n_held_out < 2:
+        print(
+            "Note: n_held_out=1 — the CI is a point, not an interval. "
+            "Collect n >= 10 held-out measurements for a meaningful interval "
+            "(Davison & Hinkley 1997, §2.4). The MAPE itself is still valid."
+        )
     return 0
 
 

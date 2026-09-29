@@ -46,14 +46,23 @@ gemm:      37.19 GFLOPS
 RAM:       33.5 GB
 bandwidth_utilisation: 0.0487
 MAPE (held-out):       46.1%
-CI (95%):              [46.1%, 46.1%]
+CI (95%):              [46.1%, 46.1%]  ← n_held_out=1: degenerate interval (not a range); see docs/ADOPTION.md F-3
 n_train=2, n_held_out=1
+Note: n_held_out=1 — the CI is a point, not an interval. Collect n >= 10 held-out
+measurements for a meaningful interval (Davison & Hinkley 1997, §2.4). The MAPE itself is still valid.
 ```
 
 The bandwidth reading above (1.92 GB/s) is low because the box was under load when
 this transcript was recorded. MAPE varies with bandwidth measurement: across sessions
 on this machine the observed range is **~30–65%** (documented in `docs/ADOPTION.md`
 §8.1 and F-3). Run `calibration_demo.py` yourself; your number will differ.
+
+The `[46.1%, 46.1%]` interval is a degenerate point because the calibration run uses
+only 3 measurements (n_train=2, n_held_out=1). Bootstrap CI requires n ≥ 2 held-out
+samples to produce a genuine range. With n_held_out=1, every resample returns the
+same single value, so lower == upper. The MAPE itself (46.1%) is valid; the CI is
+not informative at n=1. See `docs/ADOPTION.md` F-3 for the full analysis and closure
+path (Davison & Hinkley 1997, §2.4).
 
 And against a real 4.3 GB model through ollama (raw transcripts in `docs/ADOPTION.md` §2):
 
@@ -295,6 +304,14 @@ These are honest. A repo with no stated limitations is not credible.
   and embeddings are accounted in fp32. Refusals stay safe (the error is conservative),
   but budgets between the true and predicted footprint get false degradations.
   Full analysis: `docs/ADOPTION.md` F-1.
+
+- **Bootstrap CI degenerates to a point at n_held_out=1.** The calibration demo uses
+  3 measurements (n_train=2, n_held_out=1). With a single held-out sample, every
+  bootstrap resample returns the same value — lower == upper. The MAPE itself is
+  valid; the interval is not informative at n=1. Collecting n ≥ 10 held-out
+  measurements produces a genuine range (Davison & Hinkley 1997, §2.4;
+  `docs/ADOPTION.md` F-3). The `[X%, X%]` in the calibration demo output is
+  annotated at runtime to explain the degeneracy.
 
 - **Contract covers memory, not latency SLOs.** fitsproof enforces a peak RSS budget;
   it does not guarantee latency targets (tok/s predictions are estimates).

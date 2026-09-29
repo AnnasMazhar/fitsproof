@@ -138,8 +138,25 @@ def main() -> int:
 
     try:
         show = show_model(args.model, args.host)
+    except urllib.error.HTTPError as exc:
+        if exc.code == 404:
+            print(
+                f"GATE ERROR: model {args.model!r} not found on daemon at {args.host}. "
+                f"Run `ollama list` to see available models, or `ollama pull {args.model}` to fetch it.",
+                file=sys.stderr,
+            )
+        else:
+            print(
+                f"GATE ERROR: ollama daemon at {args.host} returned HTTP {exc.code}: {exc}",
+                file=sys.stderr,
+            )
+        return 1
     except (urllib.error.URLError, OSError) as exc:
-        print(f"GATE ERROR: ollama daemon unreachable at {args.host}: {exc}", file=sys.stderr)
+        print(
+            f"GATE ERROR: ollama daemon unreachable at {args.host}: {exc}. "
+            f"Is ollama running? Try: ollama serve",
+            file=sys.stderr,
+        )
         return 1
 
     details = show.get("details", {})

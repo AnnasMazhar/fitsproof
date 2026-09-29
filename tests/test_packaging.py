@@ -76,6 +76,8 @@ def test_calibration_demo_runs() -> None:
     - the script exits 0
     - all required output fields are present in stdout (bandwidth, MAPE, CI,
       n_train, n_held_out)
+    - when n_held_out=1, the output explains the degenerate CI (the point
+      interval [X%, X%] that strangers mistake for a broken CI implementation)
     A missing field means the README claim is not reproducible.
     """
     demo = REPO_ROOT / "scripts" / "calibration_demo.py"
@@ -93,6 +95,22 @@ def test_calibration_demo_runs() -> None:
     for field in ("bandwidth:", "MAPE (held-out):", "CI (95%):", "n_train=", "n_held_out="):
         assert field in out, (
             f"calibration_demo.py output missing required field {field!r}. Full output:\n{out}"
+        )
+    # When n_held_out=1 (the default for the in-repo 3-measurement run),
+    # the output must explain that the CI is a degenerate point, not a range.
+    # This prevents strangers from thinking [X%, X%] is a broken CI implementation.
+    # We check for the word "degenerate" — which only appears when the annotation
+    # is present, not from the bare `n_held_out=1` line itself.
+    import re as _re
+
+    held_match = _re.search(r"n_held_out=(\d+)", out)
+    if held_match and int(held_match.group(1)) < 2:
+        assert "degenerate" in out.lower(), (
+            "When n_held_out=1, calibration_demo.py must explain the degenerate CI "
+            "(the [X%, X%] point interval). "
+            "A stranger seeing identical lower/upper bounds will think the CI is broken. "
+            "Add a note like: 'n_held_out=1: degenerate interval — see docs/ADOPTION.md F-3'. "
+            f"Full output:\n{out}"
         )
 
 
