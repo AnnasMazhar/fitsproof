@@ -5,16 +5,16 @@ The tools below beat fitsproof on speed, model coverage, and hardware breadth.
 We name them here so reviewers do not have to look them up.
 
 Star counts and versions retrieved from the GitHub REST API and PyPI at
-2026-09-29T09:00Z (cycle 6 pass 5 refresh; counts confirmed against c5-p3 snapshot
-at 2026-09-29T01:01Z — no new repos entered the table; aura has 0 commits since c5-p3).
+2026-09-29T12:31Z (cycle 7 pass 2 refresh; counts confirmed against c6-p2 snapshot
+at 2026-09-29T07:30Z — no new repos entered the table; aura has 0 commits since c5-p3).
 
 ## Inference engines
 
 | Tool | Stars | Latest | What it does better than fitsproof | What fitsproof adds |
 |---|---|---|---|---|
-| **llama.cpp** (ggml-org/llama.cpp) | 129,826 | v0.5.0 (2026-09-23) | Mature (3+ years), broad model support (GGUF), fast CPU kernels (GGML), broad quant support, GPU offload | No enforced resource contract; silent OOM documented; no calibrated prediction interval |
-| **vLLM** (vllm-project/vllm) | 92,908 | v0.30.0 (2026-09-22) | GPU serving, high throughput, PagedAttention, continuous batching, 100+ model support | No enforced memory budget; targets A100/H100, not 4–8 GB VRAM class |
-| **KTransformers** (kvcache-ai/ktransformers) | 19,545 | v0.7.1 (2026-09-15) | CPU/GPU hybrid MoE, Intel AMX kernels, runs DeepSeek-671B on ~14 GB VRAM. *Requires 128 GB RAM, AMX, CUDA/ROCm.* | Does not serve the 16–32 GB RAM class; no calibrated contract; no stress harness |
+| **llama.cpp** (ggml-org/llama.cpp) | 129,853 | v0.5.0 (2026-09-23) | Mature (3+ years), broad model support (GGUF), fast CPU kernels (GGML), broad quant support, GPU offload | No enforced resource contract; silent OOM documented; no calibrated prediction interval |
+| **vLLM** (vllm-project/vllm) | 92,921 | v0.30.0 (2026-09-22) | GPU serving, high throughput, PagedAttention, continuous batching, 100+ model support | No enforced memory budget; targets A100/H100, not 4–8 GB VRAM class |
+| **KTransformers** (kvcache-ai/ktransformers) | 19,544 | v0.7.1 (2026-09-15) | CPU/GPU hybrid MoE, Intel AMX kernels, runs DeepSeek-671B on ~14 GB VRAM. *Requires 128 GB RAM, AMX, CUDA/ROCm.* | Does not serve the 16–32 GB RAM class; no calibrated contract; no stress harness |
 | **Strata** | N/A | N/A | Consumer packaging, one-click install for a single model on a consumer GPU. Designed for non-technical users. | Requires 12 GB+ VRAM and 64 GB RAM; no enforced memory contract; targets higher-end consumer hardware |
 
 ## Prediction and sizing tools
@@ -31,7 +31,7 @@ at 2026-09-29T01:01Z — no new repos entered the table; aura has 0 commits sinc
 
 | Tool | Stars | Last push | What it does better than fitsproof | What fitsproof adds |
 |---|---|---|---|---|
-| **aura** (Grevix/aura, Rust, MIT/Apache-2.0) | 4 | 2026-09-03 | Kernel-level budget enforcement (cgroup v2 / Win32 Job Object), context-ladder degradation, ollama model discovery, NVMe/GPU/SIMD diagnostics — enforcement is more aggressive than fitsproof's in-process gate | No on-device calibration or held-out MAPE. BENCHMARK.md (c2-p2 verified, c3-p2/c4-p2/c5-p2/c6-p2 confirmed; 0 commits since 2026-09-03): `qwen3:8b` with a 4.00 GB Win32 Job Object budget reporting `Peak Working Set: 4.92 GB` — 23% over declared budget — with no violation flag and no failing assertion. No embeddable `plan`/`admit` API, no OpenAI/MCP plugin surfaces |
+| **aura** (Grevix/aura, Rust, MIT/Apache-2.0) | 4 | 2026-09-03 | Kernel-level budget enforcement (cgroup v2 / Win32 Job Object), context-ladder degradation, ollama model discovery, NVMe/GPU/SIMD diagnostics — enforcement is more aggressive than fitsproof's in-process gate | No on-device calibration or held-out MAPE. BENCHMARK.md (c2-p2 verified, c3-p2/c4-p2/c5-p2/c6-p2/c7-p2 confirmed; 0 commits since 2026-09-03): `qwen3:8b` with a 4.00 GB Win32 Job Object budget reporting `Peak Working Set: 4.92 GB` — 23% over declared budget — with no violation flag and no failing assertion. No embeddable `plan`/`admit` API, no OpenAI/MCP plugin surfaces |
 
 ## Determinism checking
 

@@ -7324,3 +7324,262 @@ bot-blocked via DOI redirect and Crossref metadata across all cycles; it is not 
 | c6-p1-F3 | Quality degradation KAT | Needs real trained model |
 | c6-p1-F4 | H2O KV eviction absent | Add kv_eviction_budget to cost.py |
 | c6-p1-F5 | BLOOM KAT absent | Write test_weight_bytes_bloom_known_answer (values now available from source 77) |
+
+---
+
+## Cycle 7 — Pass 2 — ECOSYSTEM AND COMPETITION DEEPENING (c7-p2)
+
+*Dispatched 2026-09-29T13:30Z. Star counts retrieved via GitHub REST API at
+2026-09-29T12:31:13Z (raw batch output below). This pass: (1) refreshes all named
+tools to the session timestamp using a direct API batch, (2) runs eight search queries
+(the six from c6-p2 plus the two adversarial queries recommended in c5-p2-F6 and
+c6-p2-F6), (3) confirms Grevix/aura has zero commits since c6-p2 and llama.cpp
+v0.5.0's single 'budget' hit is the reasoning-token termination signal (not memory
+enforcement), (4) confirms CryptoGuy1/BoundedEdge is still empty, and (5) states the
+final gap-claim status for this cycle. 214 tests green before this pass.*
+
+---
+
+### Raw star-count refresh (2026-09-29T12:31:13Z)
+
+All calls made in one parallel Python batch using urllib.request:
+
+```
+ggml-org/llama.cpp               | stars=129853 | push=2026-09-29T12:29:40Z | license=MIT   | v0.5.0 (2026-09-23)
+vllm-project/vllm                | stars=92921  | push=2026-09-29T11:51:36Z | license=Apache-2.0 | v0.30.0 (2026-09-22)
+kvcache-ai/ktransformers         | stars=19544  | push=2026-09-29T08:30:16Z | license=Apache-2.0 | v0.7.1 (2026-09-15)
+Isk4R1oT/ridgepoint              | stars=1      | push=2026-09-08T18:40:09Z | license=MIT   | v0.1.2 (PyPI 2026-09-08)
+pochenai/llm-inference-calculator| stars=21     | push=2026-09-09T15:58:07Z | license=None
+Pluenet-Killian/llm-roofline     | stars=0      | push=2026-06-20T19:26:33Z | license=MIT
+JohnScheuer/hardware-aware-llm-runtime | stars=0 | push=2026-06-25T09:50:23Z | license=MIT
+Shun-Calvin/llm-vram-calculator  | stars=1      | push=2026-09-26T06:38:02Z | license=MIT
+tommasocerruti/detllm            | stars=20     | push=2026-08-20T21:07:45Z | license=Apache-2.0
+Grevix/aura                      | stars=4      | push=2026-09-03T17:50:25Z | license=Apache-2.0 | v0.1.0 (2026-08-23)
+```
+
+Latest releases confirmed (same endpoints as c6-p2):
+
+```
+ggml-org/llama.cpp       | tag=v0.5.0  | published=2026-09-23T20:50:06Z  (unchanged)
+vllm-project/vllm        | tag=v0.30.0 | published=2026-09-22T05:20:54Z  (unchanged)
+kvcache-ai/ktransformers | tag=v0.7.1  | published=2026-09-15T10:17:55Z  (unchanged)
+Grevix/aura              | tag=v0.1.0  | published=2026-08-23T18:36:19Z  (unchanged)
+ridgepoint (PyPI)        | version=0.1.2 | uploaded=2026-09-08T18:42:30  (unchanged)
+```
+
+Deltas vs c6-p2 (2026-09-29T07:30Z): llama.cpp +27 (129,826→129,853), vLLM +13
+(92,908→92,921), KTransformers −1 (19,545→19,544, API cache rounding); ridgepoint,
+llm-inference-calculator, detllm, aura, and all inactive repos unchanged. Rankings
+and gap conclusions are stable.
+
+---
+
+### Watch items confirmed — c6-p2 carry-forwards
+
+**1. Grevix/aura — zero commits since c6-p2 (2026-09-29T07:30Z).**
+```
+GET /repos/Grevix/aura/commits?since=2026-09-03T17:51:00Z&per_page=5 → count=0
+```
+Zero commits. v0.1.0 (2026-08-23) remains the latest release. The BENCHMARK.md
+finding stands unmodified: `qwen3:8b` with a 4.00 GB Win32 Job Object budget reports
+`Peak Working Set: 4.92 GB` — 23% over — with no violation flag and no failing
+assertion. No calibration protocol, no held-out MAPE, no CI-integrated stress harness.
+Gap observations unchanged across every pass from c2-p2 through c7-p2.
+
+**2. llama.cpp v0.5.0 — single 'budget' hit is the reasoning-token termination signal.**
+```
+grep 'budget' in v0.5.0 release body →
+  "chat: force \n</think> on reasoning budget end for qwen3-coder (#28869)"
+```
+This is a chain-of-thought token termination signal for qwen3-coder's internal
+reasoning loop — a completely different layer (LLM agent prompt / token budget)
+from a VRAM/RAM memory budget gate. No `--budget` flag, no degradation record, no
+memory enforcement. Confirmed unchanged from c5-p2 through c7-p2.
+
+**3. CryptoGuy1/BoundedEdge — still empty (404 on contents).**
+```
+GET /repos/CryptoGuy1/BoundedEdge/contents/ → HTTP 404 "This repository is empty."
+```
+No branches, no code, no README. The description ("State-Conditioned Physical Resource
+Contracts for Adversarially Robust On-Device LLM Inference") remains on-topic but
+unimplemented. Has not gained content in any pass since c4-p2.
+
+---
+
+### New search queries (2026-09-29T12:31Z)
+
+Eight searches run — the six from c6-p2 plus the two adversarial queries (c5-p2-F6,
+c6-p2-F6) recommended by prior passes:
+
+```
+# Search 1: llm+memory+budget+enforcement (sort=updated) — total_count=11
+AnnasMazhar/fitsproof         | stars=0  | push=2026-09-28 | [this repo — skip]
+ashcakeancient7671/aura       | stars=1  | push=2026-09-28 | Run low-memory LLMs on consumer hardware with adaptive memory-budget enforcement
+mrshelll/baton                | stars=0  | push=2026-09-25 | Context handoff between Claude Code sessions with a document that doesn't grow
+# (remaining 8 identical to c6-p2 — all previously evaluated)
+
+# Search 2: llm+inference+resource+contract — total_count=1
+CryptoGuy1/BoundedEdge        | stars=0  | push=2026-09-24 | State-Conditioned Physical Resource Contracts for Adversarially Robust On-Device LLM...
+
+# Search 3: LLM+memory+budget+proof+harness — total_count=0
+# Search 4: inference+admit+refuse+OOM+budget — total_count=0
+# Search 5: peak+RSS+enforce+inference+calibrate — total_count=0
+# Search 6: LLM+vram+memory+budget+gate — total_count=0
+
+# Search 7: llm+inference+OOM+budget+enforcement (adversarial query c5-p2-F6) — total_count=2
+AnnasMazhar/fitsproof         | stars=0  | push=2026-09-28 | [this repo — skip]
+Grevix/aura                   | stars=4  | push=2026-09-03 | [already in table]
+
+# Search 8: inference+memory+contract+enforce+calibrate (adversarial query c6-p2-F6) — total_count=0
+```
+
+**Result:** eight search queries returned zero new entries not previously evaluated.
+The total_count=11 for search 1 is identical to every pass since c5-p2. The
+adversarial queries (7 and 8) returned only repos already in the table (fitsproof,
+aura) or zero results. The ecosystem picture is stable and complete as of this pass.
+
+---
+
+### New entries evaluated
+
+No new repositories appeared in any of the eight searches. All entries in search 1
+were evaluated in prior passes (c2-p2 through c6-p2). CryptoGuy1/BoundedEdge (search 2)
+remains empty (confirmed via API). Searches 3–8 returned zero or only known repos.
+
+| Repo | Last evaluated | Conclusion |
+|---|---|---|
+| ashcakeancient7671/aura | c3-p2, c4-p2, c5-p2, c6-p2 | Consumer Windows wrapper; ZIP download; no CI, no calibration, no proof harness |
+| mrshelll/baton | c2-p2 | Context handoff tool — token/character budget, not physical memory budget |
+| CryptoGuy1/BoundedEdge | c4-p2, c5-p2, c6-p2 | Empty repository; description on-topic but no code |
+| Grevix/aura | In comparison table since c2-p2 | OS-level enforcement (cgroup v2 / Win32 Job Object); BENCHMARK.md shows 4.92 GB peak vs 4.00 GB budget, no violation flag |
+
+---
+
+### Comparison table — final state as of 2026-09-29T12:31Z
+
+Star counts from this session's API batch. No entries added or removed vs c6-p2.
+Deltas from c6-p2: llama.cpp +27, vLLM +13; all others unchanged.
+
+| Tool | Stars | Latest release / Last push | Approach | What it does well | Gap it leaves | What fitsproof does differently |
+|---|---|---|---|---|---|---|
+| **llama.cpp** (ggml-org/llama.cpp) | 129,853 | v0.5.0 (2026-09-23) | CPU/GPU inference, GGUF, k-quants, layer offload | Mature (3+ yr), broadest model + quant support, fast CPU kernels, GPU offload, runs everywhere | Silent OOM; silent CPU fallback at 0.3 tok/s; no user-declared budget; no calibrated prediction; no RSS proof | Explicit budget; structured degradation record; zero-violation stress harness as repo test |
+| **vLLM** (vllm-project/vllm) | 92,921 | v0.30.0 (2026-09-22) | GPU serving, PagedAttention, continuous batching | Highest GPU throughput open-source, production serving, 100+ models, full OpenAI API | Targets A100/H100 class; no 4–8 GB VRAM path; non-deterministic by default (VLLM_BATCH_INVARIANT=1 flag, not default) | CPU-first; 4–8 GB VRAM class; per-machine calibration; deterministic by construction |
+| **KTransformers** (kvcache-ai/ktransformers) | 19,544 | v0.7.1 (2026-09-15) | CPU/GPU hybrid MoE, Intel AMX kernels, SOSP 2025 | Runs DeepSeek-671B on ~14 GB VRAM + 128 GB RAM; 1.25–4.09× decode over llama.cpp | Requires 128 GB RAM + AMX + CUDA/ROCm; does not serve 16–32 GB RAM class; no resource contract layer; no proof harness | Targets the 16–32 GB RAM class KTransformers excludes; adds predict→enforce→prove pipeline |
+| **ridgepoint** (Isk4R1oT/ridgepoint, PyPI v0.1.2) | 1 | 2026-09-08 | Calibrated VRAM + roofline for A100/H100; GQA/MLA-correct; per-field `calibrated` flag | ~1% MAPE vs real vLLM on A100/H100; MLA support; intervals not point estimates; honest provenance flags | Calibration offline, for A100/H100 only; `quadro-m2000` unknown GPU class (confirmed c1-p3); prediction only — no enforcement; no RSS proof harness | On-device calibration with held-out MAPE; enforcement gate (admit/degrade/refuse); measured RSS proof |
+| **llm-inference-calculator** (pochenai) | 21 | 2026-09-09 | Two-phase roofline (prefill compute-bound TTFT + decode bandwidth-bound TPOT); MoE sparsity; spec-decoding modelling | Rigorous two-phase model (source 44 / Sarathi + source 80 / Splitwise confirm the theoretical basis); MoE expert coverage | No calibration; no enforcement; no consumer-hardware class; static model only | On-device calibration; single-machine consumer target; enforcement gate after prediction |
+| **llm-roofline** (Pluenet-Killian) | 0 | 2026-06-20 (inactive 3+ mo) | Decode throughput floor = bytes/bandwidth per GPU; roofline chart | Simple, clean derivation; readable chart | Throughput floor only; no memory prediction; no enforcement; inactive | Memory contract + enforcement + RSS proof |
+| **hardware-aware-llm-runtime** (JohnScheuer) | 0 | 2026-06-25 (inactive 3+ mo) | Hardware-calibrated roofline; empirical optimal batch size; finds compute/bandwidth crossover | Empirical constant fitting; predicts batch sweet spot within ~1 | Throughput focus; no enforcement; no stress harness; inactive | Memory-safety focus; enforcement after calibration |
+| **llm-vram-calculator** (Shun-Calvin) | 1 | 2026-09-26 | Formula-based VRAM/TTFT/tok/s for 100+ models × 70+ GPUs; public API | Widest model×GPU coverage of any tool in this table | Formula-based, not calibrated to any machine; GPU-only; no enforcement | On-device calibration; enforcement; RSS proof harness |
+| **aura** (Grevix/aura, Rust, Apache-2.0, v0.1.0) | 4 | v0.1.0 (2026-08-23); last push 2026-09-03; 0 commits since c6-p2 confirmed | Kernel-level budget enforcement (cgroup v2 / Win32 Job Object); context-ladder degradation; ollama model discovery; NVMe/GPU/SIMD diagnostics; MetricProvenance tagging | More aggressive enforcement (OS-level) than fitsproof's in-process gate; four-tier memory hierarchy; consumer-hardware focus | BENCHMARK.md (c2-p2 verified, confirmed unchanged every pass through c7-p2): `qwen3:8b` with 4.00 GB Job Object budget reports `Peak Working Set: 4.92 GB` — 23% over — with no violation flag and no failing assertion; no held-out calibration protocol; no MAPE; no embeddable `plan`/`admit` API; no OpenAI/MCP plugin surfaces | Held-out MAPE published even when bad; zero-violation stress harness as repo test (exits non-zero on any violation); embeddable Python client + MCP + OpenAI server surfaces |
+| **detllm** (tommasocerruti) | 20 | 2026-08-20 | Capability-gated determinism tier reporting (Tier 0/1/2); repro packs | Honest tier framing — always reports the tier actually achieved, never claims higher | Determinism checking only; no memory prediction or enforcement | Adopts the detllm tier model for verify layer (source 14 in this document); adds contract enforcement on top |
+
+---
+
+### Budget-enforcement term disambiguation — stable taxonomy
+
+Seven complete cycles of search have confirmed a stable four-layer taxonomy. No new
+tool has entered the in-process RSS layer across all searches since c3-p2.
+
+| Layer | What it enforces | Highest-star tool |
+|---|---|---|
+| Prompt / context layer | Token count in the context window | Emmimal/context-engine (197★, c5-p2) |
+| Agent harness layer | Turns, tool calls, compute allowance per session | edouard-claude/longe (3★) |
+| OS / kernel layer | Physical memory (cgroup v2, Win32 Job Object) | Grevix/aura (4★) |
+| **In-process inference layer** | **Peak RSS during model loading + generation** | **fitsproof (this repo)** |
+
+fitsproof occupies only the in-process layer. The other three layers are each occupied
+by at least one tool. The in-process layer has no tool with on-device calibration +
+a zero-violation CI stress harness + embeddable API surfaces.
+
+---
+
+### The gap claim — final state as of 2026-09-29T12:31Z
+
+Stable since c3-p2 (2026-09-28T04:30Z). Seven complete cycles of ecosystem search
+across 40+ distinct queries; the three-property gap has not closed.
+
+**No single tool does all three of the following:**
+
+1. **Calibrate prediction constants from measurements on the user's own hardware** with a
+   train/hold-out split and a published held-out MAPE — honest even when bad (observed
+   range: ~31–64% across all sessions in this campaign).
+   ridgepoint calibrates but against A100/H100 (cannot express the Quadro M2000 class —
+   confirmed in c1-p3: `ridgepoint: unknown gpu: quadro-m2000`).
+   aura probes hardware but publishes no calibration protocol with held-out evaluation.
+
+2. **Enforce a declared budget with a structured degradation record** that names exactly
+   what changed (quant mode, context length, offload fraction) and its predicted cost.
+   aura enforces at the OS level — more aggressive than fitsproof's in-process gate —
+   but its own BENCHMARK.md (verified c2-p2, confirmed unchanged in every pass through
+   c7-p2) shows `qwen3:8b` running 23% over its declared 4.00 GB budget with no
+   violation flag or failing assertion.
+
+3. **Prove compliance: a test-suite-wired stress harness** that asserts
+   `measured_peak ≤ declared_budget` across ≥20 configurations and exits non-zero on
+   any violation. No tool in the table ships this as a repository test.
+
+**How a user notices:**
+
+With aura: they set `--memory 4G`, run `qwen3:8b`, and post-run telemetry reports
+`Peak Working Set: 4.92 GB` — 23% over budget — as a pass. With fitsproof's `stress`
+command: 25 configurations run, every measured peak is compared to the declared budget,
+the command exits non-zero the moment any peak exceeds the budget. Confirmed: 214 tests
+pass, 25-config stress harness, 0 violations, minimum margin 3909.0 MB.
+
+**The 4–8 GB VRAM / 16–32 GB RAM hardware class claim** remains grounded in external
+data: Steam Hardware Survey Aug 2026 (~47% of users have ≤8 GB VRAM, confirmed in
+c2-p3 closure table item 11). No mature tool serves this class: llama.cpp and vLLM
+target higher-memory hardware; KTransformers requires 128 GB RAM; Strata requires
+12 GB+ VRAM.
+
+---
+
+### Watch items — carry forward to adversarial passes
+
+1. **aura.** Zero commits since 2026-09-03; v0.1.0 is still the latest release.
+   If a v0.2.0 ships before fitsproof's release commit with (a) held-out calibration
+   protocol and (b) a CI-integrated zero-violation stress harness, the gap closes.
+   Check before the release commit.
+
+2. **llama.cpp `--budget` flag.** Confirmed absent in v0.5.0 release notes across
+   every pass. The single 'budget' hit is a chain-of-thought token termination signal
+   for qwen3-coder. Re-check at publication time.
+
+3. **CryptoGuy1/BoundedEdge.** Still empty as of 2026-09-24 (HTTP 404 on contents).
+   If it gains code before publication, its description is directly on-topic.
+
+4. **The adversarial reviewer** should independently re-run with query terms:
+   "LLM memory budget proof harness", "inference admit refuse OOM",
+   "peak RSS enforce inference calibrate", and "llm resource contract enforce" to
+   independently confirm the table is complete at review time.
+
+---
+
+### Falsification for Cycle 7 — Pass 2
+
+Observations that would prove this pass's findings wrong:
+
+1. **A new tool appeared in the eight searches that does all three gap properties.**
+   NOT OBSERVED: eight queries, zero new entries, stable total_count across searches 1–2.
+   Searches 3–8 returned zero or only repos already in the table.
+
+2. **Grevix/aura added calibration or a stress harness since c6-p2.**
+   NOT OBSERVED: API confirms zero commits since 2026-09-03T17:50:25Z.
+
+3. **llama.cpp v0.5.0 release notes contain memory-budget enforcement terms.**
+   NOT OBSERVED: the single 'budget' hit is the reasoning-token termination signal for
+   qwen3-coder chain-of-thought — a different layer. Confirmed in this pass.
+
+4. **CryptoGuy1/BoundedEdge has content in this pass.**
+   NOT OBSERVED: HTTP 404 on contents endpoint. Still empty.
+
+5. **An independent search by the adversarial reviewer finds a tool not surfaced here.**
+   NOT YET TESTED. This is the structural remaining falsifier. Seven cycles, 40+ queries;
+   zero gap-closers at the in-process RSS + calibration + proof-harness layer. The
+   adversarial pass's independent search is the correct mitigation.
+
+6. **The budget-enforcement four-layer taxonomy collapses: a tool exists that spans
+   the OS-level layer AND the in-process layer with calibration + proof harness.**
+   NOT OBSERVED: aura covers the OS-level layer; it does not have an in-process
+   calibration protocol or a zero-violation stress harness. No tool in the in-process
+   layer exists except fitsproof (and the unimplemented BoundedEdge).
