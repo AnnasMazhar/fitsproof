@@ -1163,3 +1163,107 @@ Stress harness: 25 configs, 0 violations, 0 silent mode changes. Margin: min=390
 - M1 binary: release.yml exists; tagged release pending public launch.
 - HuggingFace publication (AC14): deferred to launch phase (repo not yet public).
 - Modal scale test (AC13): opt-in script exists; run deferred to post-public.
+
+---
+
+## c7-p4 — Implement Pass 1 (2026-09-29T14:30Z)
+
+### Summary
+
+Cycle 7 implement pass 1. All MANDATE items M2-M4 were already implemented in prior passes.
+This pass:
+1. Added source 80 (Splitwise) KAT test: `test_decode_throughput_kv_term_is_secondary_at_short_context` — quantifies the documented KV-term omission (8.2% at context=512).
+2. Updated `docs/PAPER-TRACEABILITY.md`: source 80 added as IMPLEMENTED row (21 total); sources 76-85 documented in "not in this table" section with implementation status for each.
+3. Updated `tests/contract/test_cost.py` docstring to cite source [80] (Splitwise) as required by M4.
+
+### Full test run
+
+```
+$ pytest -q --tb=short
+============================= test session starts ==============================
+platform linux -- Python 3.11.15, pytest-8.3.5, pluggy-1.6.0
+rootdir: /home/openclaw/portfolio/fitsproof
+configfile: pyproject.toml
+plugins: cov-6.1.0, hypothesis-6.135.0, platformdirs-4.12.0
+collected 215 items
+
+tests/adversarial/test_byzantine_inputs.py ............................. [ 13%]
+......................................................                   [ 38%]
+tests/contract/test_cost.py ...................                          [ 47%]
+tests/contract/test_plan_admit_verify.py ............................... [ 61%]
+..........                                                               [ 66%]
+tests/engine/test_attention.py ...............                           [ 73%]
+tests/engine/test_quant.py ................                              [ 80%]
+tests/engine/test_sampling.py ............                               [ 86%]
+tests/engine/test_server.py .......                                      [ 89%]
+tests/engine/test_speculative.py ...                                     [ 91%]
+tests/test_packaging.py ....                                             [ 93%]
+tests/value/test_incumbent_gap.py .........                              [ 97%]
+tests/value/test_ollama_gate.py ....                                     [ 99%]
+tests/value/test_readme_snippets.py ..                                   [100%]
+
+======================= 215 passed in 142.91s (0:02:22) =======================
+```
+
+Test count delta: 214 (c7 baseline) → 215 (c7-p4). +1 Splitwise KAT.
+
+### Ruff
+
+```
+$ ruff check . && ruff format --check .
+All checks passed!
+40 files already formatted
+```
+
+### Research traceability
+
+```
+$ python scripts/check_research_traceability.py
+TRACEABILITY OK (core only): all core test files cite valid research sources. Checked 85 source IDs from RESEARCH.md. PAPER-TRACEABILITY.md table validated (21 IMPLEMENTED rows).
+```
+
+### Stress harness
+
+```
+$ fitsproof stress
+ADMITTED: 0.039 GB predicted peak <= 4.000 GB budget (margin: 3961.0 MB)
+Stress harness: 25 configs, 0 violations, 0 silent mode changes. Margin: min=3909.4 MB, median=3909.7 MB, max=3913.0 MB.
+```
+
+### Refusal and admission transcripts
+
+```
+$ fitsproof admit --budget-gb 4
+ADMITTED: 0.042 GB predicted peak <= 4.000 GB budget (margin: 3958.3 MB)
+
+$ fitsproof admit --budget-gb 0.001
+REFUSED: needs 0.042 GB, budget 0.001 GB; no listed option fits — nearest is "Use int4_sym quantisation instead of none" at 0.006 GB (0.005 GB above budget)
+Degradation options:
+  [does not fit] Use int8_sym quantisation instead of none -> 0.011 GB
+  [does not fit] Use int4_sym quantisation instead of none -> 0.006 GB
+  [does not fit] Reduce context to 256 tokens (1/2 of 512) -> 0.040 GB
+  [does not fit] Reduce context to 128 tokens (1/4 of 512) -> 0.039 GB
+  [does not fit] Reduce context to 64 tokens (1/8 of 512) -> 0.039 GB
+  [does not fit] Offload ~50% of layers to system RAM (CPU fallback for those layers) -> 0.022 GB
+```
+
+### Splitwise KAT output (source 80 — new this pass)
+
+```
+$ pytest tests/contract/test_cost.py::test_decode_throughput_kv_term_is_secondary_at_short_context -v -s
+  [Splitwise source 80] KV/weight ratio at context=512: 0.082 (8.2%). weight_bytes=38,555,136, kv_total=3,145,728. Splitwise full formula: TPOT = (weight + kv) / bandwidth. fitsproof omits KV term; error at this context = 8.2%.
+PASSED
+```
+
+### PAPER-TRACEABILITY.md delta
+
+- 20 IMPLEMENTED rows → 21 IMPLEMENTED rows (source 80 added).
+- Sources 76-85 documented in "not in this table" section (H2O, BLOOM, PSS, Mixtral, Splitwise, LIMINAL, MoE surveys, smaps_rollup).
+
+### Open items (unchanged from c6-p5)
+
+- n_held_out=1 CI degenerate (sources 6, 15, 58): cannot close without ≥10 calibration runs.
+- M1 binary: release.yml exists; tagged release pending public launch.
+- HuggingFace publication (AC14): deferred to launch phase (repo not yet public).
+- Modal scale test (AC13): opt-in script exists; run deferred to post-public.
+- YaRN/NTK-aware RoPE (item 20): v0.2 scope.

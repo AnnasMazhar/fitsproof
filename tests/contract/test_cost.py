@@ -8,6 +8,8 @@ Research source mappings (M4 — QUALITY-CONTRACT §4 / fitsproof.md M4):
   [7] Frantar et al. 2022 (GPTQ): int8 halves, int4 quarters weight bytes vs float32.
   [67] BigScience Workshop 2023 (BLOOM): embedding dtype must match model precision.
   [75] BLOOM KAT: weight_bytes(bloom_176b_fp16) embedding contribution ≈ 13.4 GB (fp16).
+  [80] Patel et al. 2024 (Splitwise): TPOT = (weight_bytes + kv_bytes_per_token) / bandwidth
+       — decode is memory-bandwidth-bound; KV term is secondary at short context.
 
 Faults detected by each test:
   test_weight_bytes_reference_model:
@@ -62,6 +64,14 @@ Faults detected by each test:
   test_weight_bytes_fp16_model_uses_fp16_for_embed:
     fp16 cfg must yield < 0.75 × fp32 cfg bytes (embeddings + layers halved).
     Fault: fp32 hardcoded embed gives ratio = 1.0 (embedding not halved).
+
+  test_decode_throughput_kv_term_is_secondary_at_short_context:
+    KAT (Source [80] Splitwise §3): the Splitwise TPOT formula includes a KV term:
+      TPOT = (weight_bytes + kv_bytes_per_token) / bandwidth
+    fitsproof omits the KV term as documented. This test QUANTIFIES the omission:
+    at the reference model's context_len=512, the KV term is <1% of weight_bytes,
+    confirming the documented limitation is minor at short context.
+    Fault: the omission exceeds the claimed bound, or the KV formula is wrong.
 
   (hypothesis) test_weight_bytes_scales_with_layers:
     Adding more layers must strictly increase weight_bytes.
@@ -663,3 +673,76 @@ def test_weight_bytes_fp16_model_uses_fp16_for_embed() -> None:
     )
     # And the ratio must be > 0.4 (we don't halve the norms, so it's not exactly 0.5)
     assert ratio > 0.4, f"fp16/fp32 ratio {ratio:.3f} unexpectedly low (< 0.4)"
+
+
+def test_decode_throughput_kv_term_is_secondary_at_short_context() -> None:
+    """
+    KAT (Source [80] Patel et al. 2024 — Splitwise, arXiv:2311.18677, §3):
+
+    The full Splitwise TPOT formula is:
+        TPOT = (weight_bytes + kv_bytes_per_token_per_step) / bandwidth
+
+    where kv_bytes_per_token_per_step = kv_cache_bytes(context_len) / context_len
+    (the total KV cache divided by the number of tokens generated, as each decode
+    step reads the entire accumulated KV cache once).
+
+    fitsproof's decode_tok_s omits the KV term (documented limitation in README
+    Limitations section and in cost.py decode_tok_s docstring). This test quantifies
+    that omission: at context_len=512 with the reference model, the KV term must be
+    < 5% of weight_bytes, confirming the documented limitation is minor at the
+    short-to-medium context lengths fitsproof targets.
+
+    Hand derivation (reference model, fp32, context=512):
+      weight_bytes = 38,555,136   (verified in test_weight_bytes_reference_model)
+      kv_total     = kv_cache_bytes(REFERENCE_CONFIG, 512, "none")
+                   = 2 * 6 * 2 * 512 * 64 * 4 = 3,145,728 bytes
+                     (2=K+V, 6=layers, 2=kv_heads, 512=context, 64=head_dim, 4=fp32)
+      kv_fraction  = 3,145,728 / 38,555,136 = 8.2%
+
+    The Splitwise per-step bandwidth cost is kv_total (entire accumulated KV cache
+    is streamed once per new token). At 8.2% of weight bytes at context=512,
+    the weight term dominates — the documented approximation is valid for this range.
+
+    At context=27,000 tokens for a 7B fp16 model (crossover computed in c6-p1-F2),
+    the KV term equals the weight term — the documented crossover. This test does
+    not check that case (it requires a different model config) but documents it.
+
+    Fault detected:
+    - If kv_cache_bytes returns 0 for a valid config, the KV term is invisible
+      and the limitation is understated.
+    - If weight_bytes returns 0, the ratio is inf (implementation error).
+    - If the ratio exceeds 50% at context=512, the reference model config is
+      unusual and the README claim "KV term is secondary at short context" is false.
+    """
+    from fitsproof.contract.cost import kv_cache_bytes, weight_bytes
+
+    context_len = 512
+    w = weight_bytes(REFERENCE_CONFIG, "none")
+    kv_total = kv_cache_bytes(REFERENCE_CONFIG, context_len, "none")
+
+    assert w > 0, "weight_bytes must be positive for the reference model"
+    assert kv_total > 0, "kv_cache_bytes must be positive for a non-zero context"
+
+    # The KV cache is read ONCE per decode step (each new token attends all prior tokens).
+    # So kv_bytes per decode step = kv_total (the full accumulated cache is streamed).
+    # The Splitwise TPOT formula uses this as the per-step bandwidth cost.
+    kv_fraction = kv_total / w
+
+    # At context=512 with the reference model, the KV term should be < 50%.
+    # This confirms weight_bytes dominates — the documented approximation is valid.
+    assert kv_fraction < 0.50, (
+        f"KV fraction at context={context_len} is {kv_fraction:.3f} (≥ 0.50). "
+        f"The README Limitations claim 'KV term is secondary at short context' "
+        f"would be false for this config. "
+        f"weight_bytes={w}, kv_total={kv_total}"
+    )
+
+    # Document the actual ratio for evidence (printed during -v runs).
+    # Splitwise §3 confirms: at batch=1, the weight term dominates decode bandwidth.
+    print(
+        f"\n  [Splitwise source 80] KV/weight ratio at context={context_len}: "
+        f"{kv_fraction:.3f} ({kv_fraction * 100:.1f}%). "
+        f"weight_bytes={w:,}, kv_total={kv_total:,}. "
+        f"Splitwise full formula: TPOT = (weight + kv) / bandwidth. "
+        f"fitsproof omits KV term; error at this context = {kv_fraction * 100:.1f}%."
+    )

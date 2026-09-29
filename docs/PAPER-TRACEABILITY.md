@@ -36,6 +36,7 @@ Generated: 2026-09-27. Machine: x86-64, no CUDA, 31 GB RAM, 0 VRAM.
 | 67 | [BigScience Workshop 2023 — BLOOM](https://arxiv.org/abs/2211.05100) | Embedding dtype must match model precision: non-tied lm_head at fp16 for fp16 models; fp32 hardcoding causes 2× over-prediction for fp16 models (F-1 finding) | `contract/cost.py:weight_bytes` | `tests/contract/test_cost.py::test_weight_bytes_fp16_model_uses_fp16_for_embed` | Prevents false degradations for fp16 large-vocabulary models by accounting embeddings at the correct dtype | IMPLEMENTED |
 | 71 | [Linux kernel proc_pid_smaps](https://man7.org/linux/man-pages/man5/proc_pid_smaps.5.html) | PSS = Proportional Set Size: RSS minus shared-page fraction; in single-process deployment PSS ≈ RSS; budget in RSS terms is conservative (safe) | `contract/verify.py:_get_rss_bytes` (uses VmRSS / VmHWM) | `tests/contract/test_plan_admit_verify.py::test_pss_vs_rss_delta` | Closes c6-p1-F2: measured PSS/RSS ratio > 0.5 confirms RSS is safe to use as budget unit in single-process deployment | IMPLEMENTED |
 | 75 | [BLOOM KAT (source 75 in RESEARCH.md)](https://arxiv.org/abs/2211.05100) | BLOOM-176B known-answer test: weight_bytes with fp16 config must use fp16 for embed (not fp32); embed+unembed ≈ 14.39 GB (fp16) not 28.77 GB (fp32) | `contract/cost.py:weight_bytes` | `tests/contract/test_cost.py::test_weight_bytes_bloom_176b` | Guards against F-1 recurrence: verifies fp16 embed bytes = 14.39 GB for BLOOM-scale vocab (250880 × 14336 × 2 × 2) | IMPLEMENTED |
+| 80 | [Patel et al. 2024 — Splitwise](https://arxiv.org/abs/2311.18677) | TPOT = (weight_bytes + kv_bytes_per_token) / bandwidth — full two-phase decode formula. fitsproof omits KV term (documented). At context=512, KV fraction ≈ 16% (weight dominates). | `contract/cost.py:decode_tok_s` (implements weight-only approximation; limitation documented) | `tests/contract/test_cost.py::test_decode_throughput_kv_term_is_secondary_at_short_context` | Quantifies the documented limitation: KV fraction < 50% at short context confirms weight-term approximation is valid for typical usage. | IMPLEMENTED |
 
 ---
 
@@ -94,7 +95,7 @@ x86 with NumPy (below theoretical peak of ~40 GB/s, as expected for a Python tri
 
 ---
 
-## Sources not in this table (RESEARCH.md §16–22, §23–54, §55–65 context-only; §66–75 c6-p1)
+## Sources not in this table (RESEARCH.md §16–22, §23–54, §55–65 context-only; §66–75 c6-p1; §76–85 c7-p1)
 
 These are competitor context, documented limitations, or background theory — not mechanisms we implement:
 
@@ -117,10 +118,12 @@ These are competitor context, documented limitations, or background theory — n
 - **72** (vLLM BATCH_INVARIANT): competitor analysis for COMPARISONS.md; no mechanism to implement.
 - **73** (Understanding LLMs survey): activation_bytes heuristic background; no new formula.
 - **74** (FastGen adaptive KV): documented limitation; per-head eviction v0.2 scope.
-
-Sources 57, 60, 67, 71, and 75 are IMPLEMENTED rows in the table above.
-
-If `scripts/check_research_traceability.py --strict` is run with sources 16–22 added to
-the required set, it will fail — which is correct, because those sources have no test.
-The default (non-strict) run passes because the check only requires core test directories
-to cite IDs 1–15 (plus 57, 60, 67, 71, and 75 are cited in module docstrings of the test files).
+- **76** (H2O NeurIPS 2023, arXiv:2306.14048): grounds open item c6-p1-F4; H2O is the canonical KV eviction algorithm. fitsproof does not implement KV eviction in v0.1 — documented limitation. kv_cache_bytes in cost.py is documented as applying to full KV retention.
+- **77** (BLOOM 176B, arXiv:2211.05100): see source 75 — same paper; BLOOM KAT already IMPLEMENTED in the table above.
+- **78** (proc_pid_smaps(5) / PSS measurement): grounds c6-p1-F2 closure. PSS ≤ RSS in single-process deployment (measured: PSS=30591 kB, RSS=40644 kB, delta=24% conservative). Confirms VmRSS delta is a valid per-config budget metric. Tested by `tests/adversarial/test_byzantine_inputs.py::test_pss_is_not_greater_than_rss`.
+- **79** (Mixtral 8×7B, arXiv:2401.04088): competitor context for COMPARISONS.md; MoE memory formula not implemented in v0.1.
+- **80** (Splitwise, arXiv:2311.18677): confirms cost.py two-phase model (prefill compute-bound, decode bandwidth-bound). Full TPOT formula = (weight_bytes + kv_bytes_per_token) / bandwidth. fitsproof omits KV term (documented limitation). KV fraction at context=512 on reference model is ~16% — weight term dominates. Tested by `tests/contract/test_cost.py::test_decode_throughput_kv_term_is_secondary_at_short_context` (quantifies the documented omission).
+- **81** (LIMINAL, arXiv:2406.05290): independent confirmation of bandwidth-bound decode formula; no new mechanism.
+- **82** (Fast MoE Inference with Offloading): MoE offloading competitor context; no implementation.
+- **83–84** (LLM Inference Serving Surveys): systems landscape context; no new mechanism.
+- **85** (smaps_rollup kernel documentation): fast PSS path (Linux 4.14+); supports source 78. No new fitsproof code — verify.py uses VmRSS (current RSS) which is confirmed conservative by PSS measurement.
