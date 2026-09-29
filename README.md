@@ -55,7 +55,7 @@ measurements for a meaningful interval (Davison & Hinkley 1997, §2.4). The MAPE
 The bandwidth reading above (1.92 GB/s) is low because the box was under load when
 this transcript was recorded. MAPE varies with bandwidth measurement: across sessions
 on this machine the observed range is **~30–65%** (documented in `docs/ADOPTION.md`
-§8.1 and F-3). Run `calibration_demo.py` yourself; your number will differ.
+F-3). Run `calibration_demo.py` yourself; your number will differ.
 
 The `[46.1%, 46.1%]` interval is a degenerate point because the calibration run uses
 only 3 measurements (n_train=2, n_held_out=1). Bootstrap CI requires n ≥ 2 held-out

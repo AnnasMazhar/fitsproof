@@ -240,6 +240,7 @@ observed MAPE range across sessions on this machine:
 2026-09-28 (c3-p8):   60.1% (bw: session measurement)
 2026-09-29 (c5-p3):   51.5% (bw: 7.06 GB/s)
 2026-09-29 (c5-p8):   31.3% (bw: 6.73 GB/s — loaded box)
+2026-09-29 (c6-p3):   60.7% (bw: 2.78 GB/s — loaded box)
 ```
 
 Documented range: **~30–65%** (previously stated as 46–62%; corrected c5-p8-improve-1

@@ -1,6 +1,157 @@
 # Improvement log — fitsproof
 
-## Pass c6-p08-improve-1 (2026-09-29) — ADV-07 fixed: Plan and DegradationStep frozen
+## Pass c6-p09-improve-2 (2026-09-29) — docs accuracy + ollama gate integration test + OSError coverage
+
+### Findings fixed
+
+**1. README §8.1 stale cross-reference.**
+
+README line 58 pointed readers to `docs/ADOPTION.md §8.1 and F-3` for the MAPE range.
+`§8.1` is the cycle 3 diff table ("What changed since cycle 2") — it lists a test-count
+delta and a MAPE reading, but not the session history table. A reader following that
+link would not find what the README claims they will find. The MAPE session history is
+in `F-3` only.
+
+Fixed: removed `§8.1 and` from the reference so the README now says `docs/ADOPTION.md F-3`.
+
+**2. ADOPTION.md F-3 MAPE session table missing c6-p3 session.**
+
+The table was last updated in c5-p08-improve-1 (which added the c5-p8 entry at 31.3%).
+The c6-p3 session (MAPE 60.7%, bw 2.78 GB/s, loaded box) had been recorded in §13.2
+but not added to the canonical F-3 table. A reviewer cross-checking the documented
+range (~30–65%) against the raw session history would find a gap.
+
+Fixed: added the c6-p3 entry to the F-3 table.
+
+**3. COMPARISONS.md missing Strata row.**
+
+The README comparison table (§Comparisons) lists:
+```
+| Strata | Consumer packaging, one-click install |
+```
+But there was no Strata row in `COMPARISONS.md`. A reviewer who opened COMPARISONS.md
+after reading the README would find six of the seven named tools, but not Strata.
+MARKET-VERDICTS.md §fitsproof documents Strata as "Consumer packaging, one-click install
+[needs 12 GB+ VRAM and 64 GB RAM]".
+
+Fixed: added Strata row to the Inference engines table in COMPARISONS.md with the
+documented spec requirements and what fitsproof adds.
+
+**4. ollama_gate.py crashed with Python traceback on missing GGUF blob (ergonomics bug).**
+
+`gguf_vocab_size()` raises `FileNotFoundError` (a subclass of `OSError`) when the blob
+path from the ollama modelfile does not exist on disk. The caller's `except (KeyError, ValueError)`
+block did not catch `OSError`, so a missing blob caused an unhandled exception, exit 1,
+and a full Python traceback printed to stderr — not the clean `GATE REFUSED: cannot read
+model metadata` message the gate promises.
+
+This is the failure mode when:
+- A user has multiple ollama versions installed and the blob path in the modelfile is stale
+- The model was partially pulled and the blob file is missing
+- The test infrastructure uses a fake daemon with a nonexistent path
+
+Fixed: added `OSError` to the `except` clause in `main()`. `FileNotFoundError`, `PermissionError`,
+and `IsADirectoryError` are all `OSError` subclasses, so this covers the complete file-system
+failure surface. The `GATE REFUSED: cannot read model metadata` message now appears correctly.
+
+The test that found this bug:
+```
+# Before fix:
+$ python scripts/ollama_gate.py tiny_model --budget-gb 4 --host http://127.0.0.1:<fake>
+Traceback (most recent call last):
+  File ".../scripts/ollama_gate.py", line 217, in <module>
+    sys.exit(main())
+  File ".../scripts/ollama_gate.py", line 170, in main
+    vocab = gguf_vocab_size(blob)
+  File ".../scripts/ollama_gate.py", line 97, in gguf_vocab_size
+    with open(blob_path, "rb") as f:
+FileNotFoundError: [Errno 2] No such file or directory: '/nonexistent/blob.gguf'
+exit: 1  # unhandled exception
+
+# After fix:
+$ python scripts/ollama_gate.py tiny_model --budget-gb 4 --host http://127.0.0.1:<fake>
+GATE REFUSED: cannot read model metadata for tiny_model: [Errno 2] No such file or directory: '/nonexistent/blob.gguf'
+exit: 2  # clean, actionable refusal
+```
+
+### Integration test added — tests/value/test_ollama_gate.py
+
+The ollama gate was the primary integration example cited in ADOPTION.md §2 and the
+README, but had zero automated test coverage. A stranger reading the README who followed
+the integration recipe to `scripts/ollama_gate.py` had no test proving the gate's
+observable contracts.
+
+Four tests added, all run offline without a live daemon:
+
+1. **`test_ollama_gate_fails_closed_no_daemon`** — asserts the gate exits 1 (not 0)
+   when the daemon is unreachable. Exit 0 would be a silent false admission.
+   *Fault injected: the test would fail if the gate returned 0 for unreachable daemon.*
+
+2. **`test_ollama_gate_daemon_error_message_is_actionable`** — asserts stderr contains
+   "ollama serve" or "Is ollama running" when the daemon is down. A user who sees this
+   message knows exactly what to do.
+   *Fault injected: removing the recovery hint from the error message would fail this test.*
+
+3. **`test_ollama_gate_model_not_found_message_is_actionable`** — uses a fake HTTP
+   daemon that returns 404, asserts stderr says "not found" and suggests "ollama list"
+   or "ollama pull". The previous gap: a 404 showed the same "daemon unreachable"
+   message as a connection failure.
+   *Fault injected: a generic error message with no "not found" would fail this test.*
+
+4. **`test_ollama_gate_exits_nonzero_on_metadata_failure`** — uses a fake daemon with
+   a nonexistent GGUF blob path, asserts the gate exits 2 with "GATE REFUSED" instead
+   of crashing with a Python traceback. This is the test that found and fixed bug #4.
+   *Fault injected (pre-fix): the gate crashed with exit 1 and a FileNotFoundError traceback.*
+
+### Before/after metrics
+
+| Metric | Before (c6-p08-improve-1) | After | Delta |
+|---|---|---|---|
+| `pytest -q` test count | 210 | **214** | +4 |
+| `pytest -q` failures | 0 | 0 | — |
+| README §8.1 stale reference | YES | fixed (F-3 only) | fixed |
+| ADOPTION.md F-3 table: c6-p3 session | missing | present (60.7%, 2.78 GB/s) | added |
+| COMPARISONS.md Strata row | missing | present (12 GB+ VRAM, 64 GB RAM) | added |
+| ollama_gate.py on missing GGUF blob | Python traceback, exit 1 | GATE REFUSED + exit 2 | fixed |
+| `test_ollama_gate.py` | missing | 4 tests, all green | added |
+| `ruff check src/ tests/ scripts/` | clean | clean | — |
+| `ruff format --check src/ tests/ scripts/` | clean | clean | — |
+| `check_research_traceability.py` | TRACEABILITY OK | TRACEABILITY OK | — |
+
+### Terminal evidence
+
+```
+$ .venv/bin/pytest tests/value/test_ollama_gate.py -v --tb=short
+============================= test session starts ==============================
+platform linux -- Python 3.11.15, pytest-8.3.5, pluggy-1.6.0
+rootdir: /home/openclaw/portfolio/fitsproof
+configfile: pyproject.toml
+testpaths: tests
+plugins: cov-6.1.0, hypothesis-6.135.0, platformdirs-4.12.0
+collected 4 items
+
+tests/value/test_ollama_gate.py::test_ollama_gate_fails_closed_no_daemon PASSED [ 25%]
+tests/value/test_ollama_gate.py::test_ollama_gate_daemon_error_message_is_actionable PASSED [ 50%]
+tests/value/test_ollama_gate.py::test_ollama_gate_model_not_found_message_is_actionable PASSED [ 75%]
+tests/value/test_ollama_gate.py::test_ollama_gate_exits_nonzero_on_metadata_failure PASSED [100%]
+
+4 passed in 21.83s
+
+$ .venv/bin/pytest -q --tb=no 2>&1 | tail -3
+======================= 214 passed in 161.90s (0:02:41) ========================
+
+$ .venv/bin/ruff check src/ tests/ scripts/ && .venv/bin/ruff format --check src/ tests/ scripts/
+All checks passed!
+40 files already formatted
+
+$ .venv/bin/python scripts/check_research_traceability.py
+TRACEABILITY OK (core only): all core test files cite valid research sources.
+Checked 75 source IDs from RESEARCH.md. PAPER-TRACEABILITY.md table validated (20 IMPLEMENTED rows).
+```
+
+---
+
+
 
 ### Finding fixed
 

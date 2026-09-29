@@ -179,7 +179,7 @@ def main() -> int:
             dtype="float32",
         )
         cfg.validate()
-    except (KeyError, ValueError) as exc:
+    except (KeyError, ValueError, OSError) as exc:
         print(f"GATE REFUSED: cannot read model metadata for {args.model}: {exc}", file=sys.stderr)
         return 2
 

@@ -15,6 +15,7 @@ at 2026-09-29T01:01Z — no new repos entered the table; aura has 0 commits sinc
 | **llama.cpp** (ggml-org/llama.cpp) | 129,826 | v0.5.0 (2026-09-23) | Mature (3+ years), broad model support (GGUF), fast CPU kernels (GGML), broad quant support, GPU offload | No enforced resource contract; silent OOM documented; no calibrated prediction interval |
 | **vLLM** (vllm-project/vllm) | 92,908 | v0.30.0 (2026-09-22) | GPU serving, high throughput, PagedAttention, continuous batching, 100+ model support | No enforced memory budget; targets A100/H100, not 4–8 GB VRAM class |
 | **KTransformers** (kvcache-ai/ktransformers) | 19,545 | v0.7.1 (2026-09-15) | CPU/GPU hybrid MoE, Intel AMX kernels, runs DeepSeek-671B on ~14 GB VRAM. *Requires 128 GB RAM, AMX, CUDA/ROCm.* | Does not serve the 16–32 GB RAM class; no calibrated contract; no stress harness |
+| **Strata** | N/A | N/A | Consumer packaging, one-click install for a single model on a consumer GPU. Designed for non-technical users. | Requires 12 GB+ VRAM and 64 GB RAM; no enforced memory contract; targets higher-end consumer hardware |
 
 ## Prediction and sizing tools
 
