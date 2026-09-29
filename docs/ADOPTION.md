@@ -1317,3 +1317,285 @@ Unchanged from §11.7:
 | 19 | int8_sym on real trained model with outliers | Requires real ≥6B model |
 | 20 | YaRN not implemented | v0.2 candidate |
 | 23 | MLA support | v0.2+ scope |
+
+---
+
+## 13. Cycle 6 — Pass 3 — State as of 2026-09-29T08:00Z
+
+*All commands run fresh on the ThinkStation P500, Python 3.11.15, branch feat/v0.1.*
+
+### 13.1 What changed since cycle 5 pass 9
+
+| Item | Cycle 5 pass 9 (c5-p09, ~05:00Z) | Cycle 6 pass 3 (c6-p3, 08:00Z) |
+|---|---|---|
+| Test count | 199 passed (c5-p09 + 200 with final deduplicate) | **199 passed** (confirmed fresh run) |
+| MAPE (held-out) | 50.6% (c5-p09 session) | **60.7%** this session (n_held_out=1, bandwidth 2.78 GB/s — loaded box) |
+| Stress harness | 25 configs, 0 violations | 25 configs, 0 violations (confirmed) |
+| Stress margin | min=3909.x MB | min=3909.0 MB, median=3909.3 MB, max=3912.6 MB |
+| Research base | 65 sources (c5-p1) | **75 sources** (+10 in c6-p1: Mistral 7B SWA, BLOOM embeddings, Efficient Inference Survey, Train-Large-Then-Compress, H2O KV eviction, PSS/smaps, vLLM BATCH_INVARIANT, Understanding LLMs survey, FastGen adaptive KV, BLOOM KAT) |
+| Gap claim | 3 properties unmet; stable since c3-p2 | Confirmed stable through c6-p2 (six search passes, 30+ queries) |
+| aura commits | 0 since 2026-09-03 | 0 since 2026-09-03 (confirmed c6-p2) |
+| Binary release (L5) | Not built | Not built — v0.2 MANDATE M1 pending |
+
+The MAPE variation observed this session (60.7%) is within the documented ~31–64%
+range. The low bandwidth reading (2.78 GB/s vs typical 6–7 GB/s) indicates a loaded
+machine at measurement time — this is F-3 (bandwidth drift with machine state), which
+is a documented operational reality, not a regression.
+
+### 13.2 Raw output — 2026-09-29T08:00Z
+
+```
+$ python scripts/calibration_demo.py
+=== Calibration demo ===
+bandwidth: 2.78 GB/s
+gemm:      76.72 GFLOPS
+RAM:       33.5 GB
+bandwidth_utilisation: 0.0645
+MAPE (held-out):       60.7%
+CI (95%):              [60.7%, 60.7%]  ← n_held_out=1: degenerate interval (not a range); see docs/ADOPTION.md F-3
+n_train=2, n_held_out=1
+Note: n_held_out=1 — the CI is a point, not an interval. Collect n >= 10 held-out
+measurements for a meaningful interval (Davison & Hinkley 1997, §2.4). The MAPE itself is still valid.
+```
+
+```
+$ fitsproof probe
+Probing machine...
+  bandwidth:  2.84 GB/s
+  gemm:       122.62 GFLOPS
+  RAM:        33.55 GB
+  VRAM:       0.00 GB
+```
+
+```
+$ fitsproof stress
+ADMITTED: 0.039 GB predicted peak <= 4.000 GB budget (margin: 3961.0 MB)
+Stress harness: 25 configs, 0 violations, 0 silent mode changes. Margin: min=3909.0 MB, median=3909.3 MB, max=3912.6 MB.
+```
+
+```
+$ fitsproof admit --budget-gb 4
+ADMITTED: 0.042 GB predicted peak <= 4.000 GB budget (margin: 3958.3 MB)
+
+$ fitsproof admit --budget-gb 0.001
+REFUSED: needs 0.042 GB, budget 0.001 GB; no listed option fits — nearest is "Use int4_sym quantisation instead of none" at 0.006 GB (0.005 GB above budget)
+Degradation options:
+  [does not fit] Use int8_sym quantisation instead of none -> 0.011 GB
+  [does not fit] Use int4_sym quantisation instead of none -> 0.006 GB
+  [does not fit] Reduce context to 256 tokens (1/2 of 512) -> 0.040 GB
+  [does not fit] Reduce context to 128 tokens (1/4 of 512) -> 0.039 GB
+  [does not fit] Reduce context to 64 tokens (1/8 of 512) -> 0.039 GB
+  [does not fit] Offload ~50% of layers to system RAM (CPU fallback for those layers) -> 0.022 GB
+(exit: 2)
+```
+
+```
+$ fitsproof plan --budget-gb 4
+predicted peak:  0.042 GB  (95% CI: [0.033, 0.050] GB)
+predicted tok/s: 32.6  (95% CI: [22.8, 42.4])
+budget:          4.000 GB
+verdict:         fits
+```
+
+Python client (L3):
+
+```
+$ python -c "
+from fitsproof.client import DoesNotFit, FitsproofClient, guard
+client = FitsproofClient()
+record = client.admit(client.plan(context_len=512, budget_bytes='4GiB'))
+print(record.message)
+print('ram_gb:', client.metrics()['ram_gb'])
+loaded = []
+@guard(budget='1MiB')
+def load_model():
+    loaded.append('allocated')
+try:
+    load_model()
+except DoesNotFit as e:
+    print('refused:', str(e)[:80])
+print('loaded ==', loaded)
+"
+ADMITTED: 0.042 GB predicted peak <= 4.295 GB budget (margin: 4253.3 MB)
+ram_gb: 33.548316672
+refused: REFUSED: needs 0.042 GB, budget 0.001 GB; no listed option fits — nearest is "Us
+loaded == []
+```
+
+MCP server (L4):
+
+```
+server: fitsproof-mcp
+tools: ['admit', 'plan', 'probe']
+admit 4GiB isError: False
+admit 1MiB isError: True
+```
+
+Test suite:
+
+```
+$ python -m pytest tests/ -q --tb=no
+199 passed in 247.45s (0:04:07)
+```
+
+### 13.3 New research from c6-p1 and its adoption implications
+
+Cycle 6 pass 1 added 10 sources (66–75) that deepen the adoption story in five ways:
+
+**1. Sliding Window Attention (SWA) — Mistral 7B source 66**
+
+The current cost model uses the unbounded KV formula (`n_layers × seq_len × kv_per_token`).
+For models with SWA (window size W), the correct formula is
+`n_layers × min(seq_len, W) × kv_per_token`. At seq > W the current formula
+over-predicts KV memory — conservative direction (false DEGRADED, not false ADMITTED).
+A user trying to gate a Mistral 7B at a 4 GB budget with 32K context will see
+a predicted 4 GB of KV alone (when the actual SWA-bounded KV is ~0.5 GB).
+
+**Operational rule for SWA models:** if the model's architecture includes SWA, treat
+the predicted KV as a worst-case upper bound. The actual footprint will be lower.
+The `--budget-gb` should be set generously (above the predicted peak) if you know the
+model uses SWA. The fix (a `window_size` parameter in `plan`) is v0.2 scope.
+
+**2. Embedding accounting — BLOOM source 67 + source 75 KAT**
+
+The F-1 finding (over-prediction on gemma3:4b) was caused by counting the embedding
+matrix twice in fp32. Source 67 (BLOOM 176B) provides the external known-answer test
+(KAT) to guard against recurrence: `weight_bytes(bloom_176b_config) ≈ 351 GB`. Once
+the cost model fix lands in the implement pass, this KAT must pass in
+`tests/contract/test_cost.py`. Until then, operators should treat predicted peaks for
+large-vocabulary models (vocab > 30k) as potentially inflated due to the embedding
+accounting issue.
+
+**3. Flash/swap cost of exceeding DRAM budget — source 55 (LLM in a Flash)**
+
+Source 55 establishes that models run via swap (or NVMe flash on Apple Silicon) operate
+at 1/50–1/130× of expected DRAM bandwidth. On this machine (DRAM-only x86), exceeding
+the 31 GB RAM budget means Linux swap at ≤ 500 MB/s — a 15× slowdown relative to
+DRAM. This quantifies the consequence side: the refusal gate prevents not just an OOM
+crash but a 15–130× performance regression that existing runtimes (llama.cpp, ollama)
+do not warn about.
+
+The operational implication: when the gate says REFUSED at a budget that a team
+considers "generous enough", the real question is whether the machine has swap-backed
+overflow capacity. If yes, the model will run — just 15× slower. The gate is doing
+its job: making the trade-off explicit rather than silent.
+
+**4. vLLM determinism — source 72 (VLLM_BATCH_INVARIANT)**
+
+vLLM v0.30.0 requires `VLLM_BATCH_INVARIANT=1` for run-to-run determinism, with a
+10–30% throughput trade-off. This confirms the comparison table claim that fitsproof
+is deterministic by construction (Tier 1, sources 14/17/19) at no throughput cost —
+the design advantage of a single-threaded NumPy CPU path. For teams gating vLLM
+outputs, this distinction matters: fitsproof's proof harness (`verify`) measures
+deterministic outputs; vLLM at default settings does not guarantee them.
+
+**5. KV eviction design space — sources 56/70/74 (StreamingLLM/H2O/FastGen)**
+
+Three eviction policies now have source grounding:
+- StreamingLLM (source 56): retain initial k sink tokens + recent W window
+- H2O (source 70): retain top-k by accumulated attention score + recency window
+- FastGen (source 74): per-head adaptive policy (LOCAL / SPECIAL / FULL)
+
+All three bound KV cache growth to a fixed budget independent of seq_len.
+fitsproof v0.1 does not implement any eviction; cost.py assumes worst-case full KV.
+This means the KV predicted peak is always an upper bound, which is the conservative
+direction for the refusal gate. A v0.2 `kv_mode` parameter in `plan()` could expose
+these policies, each with a tighter memory formula.
+
+### 13.4 The four budget-enforcement layers — disambiguation for operators
+
+After six cycles of ecosystem search, the "budget enforcement" concept spans four
+distinct stack layers. An operator deploying fitsproof should know which layer is which:
+
+| Layer | What it enforces | Highest-star example |
+|---|---|---|
+| Prompt / context | Token count in context window | Emmimal/context-engine (197★) |
+| Agent harness | Turns, tool calls, compute budget per session | edouard-claude/longe (3★) |
+| OS / kernel | Physical memory via cgroup v2 / Win32 Job Object | Grevix/aura (4★) |
+| **In-process inference** | **Peak RSS during model loading + generation** | **fitsproof** |
+
+The four layers are complementary. A production service might run all four
+simultaneously:
+- **context-engine** to ensure the LLM's context window doesn't overflow token limits
+- **longe** to cap agent tool-call budgets
+- **aura** to set an OS-level memory ceiling (prevents rogue processes from exhausting
+  physical memory)
+- **fitsproof** to enforce the in-process RSS contract before loading each model
+  (ensures the gate fires before allocation, with a calibrated prediction and a
+  measured proof of compliance)
+
+Each layer enforces at a different granularity. The fitsproof refusal fires before
+the model is loaded; aura's cgroup limit fires during loading (and may OOM). These
+are complementary, not competing.
+
+### 13.5 Failure modes — cycle 6 update
+
+No new failure modes observed in cycle 6. The five from §3 remain at the same status
+as cycle 5. Additions from c6-p1 sourcing:
+
+| Finding | C5 status | C6 update |
+|---|---|---|
+| F-1: +64% over-prediction on real GGUF | Open (cost model fix pending) | Source 67 (BLOOM) and 75 (BLOOM KAT) provide the external known-answer test. Source 49 (GPT-2 weight tying) + source 67 together fully ground the fix: use the model's actual dtype for embeddings, count only once per non-tied architecture. The KAT is proposed in RESEARCH.md source 75 and must be added to `tests/contract/test_cost.py` in the implement pass. |
+| F-3: Bandwidth drift with machine state | Open/documented | This session: 2.78 GB/s (loaded box) vs typical 6–7 GB/s. MAPE 60.7% (within documented range). Operational rule unchanged: re-probe when sustained load profile changes. The low bandwidth reading today causes the high MAPE — the correlation is expected and documented. |
+| SWA over-prediction (new, from source 66) | New finding in c6-p1 | The current formula over-predicts KV for SWA models at seq > W (conservative direction). Documented in README Limitations. Operational rule: for models known to use SWA, set budget generously above the predicted peak. |
+
+### 13.6 Open items — final state for the campaign
+
+Items that cannot be closed in a research pass:
+
+| # | Item | Closure path |
+|---|---|---|
+| 6 / 15 | Bootstrap CI coverage (n_held_out=1 → point mass) | Source 58 (Davison & Hinkley): collect n_held_out ≥ 10, check empirical coverage; BCa for asymmetric MAPE |
+| 16 | ru_maxrss stale peak — per-call measurement unavailable | Fresh subprocess per call or cgroup memory.peak reset (root required). Sources 60/65/71 document the available instruments |
+| 17 | Binary release not built (M1) | PyInstaller onefile (sources 61/62); CI clean-job smoke test |
+| 19 | int8_sym on real trained model with outliers | Test with a real ≥6B trained model (source 38) |
+| 20 | YaRN not implemented | Implement frequency schedule (source 40 sketch); test at seq > 512 |
+| 23 | MLA KV formula for non-MLA models | Add `kv_latent_dim` param; test against DeepSeek-V2-class model (source 36) |
+| c6-p1-F2 | PSS vs RSS not yet measured in the deployment | Run `awk '/^Pss:/' /proc/self/smaps` during stress harness; compare to VmRSS |
+| c6-p1-F3 | Train-large-compress for int4 decoder-only | Test at multiple model sizes; observe quality vs memory trade-off (sources 69/64) |
+| c6-p1-F4 | H2O eviction: tokens needed later | Implement H2O; test against long-document task (source 70) |
+| c6-p1-F5 | BLOOM KAT not in test suite | Write `test_weight_bytes_bloom_known_answer` in `tests/contract/test_cost.py` (source 75) |
+| c6-p2-F6 | Adversarial reviewer independent search | Re-run with fresh query vocabulary before sign-off |
+
+### 13.7 Adoption maturity table — cycle 6 final state
+
+| Level | What the team does | Status |
+|---|---|---|
+| L0 — try it | clone, `probe`, `plan` against a budget | Works today |
+| L1 — gate the box | `ollama_gate.py && ollama run` | Works today (strict mode) |
+| L2 — CLI gate | `fitsproof admit` in shell scripts / CI | Works today; exit 0 / exit 2 |
+| L3 — in-process guard | `@guard(budget=...)` in Python services | Works today; `DoesNotFit` raised before callable invoked |
+| L4 — agent-facing | `fitsproof mcp`, agent calls `admit` before loading | Works today; `isError:false` / `isError:true` |
+| L5 — drop-in binary | single executable, SHA256 release | v0.2 MANDATE M1 — not built yet |
+
+### 13.8 The single most likely reason someone would NOT adopt it — cycle 6 update
+
+Unchanged from §5, §8.5, §9.6, §11.10. The prediction accuracy remains the adoption
+blocker. Source 66 (Mistral 7B SWA) adds another dimension: for modern models with
+Sliding Window Attention, the predicted KV footprint is even more inflated than for
+standard full-context models at long sequences.
+
+The adoption-critical path: correct the cost model's embedding accounting (source 49
++ 67 ground the fix precisely) and add a `window_size` parameter to `kv_cache_bytes`
+(source 66 grounds the formula). If these two fixes land and the real-model MAPE drops
+below 20% on gemma3:4b, F-1 is resolved and the adoption story becomes straightforward.
+
+Until those fixes land:
+- For 4B-class models at fp16/int4: set budget ≥ 8 GB to avoid false DEGRADED verdicts
+- For models with SWA (Mistral-family): set budget generously — the KV formula
+  over-predicts at long context
+- Treat DEGRADED as refuse-by-default (the gate's behaviour)
+- Trust the refusal direction: an ADMITTED verdict has never been observed to exceed
+  the true footprint in any session across six cycles
+
+### 13.9 Cycle 6 falsification table
+
+| id | Observation that would falsify | Status |
+|---|---|---|
+| C6-P3-F1 | Any admitted config in the stress harness measures peak > declared budget | NOT OBSERVED (25 configs, 0 violations, min margin 3909.0 MB) |
+| C6-P3-F2 | The `@guard` decorator invokes the wrapped callable on a refused config | NOT OBSERVED (`loaded == []` confirmed in raw output above) |
+| C6-P3-F3 | The MCP `admit` tool returns `isError:false` for a refused config | NOT OBSERVED (`admit 1MiB isError: True` confirmed above) |
+| C6-P3-F4 | aura ships held-out calibration + CI-wired zero-violation stress harness | NOT OBSERVED; 0 commits since 2026-09-03; v0.1.0 still the latest release |
+| C6-P3-F5 | llama.cpp or vLLM ships native memory-budget enforcement gate | NOT OBSERVED: single 'budget' hit in llama.cpp v0.5.0 is a reasoning-token signal; vLLM v0.30.0 has no `--memory-budget-gb` |
+| C6-P3-F6 | PSS substantially differs from RSS in this deployment, invalidating the RSS budget | NOT YET MEASURED: expected < 5% delta in single-process deployment; run `awk '/^Pss:/' /proc/self/smaps` to verify |
+| C6-P3-F7 | Adversarial reviewer finds a tool not surfaced by the campaign's 30+ queries that covers all three gap properties | NOT YET TESTED by an independent agent; adversarial pass is the correct vehicle |
