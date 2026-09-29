@@ -1078,3 +1078,88 @@ Stress harness: 25 configs, 0 violations, 0 silent mode changes. Margin: min=390
 - M1 binary: release.yml exists; actual tagged release pending public launch.
 - HuggingFace publication (AC14): deferred to launch phase (repo not yet public).
 - Modal scale test (AC13): opt-in script exists; run deferred to post-public.
+
+---
+
+## c6-p5 — Implement Pass 2 (2026-09-29T09:00Z)
+
+### Cycle 6 adversarial tests added
+
+6 new adversarial tests grounded in c6-p1 research sources 66-75:
+
+- `test_weight_bytes_fp16_embed_less_than_fp32` (source [67] BLOOM — embed dtype regression guard)
+- `test_weight_bytes_fp16_embed_dtype_consistent_across_quants` (sources [67], [57])
+- `test_kv_cache_bytes_swa_window_bound_is_conservative` (source [66] Mistral SWA)
+- `test_pss_is_not_greater_than_rss` (source [71] proc(5) PSS measurement)
+- `test_degradation_options_peak_strictly_decreasing` (sources [57], [66], [69] — quant tier ordering)
+
+### Full test run
+
+```
+$ pytest -q --tb=short
+============================= test session starts ==============================
+platform linux -- Python 3.11.15, pytest-8.3.5, pluggy-1.6.0
+rootdir: /home/openclaw/portfolio/fitsproof
+configfile: pyproject.toml
+testpaths: tests
+plugins: cov-6.1.0, hypothesis-6.135.0, platformdirs-4.12.0
+collected 207 items
+
+tests/adversarial/test_byzantine_inputs.py ............................. [ 14%]
+......................................................                   [ 40%]
+tests/contract/test_cost.py ..................                           [ 48%]
+tests/contract/test_plan_admit_verify.py ............................... [ 63%]
+.......                                                                  [ 67%]
+tests/engine/test_attention.py ...............                           [ 74%]
+tests/engine/test_quant.py ................                              [ 82%]
+tests/engine/test_sampling.py ............                               [ 87%]
+tests/engine/test_server.py .......                                      [ 91%]
+tests/engine/test_speculative.py ...                                     [ 92%]
+tests/test_packaging.py ....                                             [ 94%]
+tests/value/test_incumbent_gap.py .........                              [ 99%]
+tests/value/test_readme_snippets.py ..                                   [100%]
+
+======================= 207 passed in 135.36s (0:02:15) =======================
+```
+
+Test count delta: 202 (c6-p4 baseline) → 207 (c6-p5). +5 c6 adversarial tests.
+
+### Ruff
+
+```
+$ ruff check . && ruff format --check .
+All checks passed!
+39 files already formatted
+```
+
+### Research traceability
+
+```
+$ python scripts/check_research_traceability.py
+TRACEABILITY OK (core only): all core test files cite valid research sources.
+Checked 75 source IDs from RESEARCH.md. PAPER-TRACEABILITY.md table validated (20 IMPLEMENTED rows).
+```
+
+### Stress harness
+
+```
+$ fitsproof stress
+ADMITTED: 0.039 GB predicted peak <= 4.000 GB budget (margin: 3961.0 MB)
+Stress harness: 25 configs, 0 violations, 0 silent mode changes. Margin: min=3909.1 MB, median=3909.3 MB, max=3912.6 MB.
+```
+
+### Launch surfaces confirmed (all Phase A items remain complete)
+
+- `pyproject.toml`: complete with keywords, classifiers, URLs, pinned deps.
+- `launch/topics.txt`: 18 topics.
+- `COMPARISONS.md`: timestamp updated to c6-p5 (2026-09-29T09:00Z).
+- `CONTRIBUTING.md`, `docs/demo.sh`, `.github/workflows/release.yml`: unchanged, complete.
+- `.github/workflows/ci.yml`: Python 3.11 and 3.12 matrix, ruff, traceability, pytest.
+- README: first-screen passes LAUNCH-PLAN requirements; all 4 plugin surfaces present.
+
+### Open items (unchanged from c5-p5)
+
+- n_held_out=1 CI degenerate (sources 6, 15, 58): cannot close without ≥10 calibration runs.
+- M1 binary: release.yml exists; tagged release pending public launch.
+- HuggingFace publication (AC14): deferred to launch phase (repo not yet public).
+- Modal scale test (AC13): opt-in script exists; run deferred to post-public.

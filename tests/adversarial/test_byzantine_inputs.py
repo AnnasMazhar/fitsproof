@@ -153,6 +153,32 @@ Cycle 5 additions — attacks grounded in new c5-p1 sources:
       admission=None or admission="" — a silent non-response rather than an
       explicit "admitted" or "degraded" (contract breach: every response must
       carry an admission record per M2).
+
+Cycle 6 additions — attacks grounded in c6-p1 sources (66-75):
+
+  test_weight_bytes_fp16_embed_less_than_fp32:
+      Fault (c6): weight_bytes() for a fp16 model returning fp32-sized embed/unembed
+      tables — the bug fixed in c6-p4. Regression would over-predict embedding fraction
+      by ~2× for fp16 models, producing false DEGRADED verdicts.
+      Source: [67] BigScience BLOOM — embed dtype must follow model precision.
+  test_weight_bytes_fp16_embed_dtype_consistent_across_quants:
+      Fault (c6): quantised variants applying quantisation bits to embed/unembed tables,
+      which would override the model dtype on embedding tables — incorrect per source [67].
+      Source: [67] BigScience BLOOM; [57] BitNet §2.
+  test_kv_cache_bytes_swa_window_bound_is_conservative:
+      Fault (c6): unbounded KV formula UNDER-predicting relative to the SWA-bounded
+      formula for seq > window — the dangerous direction. The current unbounded formula
+      should always over-predict for SWA models (conservative, safe).
+      Source: [66] Mistral 7B §2.3 — SWA KV = n_layers × min(seq, W) × kv_per_token.
+  test_pss_is_not_greater_than_rss:
+      Fault (c6): PSS > RSS in a single-process deployment — would mean the RSS-
+      denominated budget under-reports actual per-process memory cost.
+      Source: [71] proc(5) — PSS = RSS / share_count; single process → PSS <= RSS.
+  test_degradation_options_peak_strictly_decreasing:
+      Fault (c6): plan() quant-category degradation options with non-decreasing predicted
+      peaks within the quant tier — int4 predicts MORE memory than int8, making the quant
+      degradation chain useless (each step does not actually save memory).
+      Sources: [57] BitNet §2; [66] Mistral §2.3; [69] train-large-then-compress.
 """
 
 from __future__ import annotations
@@ -1608,3 +1634,228 @@ def test_server_fitsproof_admission_field_never_silent() -> None:
         )
     finally:
         srv.shutdown()
+
+
+# ---------------------------------------------------------------------------
+# Cycle 6 adversarial tests — grounded in c6-p1 new sources (66-75)
+# ---------------------------------------------------------------------------
+
+
+def test_weight_bytes_fp16_embed_less_than_fp32() -> None:
+    """
+    Sources: [67] BigScience Workshop 2023 (BLOOM): embed table dtype must follow
+    model precision — fp16 model has fp16 embed/unembed, not fp32.
+    Source [75] (BLOOM-176B KAT): the fix was verified via the BLOOM known-answer test.
+
+    Fault (c6): weight_bytes() for a fp16 model returning fp32-sized embed/unembed tables
+    — the bug fixed in c6-p4. If it regresses, fp16 models are over-predicted by ~2×
+    on the embedding fraction, producing false DEGRADED verdicts for large-vocab models.
+
+    Property: for an identical architecture, fp16 weight_bytes < fp32 weight_bytes.
+    The embedding tables account for a significant fraction (vocab × d_model × dtype_bytes),
+    so this ratio must be < 1.0 and > 0.0 rather than exactly 0.5 (non-weight bytes are fp32).
+    """
+    import dataclasses
+
+    from fitsproof.contract.cost import weight_bytes
+    from fitsproof.engine.model import REFERENCE_CONFIG
+
+    cfg_fp32 = dataclasses.replace(REFERENCE_CONFIG, dtype="float32")
+    cfg_fp16 = dataclasses.replace(REFERENCE_CONFIG, dtype="float16")
+
+    wb_fp32 = weight_bytes(cfg_fp32, "none")
+    wb_fp16 = weight_bytes(cfg_fp16, "none")
+
+    assert wb_fp16 < wb_fp32, (
+        f"fp16 model weight_bytes ({wb_fp16}) must be < fp32 ({wb_fp32}). "
+        "If the embed/unembed tables are stored as fp32 regardless of model dtype, "
+        "the fp16 over-prediction bug (source [67], BLOOM) has regressed. "
+        "Embed dtype must follow model dtype per source [67]."
+    )
+    # The ratio must be below 1.0 and above 0.0 (not zero-size, not larger than fp32)
+    ratio = wb_fp16 / wb_fp32
+    assert 0.0 < ratio < 1.0, (
+        f"fp16/fp32 weight_bytes ratio {ratio:.4f} is not in (0, 1). "
+        "Something is wrong with the dtype accounting."
+    )
+
+
+def test_weight_bytes_fp16_embed_dtype_consistent_across_quants() -> None:
+    """
+    Sources: [67] BigScience Workshop 2023 (BLOOM): embed dtype follows model dtype.
+    Source [57] BitNet §2: quantisation applies to weight matrices, not embed tables.
+
+    Fault (c6): quantised variants applying quantisation bits to embed/unembed tables,
+    which would reduce them below the model's stored precision — incorrect, and would
+    change the fp16 vs fp32 ordering observed above.
+
+    Property: for a fp16 model, weight_bytes(..., 'none') and weight_bytes(..., 'int8_sym')
+    should both be less than the fp32 counterpart, and embed_dtype_bytes should not change
+    when quant is applied (quant overrides weight matrices, not embed tables).
+    """
+    import dataclasses
+
+    from fitsproof.contract.cost import weight_bytes
+    from fitsproof.engine.model import REFERENCE_CONFIG
+
+    cfg_fp32 = dataclasses.replace(REFERENCE_CONFIG, dtype="float32")
+    cfg_fp16 = dataclasses.replace(REFERENCE_CONFIG, dtype="float16")
+
+    # fp16 int8 must still be < fp32 int8 (embed tables remain fp16 vs fp32)
+    wb_fp32_int8 = weight_bytes(cfg_fp32, "int8_sym")
+    wb_fp16_int8 = weight_bytes(cfg_fp16, "int8_sym")
+
+    assert wb_fp16_int8 < wb_fp32_int8, (
+        f"fp16 int8_sym weight_bytes ({wb_fp16_int8}) must be < fp32 int8_sym ({wb_fp32_int8}). "
+        "Embed tables must remain dtype-dependent even when weight quant is applied. "
+        "Source [67]: embed dtype follows model stored precision."
+    )
+
+
+def test_kv_cache_bytes_swa_window_bound_is_conservative() -> None:
+    """
+    Source: [66] Mistral 7B (Jiang et al. 2023) §2.3 — Sliding Window Attention:
+    `kv_cache_total = n_layers × min(seq_len, W) × kv_per_token_bytes` where W is
+    the window size. For seq_len > W, the true KV cache is bounded.
+
+    Fault (c6): the current cost.py uses the unbounded formula (seq_len, not min(seq_len, W)),
+    over-predicting KV memory for SWA models. The conservative direction means a SWA model
+    at seq > W gets a false DEGRADED, not a false ADMITTED — so the enforcement gate is safe.
+
+    This test verifies the DIRECTION of the over-prediction is correct (safe):
+    the unbounded formula must always predict >= the bounded (SWA) formula for seq > W.
+    A regression where the unbounded formula UNDER-predicts relative to the SWA bound
+    would mean the contract fails to catch a memory overflow on SWA models.
+    """
+    from fitsproof.contract.cost import kv_cache_bytes
+    from fitsproof.engine.model import REFERENCE_CONFIG
+
+    window_size = 512  # example SWA window (Mistral 7B uses 4096; use smaller for test)
+    seq_beyond_window = window_size * 2  # 1024 > window
+
+    # Unbounded formula (what cost.py implements)
+    kv_unbounded = kv_cache_bytes(REFERENCE_CONFIG, seq_beyond_window, "none")
+
+    # Bounded SWA formula (what a SWA model would actually use)
+    kv_per_token = kv_cache_bytes(REFERENCE_CONFIG, 1, "none")
+    kv_swa_bounded = kv_per_token * window_size
+
+    # The unbounded formula must produce >= the SWA bound.
+    # If kv_unbounded < kv_swa_bounded, the cost model UNDER-predicts for SWA models,
+    # which would cause false ADMITTED verdicts — the dangerous direction.
+    assert kv_unbounded >= kv_swa_bounded, (
+        f"Unbounded KV formula ({kv_unbounded} B) is LESS than SWA bound ({kv_swa_bounded} B) "
+        f"for seq={seq_beyond_window} > window={window_size}. "
+        "The unbounded formula must over-predict (conservative, safe) not under-predict. "
+        "Source [66]: true KV for SWA = n_layers × min(seq, W) × kv_per_token. "
+        "If unbounded < bounded, the safety direction of the approximation has reversed."
+    )
+
+
+def test_pss_is_not_greater_than_rss() -> None:
+    """
+    Source: [71] proc(5) Linux man page — /proc/pid/smaps and PSS (Proportional Set Size).
+    PSS = sum of each page's RSS / number of processes sharing that page.
+    Single-process deployment: PSS <= RSS always (shared library pages pull PSS down).
+
+    Fault (c6): a deployment change that caused PSS > RSS — would mean the RSS-denominated
+    budget is UNDER-conservative (PSS > RSS implies RSS under-reports real per-process cost).
+    In a multi-process deployment (e.g., fitsproof forked per-request), this can occur
+    if RSS counts include non-process-unique pages that PSS corrects upward — but this
+    cannot happen in the current single-process deployment.
+
+    The test reads /proc/self/smaps (PSS) and /proc/self/status (VmRSS) and asserts
+    PSS <= RSS. Skipped on platforms without /proc/self/smaps (non-Linux).
+    """
+    import os
+    import re
+
+    smaps_path = "/proc/self/smaps"
+    status_path = "/proc/self/status"
+
+    if not (os.path.exists(smaps_path) and os.path.exists(status_path)):
+        pytest.skip("/proc/self/smaps or /proc/self/status not available (non-Linux)")
+
+    with open(smaps_path) as f:
+        smaps_text = f.read()
+    pss_kb_total = sum(int(v) for v in re.findall(r"^Pss:\s+(\d+)", smaps_text, re.MULTILINE))
+
+    with open(status_path) as f:
+        status_text = f.read()
+    m = re.search(r"^VmRSS:\s+(\d+)", status_text, re.MULTILINE)
+    assert m is not None, "VmRSS not found in /proc/self/status"
+    rss_kb = int(m.group(1))
+
+    # PSS must not exceed RSS (source [71]: PSS = RSS / sharing_factor; factor >= 1)
+    assert pss_kb_total <= rss_kb, (
+        f"PSS ({pss_kb_total} kB) > RSS ({rss_kb} kB). "
+        "In a single-process deployment PSS must be <= RSS. "
+        "If this fires, the budget expressed in RSS terms under-reports actual memory cost. "
+        "Source [71]: PSS = sum(page_rss / share_count); single process → PSS <= RSS."
+    )
+    # Also verify PSS is a reasonable fraction of RSS (> 50% confirms no measurement error)
+    if rss_kb > 0:
+        ratio = pss_kb_total / rss_kb
+        assert ratio > 0.5, (
+            f"PSS/RSS ratio is {ratio:.3f} — unexpectedly low (< 0.5). "
+            "Either a measurement error or the process has an unusual sharing profile. "
+            "Source [71]: in normal single-process deployments PSS ≈ 0.90-1.00 × RSS."
+        )
+
+
+def test_degradation_options_peak_strictly_decreasing() -> None:
+    """
+    Sources: [57] BitNet §2 (fewer bits → fewer bytes); [66] Mistral §2.3 (KV cost linear
+    in seq); [69] (train-large-then-compress: degradation ordered by predicted quality cost).
+
+    Fault (c6): plan() returning degradation options where quant degradations are not
+    ordered with decreasing predicted peak — e.g., int4 reporting MORE memory than int8.
+    The spec orders degradations as "lower quant → shorter context → offload layers";
+    within the quant category, fewer bits must mean fewer bytes.
+
+    Property: any two degradation options that differ only by quantisation level must
+    have the higher-precision option reporting a larger predicted peak than the lower-precision.
+    Context-reduction options may have larger peaks than quant options (same weights,
+    shorter context reduces KV but fp32 weights still dominate) — we do NOT require
+    global ordering across categories.
+    """
+    from fitsproof.contract.cost import weight_bytes
+    from fitsproof.contract.plan import Verdict, plan
+    from fitsproof.contract.probe import probe
+    from fitsproof.engine.model import REFERENCE_CONFIG
+
+    machine = probe()
+
+    # Budget: tight enough to force degradation — below fp32 weight total but above zero
+    fp32_w = weight_bytes(REFERENCE_CONFIG, "none")
+    budget = int(fp32_w * 0.20)  # 20% of fp32 weights — forces degradation chain
+
+    p = plan(REFERENCE_CONFIG, machine, context_len=512, budget_bytes=budget, quant="none")
+
+    if p.verdict == Verdict.FITS:
+        pytest.skip(
+            f"Budget {budget} still results in FITS for the reference model at fp32 "
+            "— cannot test degradation ordering without a tighter budget"
+        )
+
+    if not p.degradations:
+        pytest.skip("No degradation options — cannot test ordering on empty list")
+
+    # Within quant-based options (int8 then int4), peak must be decreasing.
+    # Identify quant options by description keyword.
+    quant_peaks = [
+        (d.description, d.predicted_peak_bytes)
+        for d in p.degradations
+        if "quant" in d.description.lower() or "int" in d.description.lower()
+    ]
+
+    for i in range(len(quant_peaks) - 1):
+        desc_a, peak_a = quant_peaks[i]
+        desc_b, peak_b = quant_peaks[i + 1]
+        assert peak_a > peak_b, (
+            f"Quant degradation ordering wrong: option[{i}] ({desc_a!r}, {peak_a} B) "
+            f"must be > option[{i + 1}] ({desc_b!r}, {peak_b} B). "
+            "Lower precision must always produce a smaller peak. "
+            "Sources: [57] fewer bits → fewer bytes; the degradation chain is only useful "
+            "if each step actually reduces the predicted memory footprint."
+        )

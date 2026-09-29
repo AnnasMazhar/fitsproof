@@ -5,7 +5,7 @@ The tools below beat fitsproof on speed, model coverage, and hardware breadth.
 We name them here so reviewers do not have to look them up.
 
 Star counts and versions retrieved from the GitHub REST API and PyPI at
-2026-09-29T07:30Z (cycle 6 pass 2 refresh; counts confirmed against c5-p3 snapshot
+2026-09-29T09:00Z (cycle 6 pass 5 refresh; counts confirmed against c5-p3 snapshot
 at 2026-09-29T01:01Z — no new repos entered the table; aura has 0 commits since c5-p3).
 
 ## Inference engines
