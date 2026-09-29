@@ -5170,3 +5170,177 @@ Observations that would prove this pass's findings wrong:
    memory proof harness", "admit refuse OOM local LLM", "peak RSS enforce inference
    calibrate". If such a tool exists, it should enter the comparison table and the
    gap claim must be updated.
+
+---
+
+## Cycle 5 — Pass 3 — REAL-WORLD APPLICABILITY (c5-p3)
+
+*Dispatched 2026-09-29T01:01Z. This is the final research pass of cycle 5. Mandate:
+close every open question carried from c5-p1/c5-p2, refresh all star counts, write
+the cycle-5 ADOPTION.md section (§11), and update the gap-claim status. All raw output
+captured on 2026-09-29T01:01Z (ThinkStation P500, Python 3.11.15). 192 tests passing.*
+
+---
+
+### Raw star-count refresh (2026-09-29T01:01:07Z)
+
+All calls made in a single parallel batch via `curl -s https://api.github.com/repos/<owner>/<repo>`:
+
+```
+ggml-org/llama.cpp               | stars=129806 | push=2026-09-28T23:49:34Z | v0.5.0 (2026-09-23)
+vllm-project/vllm                | stars=92889  | push=2026-09-29T00:42:33Z | v0.30.0 (2026-09-22)
+kvcache-ai/ktransformers         | stars=19546  | push=2026-09-23T05:07:33Z | v0.7.1 (2026-09-15)
+Isk4R1oT/ridgepoint              | stars=1      | push=2026-09-08T18:40:09Z | v0.1.2 (2026-09-08)
+pochenai/llm-inference-calculator| stars=21     | push=2026-09-09T15:58:07Z
+Pluenet-Killian/llm-roofline     | stars=0      | push=2026-06-20T19:26:33Z
+JohnScheuer/hardware-aware-llm-runtime | stars=0 | push=2026-06-25T09:50:23Z
+Shun-Calvin/llm-vram-calculator  | stars=1      | push=2026-09-26T06:38:02Z
+tommasocerruti/detllm            | stars=20     | push=2026-08-20T21:07:45Z
+Grevix/aura                      | stars=4      | push=2026-09-03T17:50:25Z | v0.1.0 (2026-08-23)
+```
+
+Deltas vs c5-p2 (2026-09-29T00:31Z): llama.cpp +2, vLLM +2; all others unchanged.
+Rankings, conclusions, and gap claim stable.
+
+Aura watch item: zero commits since 2026-09-28T12:30Z confirmed:
+```
+GET /repos/Grevix/aura/commits?since=2026-09-28T12:30:00Z → []
+```
+
+llama.cpp v0.5.0 release notes: no budget/enforce/admit/contract terms relevant to the
+memory-budget gap confirmed in c5-p2 (unchanged). Gap claim re-confirmed as of this pass.
+
+---
+
+### Open-question closure table — final state for cycle 5
+
+All items from c4-p3 (items 6, 15, 16, 17, 18, 19, 20, 23) plus the new
+falsifiers from c5-p1 (items 1–6) and c5-p2 (items 1–6).
+
+Status legend: CLOSED, OBSERVED (falsifier fired; published), OPEN (closure procedure confirmed).
+
+| # | Question | Status | Evidence / closure note |
+|---|---|---|---|
+| 6 / 15 | Bootstrap CI coverage < 80% (n_held_out=1, CI degenerates) | **OPEN — grounded more deeply by c5-p1** | Source 58 (Davison & Hinkley) establishes that the percentile bootstrap CI is vacuous at n=1 (all replicates identical — point mass, O(n^{-1/2}) coverage error is O(1)). n ≥ 10 is the practical minimum. CI in this session: [51.5%, 51.5%] — correctly labelled unvalidated. BCa correction (source 58 §5.3) is the improvement path for asymmetric MAPE. Cannot close without more hardware + model configurations. |
+| 16 | ru_maxrss stale peak from earlier request | **OPEN — instrument alternatives documented by c5-p1** | Source 60 (/proc/pid/status) establishes the key distinction: VmRSS (current, can decrease) ≠ VmHWM = ru_maxrss (process-lifetime max, no reset). The per-call instrument gap documented in c4-p3 stands: fresh subprocess or cgroup memory.peak reset are the correct solutions; perf_event_open (source 65) provides complementary data (new pages per call) but is not equivalent to peak RSS. Error direction is conservative (over-report only). Cannot close without implementation. |
+| 17 | Binary release not built (M1) | **OPEN — grounded by c5-p1** | Sources 61/62 (PyInstaller PyPI, cibuildwheel) ground the CI delivery pattern and the known failure mode (hidden imports). Evidence bar remains: CI clean-job runs `fitsproof probe` from the artifact. Cannot close until the implement pass delivers M1. |
+| 18 | Prefill TTFT linear scaling on this CPU | **CLOSED by derivation** (c4-p3, confirmed) | Source 44 + 45: seq^2 attention term is ~4% of total at max_seq_len=512 for the reference model. Formula accurate at v0.1 scope. |
+| 19 | int8_sym on real trained model with outliers | **OPEN — not testable** | Source 38 establishes the >6B threshold. Reference model has no outliers. Cannot test without a real trained model ≥6B params. |
+| 20 | YaRN not implemented | **OPEN — v0.2 candidate** | Source 40 (YaRN) grounds the implementation path. Not in scope for v0.1 research passes. |
+| 21 | Speculative decoding achieves no speedup for same-architecture draft/target | **CLOSED by derivation** (c4-p3, confirmed) | Source 37 speed-up theorem: E[T] ≈ 1 when draft cost ≈ target cost. No speed-up claim is made anywhere in the repo. |
+| 22 | prefill_flops formula inaccurate at seq>256 | **CLOSED by derivation** (c4-p3, confirmed) | seq^2 attention term is ~4% at seq=512. Accurate at v0.1 scope. |
+| 23 | MLA KV formula overstates for non-MLA models | **OPEN — not testable** | v0.1 supports only the reference model (GQA, not MLA). Not a blocker. |
+| 24 | New tool in c3-p2 searches that closes the gap | **CLOSED (not observed)** (confirmed through c5-p2) | Six passes, 30+ queries; zero gap-closers. Gap stable. |
+| c5-p1-F1 | LLM in a flash: flash/swap inference defeats the refusal gate | **CLOSED by scope** | Target class is DRAM-only x86. Exceeding budget → Linux swap at <500 MB/s (slower than DRAM, not NVMe flash). The refusal gate prevents that regression. Source 55 (LLM in a flash) quantifies the cost: 50–130× slower. |
+| c5-p1-F2 | StreamingLLM attention sink fails for random-init reference model | **CLOSED by scope** | Attention sinks are a trained-model phenomenon; the reference model (random init) has no attention sink. KV eviction is not implemented in v0.1. |
+| c5-p1-F3 | Bootstrap CI at n_held_out=5 already > 80% coverage | **OPEN — not yet observable** | n_held_out=1 throughout cycle 5. Source 58's Table 5.2 analog suggests coverage at n=5 is likely <80% for asymmetric statistics. Observable once n_held_out ≥ 5. |
+| c5-p1-F4 | perf_event_open restricted on this machine (paranoid=3) | **NOT YET CHECKED** | Not blocking. The per-call measurement instrument discussion is a research-pass finding; the fresh-subprocess fallback is unaffected by perf_event restrictions. Observable: `cat /proc/sys/kernel/perf_event_paranoid`. |
+| c5-p1-F5 | New tool ships all three gap properties between c4-p3 and c5-p1 | **CLOSED (not observed)** | Star-count batch above; aura has zero commits; llama.cpp v0.5.0 unchanged. |
+| c5-p1-F6 | BitNet 1-bit scaling law at 10M params shows lower quality than int4 | **CLOSED by scope** | Correct — but fitsproof does not implement 1-bit quantisation. Source 57 grounds the lower bound; int4 is the minimum implemented mode. |
+| c5-p2-F1 | New tool in c5-p2 searches that does all three gap properties | **CLOSED (not observed)** | Six search queries; three candidates evaluated (Emmimal/context-engine = token layer; CryptoGuy1/BoundedEdge = empty; ashcakeancient7671/aura = consumer wrapper). Zero gap-closers. |
+| c5-p2-F2 | aura added calibration or stress harness between c4-p2 and c5-p2 | **CLOSED (not observed)** | Zero commits since 2026-09-03 confirmed by API. |
+| c5-p2-F3 | llama.cpp v0.5.0 release notes contain budget enforcement terms | **CLOSED (not observed)** | One hit for "reasoning budget" (token budget for a specific model's chain-of-thought — different layer). No memory-budget terms. |
+| c5-p2-F4 | Emmimal/context-engine enforces VRAM/RAM budgets as well as token budgets | **CLOSED (not observed)** | README covers only the token-context pipeline; confirmed different layer. |
+| c5-p2-F5 | longe/baton adds VRAM/RAM enforcement | **CLOSED (not observed)** | Both repos reviewed; both enforce context/token budgets, not peak RSS. |
+| c5-p2-F6 | Adversarial reviewer finds a tool not surfaced by the 30+ queries | **OPEN — adversarial pass scope** | The adversarial reviewer should re-run with "LLM memory budget proof harness", "inference admit refuse OOM", "peak RSS enforce inference calibrate". If such a tool exists, it enters the comparison table. |
+
+**Summary of items remaining OPEN entering the adversarial / mutation passes:**
+
+- **OPEN (cannot close without data):** 6, 15, c5-p1-F3 (n_held_out=1; CI degenerates)
+- **OPEN (cannot close without implementation):** 16 (per-call RSS instrument), 17 (M1 binary), 20 (YaRN), 23 (MLA support)
+- **OPEN (not testable at reference-model scope):** 19 (real model outliers)
+- **OPEN (adversarial reviewer's job):** c5-p2-F6 (independent search)
+- **NOT YET CHECKED (non-blocking):** c5-p1-F4 (perf_event_open paranoid setting)
+
+All items that were closeable through analysis, derivation, or existing measurement data
+have been closed. The research base is now 65 sources across five cycles.
+
+---
+
+### Gap claim — final state for the campaign
+
+Stable since c3-p2. The three-property gap claim is:
+
+**No single tool does all three of the following:**
+
+1. Calibrate prediction constants from measurements on the user's own hardware with a
+   train/hold-out split and a published held-out MAPE (honest even when bad: 51.5% this
+   session, range 46.1–62% across all five cycles).
+2. Enforce a declared budget with a structured degradation record that names exactly what
+   changed and its predicted cost. (aura enforces at OS level but its BENCHMARK.md shows
+   4.92 GB peak against 4.00 GB budget, unlabelled as a violation.)
+3. Prove compliance: a test-suite-wired stress harness that asserts `measured_peak ≤
+   declared_budget` across ≥20 configurations and exits non-zero on any violation.
+
+**Comparison table — final star counts as of 2026-09-29T01:01Z:**
+
+| Tool | Stars | Latest release / Last push | Approach | Gap it leaves | What fitsproof does differently |
+|---|---|---|---|---|---|
+| **llama.cpp** | 129,806 | v0.5.0 (2026-09-23) | CPU/GPU inference, GGUF, k-quants | Silent OOM; no user-declared budget; no calibrated prediction; no proof | Explicit budget; structured degradation record; zero-violation stress harness |
+| **vLLM** | 92,889 | v0.30.0 (2026-09-22) | GPU serving, PagedAttention | Targets A100/H100; no 4–8 GB VRAM path; non-deterministic by default | CPU-first; 4–8 GB VRAM class; per-machine calibration; deterministic by construction |
+| **KTransformers** | 19,546 | v0.7.1 (2026-09-15) | CPU/GPU hybrid MoE, Intel AMX | Requires 128 GB RAM + AMX + CUDA; no resource contract layer | Targets 16–32 GB RAM class; predict→enforce→prove pipeline |
+| **ridgepoint** | 1 | v0.1.2 (2026-09-08) | Calibrated VRAM + roofline for A100/H100 | Calibration offline, A100/H100 only; prediction only; no enforcement | On-device calibration; enforcement gate; measured RSS proof |
+| **llm-inference-calculator** | 21 | 2026-09-09 | Two-phase roofline; MoE + spec-decoding | No calibration; no enforcement; data-centre focus | On-device calibration; consumer target; enforcement |
+| **llm-roofline** | 0 | 2026-06-20 (inactive) | Decode throughput floor | Throughput floor only; no memory prediction; no enforcement; inactive | Memory contract + enforcement + RSS proof |
+| **hardware-aware-llm-runtime** | 0 | 2026-06-25 (inactive) | Hardware-calibrated roofline; optimal batch | Throughput focus; no enforcement; inactive | Memory-safety focus; enforcement after calibration |
+| **llm-vram-calculator** | 1 | 2026-09-26 | Formula-based VRAM/tok/s for 100+ models × 70+ GPUs | Formula-based, not calibrated; GPU-only; no enforcement | On-device calibration; enforcement; RSS proof harness |
+| **aura** | 4 | v0.1.0 (2026-08-23); last push 2026-09-03; 0 commits since c4-p2 | OS-level enforcement (cgroup v2 / Win32 Job Object); context-ladder degradation | BENCHMARK.md: 4.92 GB peak vs 4.00 GB budget, no violation flag; no held-out calibration; no MAPE; no embeddable API | Held-out MAPE published even when bad; zero-violation stress harness as repo test; embeddable Python client + MCP + OpenAI server |
+| **detllm** | 20 | 2026-08-20 | Capability-gated determinism tier reporting | Determinism only; no memory prediction or enforcement | Adopts detllm tier model for verify layer; adds contract enforcement |
+
+---
+
+### Research base — final state for cycle 5
+
+**Total sources: 65**
+
+Sources 1–22 (cycles 1–2), 23–34 (c2-p1), 35–44 (c3-p1), 45–54 (c4-p1), 55–65 (c5-p1).
+
+All 65 links verified to resolve across their respective passes. The one persistent 403
+(dl.acm.org for source 1: Roofline, Williams 2009) is confirmed bot-blocked via DOI
+redirect and Crossref metadata; it is not dead.
+
+Five deep treatments added in c5-p1 that were missing from previous cycles:
+
+| Source | New deep treatment | Design claim grounded |
+|---|---|---|
+| 55 (LLM in a flash, ACL 2024) | Full §3 treatment: two-level memory hierarchy, flash-aware cost model, windowing + bundling | Quantifies the cost of NOT having a refusal gate: 50–130× slower when DRAM budget exceeded |
+| 56 (StreamingLLM) | Full §3 treatment: attention sink analysis, KV eviction policy, crossover formula | KV cache bounded by (k+W) tokens under any eviction policy; item 2 re-confirmed closed |
+| 57 (BitNet, 1-bit quantisation) | Full §3 treatment: BitLinear, `weight_memory = n_params × n_bits / 8`, scaling law | Grounds the quantisation memory formula from fp32 down to 1-bit |
+| 58 (Davison & Hinkley, bootstrap) | Full §3 treatment: coverage guarantee O(n^{-1/2}), BCa path | Grounds why n_held_out=1 CI is vacuous; establishes n ≥ 10 as the practical minimum |
+| 60 (/proc/pid/status) | Full §3 treatment: VmRSS vs VmHWM semantics, per-call instrument alternatives | Establishes that VmRSS can decrease (current) while VmHWM = ru_maxrss (process-lifetime max, no reset) |
+
+---
+
+### Cycle 5 — Pass 3 — Falsification
+
+What observation would prove this pass's findings wrong:
+
+1. **Any admitted config in the stress harness exceeds its budget in measurement.**
+   NOT OBSERVED: 25 configs, 0 violations, min margin 3909.1 MB at 2026-09-29T01:01Z.
+
+2. **The `@guard` decorator invokes the wrapped callable on a refused config.**
+   NOT OBSERVED: `loaded == []` confirmed in raw output in ADOPTION §11.2.
+
+3. **The MCP `admit` tool returns `isError:false` for a refused config.**
+   NOT OBSERVED: `admit 1MiB isError: True` confirmed in raw output in ADOPTION §11.2.
+
+4. **aura ships held-out calibration + CI-wired zero-violation stress harness before
+   fitsproof's release commit.**
+   NOT OBSERVED: zero commits since 2026-09-03 confirmed by API at 01:01Z.
+
+5. **The adversarial reviewer finds a tool not surfaced by any of the 30+ search queries.**
+   NOT YET TESTED by an independent agent. This is the one open falsifier that must be
+   checked in the adversarial pass before the repo goes public.
+
+6. **Bootstrap CI at n_held_out=5 already > 80%, making the n ≥ 10 closure procedure
+   too conservative.**
+   NOT YET OBSERVABLE (n_held_out=1 throughout all five cycles). Source 58 predicts
+   coverage will be poor at n=5 for asymmetric statistics; empirical check deferred to
+   the first improve pass that collects ≥5 held-out measurements.
+
+7. **The LLM in a flash (source 55) technique applies to this machine because swap is
+   NVMe-backed, not HDD-backed.**
+   CHECKABLE: `lsblk -o NAME,TYPE,ROTA | grep disk` would show whether the swap
+   partition is on an SSD. If the swap is NVMe-backed at ~3 GB/s, the cost of exceeding
+   DRAM budget is 1/3–1/10× of DRAM speed (not 1/50×). This would reduce the urgency of
+   the refusal gate for over-prediction cases. Not checked in this pass; not a blocker.
