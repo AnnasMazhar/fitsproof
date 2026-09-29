@@ -33,6 +33,9 @@ Generated: 2026-09-27. Machine: x86-64, no CUDA, 31 GB RAM, 0 VRAM.
 | 15 | [Kwon et al. 2023 — PagedAttention](https://arxiv.org/abs/2309.06180) | KV cache as a first-class memory resource; formula `2*L*H_kv*S*d*bytes` | `contract/cost.py:kv_cache_bytes` | `tests/contract/test_cost.py::test_kv_cache_bytes_known` | KV cache is budgeted separately from weight bytes; dominant at long context | IMPLEMENTED |
 | 57 | [Ma et al. 2024 — BitNet b1.58](https://arxiv.org/abs/2402.17764) | General weight memory formula: `weight_memory = n_params × n_bits / 8`; applies across 1-bit, 4-bit, 8-bit, and float32 (32-bit) | `engine/quant.py:memory_reduction_factor` | `tests/engine/test_quant.py::test_memory_reduction_factor_int8` | int8 reduces to 1/4 of float32 (8/32); int4 reduces to 1/8 (4/32) — formula verified against source eq. | IMPLEMENTED |
 | 60 | [Linux kernel /proc/pid/status](https://man7.org/linux/man-pages/man5/proc.5.html) | VmRSS = current resident set size (can decrease after frees); VmHWM = process-lifetime high-water mark (never decreases) | `contract/verify.py:_get_rss_bytes` | `tests/contract/test_plan_admit_verify.py::test_verify_large_budget_respected` | Per-config delta = max(rss_before, rss_after) − rss_before; conservative (safe) direction since arena memory inflates baselines | IMPLEMENTED |
+| 67 | [BigScience Workshop 2023 — BLOOM](https://arxiv.org/abs/2211.05100) | Embedding dtype must match model precision: non-tied lm_head at fp16 for fp16 models; fp32 hardcoding causes 2× over-prediction for fp16 models (F-1 finding) | `contract/cost.py:weight_bytes` | `tests/contract/test_cost.py::test_weight_bytes_fp16_model_uses_fp16_for_embed` | Prevents false degradations for fp16 large-vocabulary models by accounting embeddings at the correct dtype | IMPLEMENTED |
+| 71 | [Linux kernel proc_pid_smaps](https://man7.org/linux/man-pages/man5/proc_pid_smaps.5.html) | PSS = Proportional Set Size: RSS minus shared-page fraction; in single-process deployment PSS ≈ RSS; budget in RSS terms is conservative (safe) | `contract/verify.py:_get_rss_bytes` (uses VmRSS / VmHWM) | `tests/contract/test_plan_admit_verify.py::test_pss_vs_rss_delta` | Closes c6-p1-F2: measured PSS/RSS ratio > 0.5 confirms RSS is safe to use as budget unit in single-process deployment | IMPLEMENTED |
+| 75 | [BLOOM KAT (source 75 in RESEARCH.md)](https://arxiv.org/abs/2211.05100) | BLOOM-176B known-answer test: weight_bytes with fp16 config must use fp16 for embed (not fp32); embed+unembed ≈ 14.39 GB (fp16) not 28.77 GB (fp32) | `contract/cost.py:weight_bytes` | `tests/contract/test_cost.py::test_weight_bytes_bloom_176b` | Guards against F-1 recurrence: verifies fp16 embed bytes = 14.39 GB for BLOOM-scale vocab (250880 × 14336 × 2 × 2) | IMPLEMENTED |
 
 ---
 
@@ -91,7 +94,7 @@ x86 with NumPy (below theoretical peak of ~40 GB/s, as expected for a Python tri
 
 ---
 
-## Sources not in this table (RESEARCH.md §16–22, §23–54, §55–65 context-only)
+## Sources not in this table (RESEARCH.md §16–22, §23–54, §55–65 context-only; §66–75 c6-p1)
 
 These are competitor context, documented limitations, or background theory — not mechanisms we implement:
 
@@ -107,10 +110,17 @@ These are competitor context, documented limitations, or background theory — n
 - **58** (Davison & Hinkley bootstrap CI): grounds why n_held_out=1 CI is vacuous; motivates the CI width disclaimer in calibrate.py. Not a numerical method we implement — a meta-argument about our CI reporting.
 - **59** (SparseGPT): competitor quantisation method; we implement GPTQ-style (source 7), not SparseGPT.
 - **61–65** (PyInstaller, cibuildwheel, TinyLlama, k-bit scaling, perf_event_open): tooling and context sources; no implementation.
+- **66** (Mistral 7B SWA): documented as a limitation in README (SWA over-prediction in kv_cache_bytes for seq > window_size); no implementation — v0.2 scope.
+- **68** (Efficient Inference Survey taxonomy): external taxonomy grounding fitsproof's cost model; no new mechanism.
+- **69** (Train Large Then Compress): grounds plan.py degradation ordering; not directly tested (reference model randomly initialised, no quality signal).
+- **70** (H2O KV eviction): documented limitation; H2O not implemented in v0.1.
+- **72** (vLLM BATCH_INVARIANT): competitor analysis for COMPARISONS.md; no mechanism to implement.
+- **73** (Understanding LLMs survey): activation_bytes heuristic background; no new formula.
+- **74** (FastGen adaptive KV): documented limitation; per-head eviction v0.2 scope.
 
-Sources 57 and 60 are now in the table above (IMPLEMENTED rows).
+Sources 57, 60, 67, 71, and 75 are IMPLEMENTED rows in the table above.
 
 If `scripts/check_research_traceability.py --strict` is run with sources 16–22 added to
 the required set, it will fail — which is correct, because those sources have no test.
 The default (non-strict) run passes because the check only requires core test directories
-to cite IDs 1–15 (plus 57 and 60 are cited in module docstrings of engine and contract tests).
+to cite IDs 1–15 (plus 57, 60, 67, 71, and 75 are cited in module docstrings of the test files).
