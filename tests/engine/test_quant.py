@@ -1,6 +1,15 @@
 """
 Tests for fitsproof.engine.quant.
 
+Research source mappings (M4 — QUALITY-CONTRACT §4 / fitsproof.md M4):
+  [7] Frantar et al. 2022 (GPTQ): per-channel int8 symmetric quantisation;
+      scale = max(|w|) / 127; round-trip error bounded by scale/2.
+  [8] Lin et al. 2023 (AWQ): asymmetric int8 with zero-point correction;
+      scale = (max-min)/255; zero_point = round(-min/scale).
+  [57] Ma et al. 2024 (BitNet b1.58): 1-bit LLMs; establishes the general
+      weight memory formula weight_memory = n_params × n_bits / 8, which
+      generalises to int8 (1/4 of float32) and int4 (1/8 of float32).
+
 Faults detected by each test:
   test_int8_sym_known_values:
     Using 128 instead of 127 as the clip range would shift the scale,

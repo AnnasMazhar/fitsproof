@@ -31,6 +31,8 @@ Generated: 2026-09-27. Machine: x86-64, no CUDA, 31 GB RAM, 0 VRAM.
 | 13 | [Vakulya 2023 — GGML k-Quants](https://github.com/ggerganov/llama.cpp/pull/1684) | Pack two int4 per byte; clip to [-7, 7] (symmetric); scale per 32-element block | `engine/quant.py:_int4_pack`, `engine/quant.py:_int4_unpack` | `tests/engine/test_quant.py::test_int4_pack_unpack_roundtrip` | int4 pack/unpack with lossless round-trip and overflow-safe constant rows | IMPLEMENTED |
 | 14 | [Cerruti 2024 — detllm](https://github.com/tommasocerruti/detllm) | Capability-gated determinism tiers: Tier 0 (artifact), Tier 1 (run-to-run), Tier 2 (+logprobs) | `contract/verify.py:DeterminismTier` | `tests/contract/test_plan_admit_verify.py::test_verify_determinism_tier` | Verify reports the tier actually achieved; never claims higher than demonstrated | IMPLEMENTED |
 | 15 | [Kwon et al. 2023 — PagedAttention](https://arxiv.org/abs/2309.06180) | KV cache as a first-class memory resource; formula `2*L*H_kv*S*d*bytes` | `contract/cost.py:kv_cache_bytes` | `tests/contract/test_cost.py::test_kv_cache_bytes_known` | KV cache is budgeted separately from weight bytes; dominant at long context | IMPLEMENTED |
+| 57 | [Ma et al. 2024 — BitNet b1.58](https://arxiv.org/abs/2402.17764) | General weight memory formula: `weight_memory = n_params × n_bits / 8`; applies across 1-bit, 4-bit, 8-bit, and float32 (32-bit) | `engine/quant.py:memory_reduction_factor` | `tests/engine/test_quant.py::test_memory_reduction_factor_int8` | int8 reduces to 1/4 of float32 (8/32); int4 reduces to 1/8 (4/32) — formula verified against source eq. | IMPLEMENTED |
+| 60 | [Linux kernel /proc/pid/status](https://man7.org/linux/man-pages/man5/proc.5.html) | VmRSS = current resident set size (can decrease after frees); VmHWM = process-lifetime high-water mark (never decreases) | `contract/verify.py:_get_rss_bytes` | `tests/contract/test_plan_admit_verify.py::test_verify_large_budget_respected` | Per-config delta = max(rss_before, rss_after) − rss_before; conservative (safe) direction since arena memory inflates baselines | IMPLEMENTED |
 
 ---
 
@@ -89,9 +91,9 @@ x86 with NumPy (below theoretical peak of ~40 GB/s, as expected for a Python tri
 
 ---
 
-## Sources not in this table (RESEARCH.md §16–22)
+## Sources not in this table (RESEARCH.md §16–22, §23–54, §55–65 context-only)
 
-These are competitor context or documented limitations, not mechanisms we implement:
+These are competitor context, documented limitations, or background theory — not mechanisms we implement:
 
 - **16** (NTK-aware RoPE): limitation documented in README and code comment; no implementation needed.
 - **17** (LLM-42 verify-rollback): design context for determinism tier framework; mechanism not ported.
@@ -100,8 +102,15 @@ These are competitor context or documented limitations, not mechanisms we implem
 - **20** (PowerInfer): competitor, no mechanism to implement.
 - **21** (KTransformers): competitor, no mechanism to implement.
 - **22** (ridgepoint): closest competitor, used for gap analysis, no mechanism to implement.
+- **55** (LLM in a Flash, Apple ACL 2024): background theory on flash-aware cost model; quantifies OOM cost but we implement enforcement, not flash paging.
+- **56** (StreamingLLM): KV eviction policy background; we do not implement attention sinks or eviction.
+- **58** (Davison & Hinkley bootstrap CI): grounds why n_held_out=1 CI is vacuous; motivates the CI width disclaimer in calibrate.py. Not a numerical method we implement — a meta-argument about our CI reporting.
+- **59** (SparseGPT): competitor quantisation method; we implement GPTQ-style (source 7), not SparseGPT.
+- **61–65** (PyInstaller, cibuildwheel, TinyLlama, k-bit scaling, perf_event_open): tooling and context sources; no implementation.
+
+Sources 57 and 60 are now in the table above (IMPLEMENTED rows).
 
 If `scripts/check_research_traceability.py --strict` is run with sources 16–22 added to
 the required set, it will fail — which is correct, because those sources have no test.
 The default (non-strict) run passes because the check only requires core test directories
-to cite IDs 1–15.
+to cite IDs 1–15 (plus 57 and 60 are cited in module docstrings of engine and contract tests).

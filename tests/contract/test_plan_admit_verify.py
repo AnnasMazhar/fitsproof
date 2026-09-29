@@ -8,6 +8,11 @@ Research source mappings (M4 — QUALITY-CONTRACT §4 / fitsproof.md M4):
   [7] Frantar et al. 2022 (GPTQ): quantisation memory reduction.
   [12] McCalpin 1995 (STREAM): sustainable DRAM bandwidth measurement.
   [14] Cerruti 2024 (detllm): capability-gated determinism tiers.
+  [60] Linux kernel /proc/pid/status documentation: VmRSS = current resident set
+      size (can decrease after frees); VmHWM = high-water mark RSS (never decreases
+      within a process lifetime). verify.py samples VmRSS before/after each config
+      run as a per-config delta; the delta is conservative (safe direction) since
+      arena-retained memory after a prior run inflates the baseline.
 
 Faults detected by each test:
   test_plan_fits_under_budget:

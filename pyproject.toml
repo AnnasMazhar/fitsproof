@@ -63,7 +63,10 @@ addopts = "-v --tb=short"
 line-length = 100
 target-version = "py311"
 src = ["src"]
-exclude = ["mutants/"]
+exclude = [
+    "mutants/",
+    "mutants.*",
+]
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "N", "W", "UP"]
@@ -74,5 +77,30 @@ ignore = [
 ]
 
 [tool.mutmut]
+# mutmut 3.3 reads ONLY these keys: also_copy, do_not_mutate, max_stack_depth, debug,
+# paths_to_mutate (see Config in mutmut/__main__.py). A `runner` key is IGNORED — mutmut runs its
+# own PytestRunner — so the suite cannot be scoped from here. `runner` used to sit below and gave
+# the false impression that only tests/contract was run.
 paths_to_mutate = ["src/fitsproof/contract/"]
-runner = ".venv/bin/python -m pytest tests/contract/ -x -q"
+# The mutants tree receives ONLY paths_to_mutate, so the rest of the package has to be listed here
+# or stats collection dies with `ModuleNotFoundError: No module named 'fitsproof.client'` — which
+# is what kept the mutation gate from ever producing a number (c1/c2/c3-p12 all recorded
+# score=None). fitsproof/__init__.py is required because contract/ is a subpackage of it.
+# DO NOT list "src/fitsproof/" (the whole package): also_copy is applied AFTER mutant generation
+# (copy_src_dir -> create_mutants -> copy_also_copy_files), so it would overwrite the freshly
+# generated mutants in contract/ with pristine source and every mutant would score as survived.
+also_copy = [
+    "src/fitsproof/__init__.py",
+    "src/fitsproof/cli.py",
+    "src/fitsproof/client.py",
+    "src/fitsproof/mcp.py",
+    "src/fitsproof/engine/",
+    # Assets the test suite reads at collection/run time. mutmut needs a GREEN suite to collect
+    # stats, and pytest -x stops at the first failure, so a missing asset silently reads as
+    # "failed to collect stats" (first seen: test_packaging.py asserting scripts/calibration_demo.py
+    # exists; README.md is read by tests/value/test_readme_snippets.py, docs/ by the link checks).
+    "scripts/",
+    "docs/",
+    "README.md",
+    "LICENSE",
+]
