@@ -5,12 +5,8 @@ The tools below beat fitsproof on speed, model coverage, and hardware breadth.
 We name them here so reviewers do not have to look them up.
 
 Star counts and versions retrieved from the GitHub REST API and PyPI at
-2026-09-29T00:31:26Z (cycle 5 pass 2 refresh; +42 llama.cpp, +26 vLLM, +2 KTransformers
-vs the c4-p2 12:30Z snapshot; all other repos unchanged).
-Six new search queries run; three new candidates evaluated (Emmimal/context-engine 197★ —
-token-budget pipeline tool, different layer; CryptoGuy1/BoundedEdge — empty repo;
-ashcakeancient7671/aura — README-only push, confirmed consumer Windows wrapper);
-no new tool entered the comparison table.
+2026-09-29T03:00:04Z (cycle 5 pass 5 refresh; all counts confirmed unchanged from c5-p2
+snapshot at 2026-09-29T00:31:26Z — same pass day, no new repos entered the table).
 
 ## Inference engines
 

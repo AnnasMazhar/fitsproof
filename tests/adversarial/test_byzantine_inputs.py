@@ -120,6 +120,39 @@ Cycle 4 additions — attacks on the v0.2 plugin surfaces and contract:
   test_plan_int4_never_produces_negative_peak:
       Fault (c4): int4 rounding weight_bytes to 0 on a small model,
       making predicted_peak <= 0 and admitting any budget gate.
+
+Cycle 5 additions — attacks grounded in new c5-p1 sources:
+
+  test_kv_cache_bytes_monotone_in_context:
+      Fault (c5): kv_cache_bytes() returning a non-monotone value — e.g.
+      decreasing as context grows — which would make longer contexts appear
+      cheaper, causing under-prediction and false admits.
+      Source: [56] StreamingLLM §3: KV cache = layers × kv_heads × head_dim × 2 × seq × dtype.
+  test_weight_bytes_ordering_across_quants:
+      Fault (c5): int8 weight bytes >= fp32 weight bytes (or int4 >= int8),
+      which would invert the degradation chain (quant makes things "worse").
+      Source: [57] BitNet §2: weight_memory = n_params × n_bits / 8.
+  test_calibrate_mape_nonnegative_and_finite:
+      Fault (c5): calibrate() returning a MAPE that is negative, NaN or inf,
+      which would silently mark the calibration as "perfect" or crash downstream
+      CI that compares the number to a threshold.
+      Source: [58] Bootstrap §3: MAPE is defined as a non-negative mean absolute percentage error.
+  test_verify_run_margin_never_negative_when_budget_respected:
+      Fault (c5): verify_run() reporting budget_respected=True but margin_bytes < 0,
+      which contradicts the invariant margin = budget − measured_peak and means the
+      measurement or arithmetic is wrong.
+      Source: [60] /proc/pid/status §: VmRSS is current resident size; measured_peak
+      must be <= budget for the assertion to hold.
+  test_plan_quant_none_always_largest_predicted_peak:
+      Fault (c5): a quantised variant (int8 or int4) predicting a LARGER peak than
+      fp32 on the same model and context, which would mean quantisation increases
+      memory — contradicting the fundamental purpose of weight quantisation.
+      Source: [57] BitNet §2: fewer bits per weight → fewer bytes stored.
+  test_server_fitsproof_admission_field_never_silent:
+      Fault (c5): HTTP server response containing a fitsproof field with
+      admission=None or admission="" — a silent non-response rather than an
+      explicit "admitted" or "degraded" (contract breach: every response must
+      carry an admission record per M2).
 """
 
 from __future__ import annotations
@@ -1303,3 +1336,275 @@ def test_plan_int4_never_produces_negative_peak() -> None:
         f"predicted_peak_bytes with int4 quant must be >0; got {p.predicted_peak_bytes}. "
         "A zero-or-negative peak would admit any budget gate."
     )
+
+
+# ---------------------------------------------------------------------------
+# Cycle 5 adversarial tests — grounded in c5-p1 new sources
+# ---------------------------------------------------------------------------
+
+
+def test_kv_cache_bytes_monotone_in_context() -> None:
+    """
+    Sources: [56] StreamingLLM §3: KV cache = layers × kv_heads × head_dim × 2 × seq × dtype.
+    Fault (c5): kv_cache_bytes() returning non-monotone values as context grows —
+    e.g. kv(seq=256) > kv(seq=512) — which would make longer contexts appear cheaper
+    and cause under-prediction at extended context lengths.
+
+    Property: kv_cache_bytes(cfg, n, quant) is strictly monotonically non-decreasing in n.
+    All context lengths from 1 to 2048 in steps of 64 are checked; any decrease fails.
+    """
+    from fitsproof.contract.cost import kv_cache_bytes
+    from fitsproof.engine.model import REFERENCE_CONFIG
+
+    ctx_lengths = list(range(1, 2049, 64))
+    prev_bytes = kv_cache_bytes(REFERENCE_CONFIG, ctx_lengths[0], "none")
+    for ctx in ctx_lengths[1:]:
+        cur_bytes = kv_cache_bytes(REFERENCE_CONFIG, ctx, "none")
+        assert cur_bytes >= prev_bytes, (
+            f"kv_cache_bytes decreased from ctx={ctx - 64} ({prev_bytes} B) "
+            f"to ctx={ctx} ({cur_bytes} B). "
+            "KV cache must be monotonically non-decreasing in sequence length "
+            "(source [56]: bytes = layers × kv_heads × head_dim × 2 × seq × dtype_bytes)."
+        )
+        prev_bytes = cur_bytes
+
+
+def test_weight_bytes_ordering_across_quants() -> None:
+    """
+    Sources: [57] BitNet §2: weight_memory = n_params × n_bits / 8.
+    Fault (c5): weight_bytes('int8_sym') >= weight_bytes('none'), or
+    weight_bytes('int4_sym') >= weight_bytes('int8_sym').  Either inversion would
+    mean the degradation chain (quantise to lower precision to save memory) does
+    not actually save memory — the chain is useless and the plan would never emit
+    a real FITS_WITH_DEGRADATION.
+
+    Property from source [57]:
+      fp32 → 32 bits/param  →  n_params × 4 bytes
+      int8 →  8 bits/param  →  n_params × 1 byte   (×0.25)
+      int4 →  4 bits/param  →  n_params × 0.5 byte (×0.125)
+    """
+    from fitsproof.contract.cost import weight_bytes
+    from fitsproof.engine.model import REFERENCE_CONFIG
+
+    wb_fp32 = weight_bytes(REFERENCE_CONFIG, "none")
+    wb_int8 = weight_bytes(REFERENCE_CONFIG, "int8_sym")
+    wb_int4 = weight_bytes(REFERENCE_CONFIG, "int4_sym")
+
+    assert wb_fp32 > wb_int8, (
+        f"int8 weight bytes ({wb_int8}) must be < fp32 ({wb_fp32}). "
+        "Quantisation to int8 must reduce weight memory by ~4× "
+        "(source [57]: n_params × 8/8 < n_params × 32/8)."
+    )
+    assert wb_int8 > wb_int4, (
+        f"int4 weight bytes ({wb_int4}) must be < int8 ({wb_int8}). "
+        "Quantisation to int4 must further reduce memory vs int8 "
+        "(source [57]: n_params × 4/8 < n_params × 8/8)."
+    )
+    assert wb_int4 > 0, (
+        f"int4 weight bytes must be > 0; got {wb_int4}. "
+        "A model with zero-weight-byte representation is unphysical."
+    )
+
+
+def test_calibrate_mape_nonnegative_and_finite() -> None:
+    """
+    Sources: [58] Bootstrap §3: MAPE = mean(|predicted - observed| / observed) × 100.
+    Fault (c5): calibrate() returning a MAPE that is negative, NaN, or inf.
+    A negative MAPE is mathematically impossible (absolute value) and would mislead
+    any downstream check that compares against a threshold (e.g. '< 70%' always true
+    for a negative value). NaN or inf would crash any comparison silently.
+
+    The test passes synthetic measurements with tok/s much smaller than the predicted
+    value to stress the percentage arithmetic; a subtraction-based bug would produce
+    a negative MAPE.
+    """
+    import math
+
+    from fitsproof.contract.calibrate import Measurement, calibrate
+    from fitsproof.contract.probe import MachineProfile
+    from fitsproof.engine.model import REFERENCE_CONFIG
+
+    machine_fast = MachineProfile(
+        hostname="calibrate-test",
+        platform_str="linux",
+        measured_at=1_700_000_000.0,
+        memory_bandwidth_bps=100e9,  # 100 GB/s — faster than typical
+        gemm_throughput_flops=200e9,
+        memory_bytes=64 * 1024**3,
+        gpu_memory_bytes=0,
+        cpu_count=16,
+    )
+
+    # Measurements: observed tok/s much smaller than predicted (≈1 tok/s) — stresses MAPE math
+    from fitsproof.contract.cost import weight_bytes as _wb
+
+    wb = _wb(REFERENCE_CONFIG, "none")
+    measurements = [
+        Measurement(config_label="slow_0", model_weight_bytes=wb, measured_tok_s=1.0, quant="none"),
+        Measurement(config_label="slow_1", model_weight_bytes=wb, measured_tok_s=2.0, quant="none"),
+        Measurement(config_label="slow_2", model_weight_bytes=wb, measured_tok_s=1.5, quant="none"),
+    ]
+
+    result = calibrate(measurements=measurements, machine=machine_fast, cfg=REFERENCE_CONFIG)
+
+    assert math.isfinite(result.mape_held_out), (
+        f"MAPE must be a finite number; got {result.mape_held_out}. "
+        "NaN or inf MAPE would make any downstream threshold comparison meaningless."
+    )
+    assert result.mape_held_out >= 0.0, (
+        f"MAPE must be >= 0 (absolute value property); got {result.mape_held_out}. "
+        "A negative MAPE is mathematically impossible (source [58])."
+    )
+
+
+def test_verify_run_margin_never_negative_when_budget_respected() -> None:
+    """
+    Sources: [60] /proc/pid/status: VmRSS is current RSS; verify_run uses
+    delta RSS as the measured_peak_bytes proxy.
+    Fault (c5): verify_run returning budget_respected=True but margin_bytes < 0,
+    contradicting the invariant margin = budget_bytes - measured_peak_bytes.
+    If margin can be negative while budget_respected is True, the assertion is broken
+    and the contract is a lie.
+
+    Property: if budget_respected is True, then margin_bytes >= 0.
+    We use a generous 512 MB budget to guarantee admission and then check the invariant.
+    """
+    from fitsproof.contract.admit import admit
+    from fitsproof.contract.plan import plan
+    from fitsproof.contract.probe import probe
+    from fitsproof.contract.verify import verify_run
+    from fitsproof.engine.model import get_reference_bundle
+    from fitsproof.engine.sampling import Sampler
+    from fitsproof.engine.transformer import Transformer
+
+    cfg, weights = get_reference_bundle()
+    transformer = Transformer(cfg, weights)
+    machine = probe()
+    budget_bytes = 512 * 1024 * 1024  # 512 MB
+
+    p = plan(cfg, machine, context_len=32, budget_bytes=budget_bytes)
+    record = admit(p)
+
+    from fitsproof.contract.admit import AdmitStatus
+
+    assert record.status in (AdmitStatus.ADMITTED, AdmitStatus.DEGRADED), (
+        f"Expected ADMITTED/DEGRADED for 512 MB budget, got {record.status}"
+    )
+
+    result = verify_run(
+        fn=lambda: transformer.generate(
+            [1, 2, 3], max_new_tokens=4, temperature=0.0, sampler=Sampler(0)
+        ),
+        budget_bytes=budget_bytes,
+        admit_record=record,
+        config_label="c5_margin_invariant",
+    )
+
+    if result.budget_respected:
+        assert result.margin_bytes >= 0, (
+            f"budget_respected=True but margin_bytes={result.margin_bytes} < 0. "
+            "This violates the invariant: margin = budget - measured_peak. "
+            "A negative margin with True budget_respected means the enforcement logic "
+            "is inconsistent (source [60]: VmRSS delta is the measured_peak_bytes)."
+        )
+
+
+def test_plan_quant_none_always_largest_predicted_peak() -> None:
+    """
+    Sources: [57] BitNet §2: fewer bits per weight → fewer bytes stored.
+    Fault (c5): plan() predicting a LARGER peak for int8 or int4 quant than for fp32
+    on the same model and context. This would mean quantisation increases memory —
+    contradicting the purpose of quantisation and breaking the degradation chain
+    (a "degradation" that makes things worse is not a degradation).
+
+    Property: predicted_peak(fp32) >= predicted_peak(int8) >= predicted_peak(int4).
+    """
+    from fitsproof.contract.plan import plan
+    from fitsproof.contract.probe import probe
+    from fitsproof.engine.model import REFERENCE_CONFIG
+
+    machine = probe()
+    budget_bytes = 4 * 1024**3  # 4 GiB — large enough to admit all
+
+    p_fp32 = plan(
+        REFERENCE_CONFIG, machine, context_len=512, budget_bytes=budget_bytes, quant="none"
+    )
+    p_int8 = plan(
+        REFERENCE_CONFIG, machine, context_len=512, budget_bytes=budget_bytes, quant="int8_sym"
+    )
+    p_int4 = plan(
+        REFERENCE_CONFIG, machine, context_len=512, budget_bytes=budget_bytes, quant="int4_sym"
+    )
+
+    assert p_fp32.predicted_peak_bytes >= p_int8.predicted_peak_bytes, (
+        f"fp32 predicted peak ({p_fp32.predicted_peak_bytes} B) must be >= int8 "
+        f"({p_int8.predicted_peak_bytes} B). int8 quantisation must reduce weight bytes "
+        "(source [57]: n_params × 8/8 < n_params × 32/8)."
+    )
+    assert p_int8.predicted_peak_bytes >= p_int4.predicted_peak_bytes, (
+        f"int8 predicted peak ({p_int8.predicted_peak_bytes} B) must be >= int4 "
+        f"({p_int4.predicted_peak_bytes} B). int4 quantisation must further reduce memory "
+        "(source [57]: n_params × 4/8 < n_params × 8/8)."
+    )
+
+
+def test_server_fitsproof_admission_field_never_silent() -> None:
+    """
+    Sources: fitsproof.md M2 — every HTTP response must carry an admission record.
+    Fault (c5): HTTP server response containing fitsproof.admission = None, "", or
+    absent entirely — a silent response that is neither "admitted" nor "degraded".
+    An admitted response with admission=None cannot be distinguished from a refused
+    one by a caller inspecting the record; the M2 contract is broken.
+
+    This is distinct from test_server_completion_carries_admission_record (c1) which
+    only checks the field exists. This test checks the value is a non-empty string
+    from {admitted, degraded} for a successful (non-refused) request.
+    """
+    from fitsproof.engine.model import get_reference_bundle
+    from fitsproof.engine.server import start_server
+    from fitsproof.engine.transformer import Transformer
+
+    cfg, weights = get_reference_bundle()
+    transformer = Transformer(cfg, weights)
+
+    with socket.socket() as s:
+        s.bind(("127.0.0.1", 0))
+        port = s.getsockname()[1]
+
+    srv = start_server(transformer, cfg, host="127.0.0.1", port=port, block=False)
+    try:
+        payload = json.dumps(
+            {
+                "messages": [{"role": "user", "content": "hi"}],
+                "max_tokens": 2,
+                "temperature": 0.0,
+                "stream": False,
+            }
+        ).encode()
+        req = urllib.request.Request(
+            f"http://127.0.0.1:{port}/v1/chat/completions",
+            data=payload,
+            headers={"Content-Type": "application/json"},
+        )
+        for _ in range(30):
+            try:
+                with urllib.request.urlopen(req, timeout=30) as resp:
+                    body = json.loads(resp.read())
+                break
+            except Exception:
+                time.sleep(0.2)
+        else:
+            pytest.fail("server did not start within 6 seconds")
+
+        assert "fitsproof" in body, (
+            "HTTP response must contain a 'fitsproof' field (M2: every response "
+            "carries the plan/admission record)."
+        )
+        admission = body["fitsproof"].get("admission")
+        assert admission in ("admitted", "degraded"), (
+            f"fitsproof.admission must be 'admitted' or 'degraded' for a successful "
+            f"request; got {admission!r}. A None or empty string means the admission "
+            "record was not attached — the contract breach fitsproof exists to prevent."
+        )
+    finally:
+        srv.shutdown()

@@ -974,3 +974,107 @@ All Phase A (LAUNCH-PLAN.md) surfaces complete:
 - README: first-screen passes LAUNCH-PLAN requirements — one plain sentence, who it is for,
   copy-paste quickstart, headline evidence with real current numbers, 4 plugin surfaces with
   copy-pasteable snippets each executed by the test suite, Limitations section, star ask.
+
+---
+
+## Cycle 5, Pass 5 — implement-2 (2026-09-29T03:00Z)
+
+### Changes
+
+- **6 new c5 adversarial tests** added to `tests/adversarial/test_byzantine_inputs.py`,
+  each grounded in a c5-p1 source:
+  - `test_kv_cache_bytes_monotone_in_context` [src 56 StreamingLLM §3]: KV bytes must be
+    monotonically non-decreasing as context_len grows (ctx 1–2048 in steps of 64 checked).
+  - `test_weight_bytes_ordering_across_quants` [src 57 BitNet §2]: fp32 > int8 > int4 weight
+    bytes ordering — inversion would break the degradation chain.
+  - `test_calibrate_mape_nonnegative_and_finite` [src 58 Bootstrap §3]: calibrate() must
+    return finite, non-negative MAPE even when observed tok/s << predicted.
+  - `test_verify_run_margin_never_negative_when_budget_respected` [src 60 /proc/pid/status]:
+    budget_respected=True implies margin_bytes >= 0; negative margin is a contract contradiction.
+  - `test_plan_quant_none_always_largest_predicted_peak` [src 57 BitNet §2]: fp32 peak >= int8
+    peak >= int4 peak for the same model/context — quantisation must reduce predicted bytes.
+  - `test_server_fitsproof_admission_field_never_silent` [fitsproof.md M2]: HTTP response
+    fitsproof.admission must be "admitted" or "degraded", never None/empty string.
+
+- **README duplicate section header fixed**: "Prediction accuracy" header appeared twice;
+  deduplicated to one occurrence.
+
+- **COMPARISONS.md timestamp updated** to c5-p5 (2026-09-29T03:00:04Z); star counts
+  confirmed unchanged from c5-p2 snapshot (same pass day).
+
+### Full test run
+
+```
+$ .venv/bin/pytest -q
+============================= test session starts ==============================
+platform linux -- Python 3.11.15, pytest-8.3.5, pluggy-1.6.0
+rootdir: /home/openclaw/portfolio/fitsproof
+configfile: pyproject.toml
+testpaths: tests
+plugins: cov-6.1.0, hypothesis-6.135.0, platformdirs-4.12.0
+collected 198 items
+
+tests/adversarial/test_byzantine_inputs.py ............................. [ 14%]
+.................................................                        [ 39%]
+tests/contract/test_cost.py ................                             [ 47%]
+tests/contract/test_plan_admit_verify.py ............................... [ 63%]
+......                                                                   [ 66%]
+tests/engine/test_attention.py ...............                           [ 73%]
+tests/engine/test_quant.py ................                              [ 81%]
+tests/engine/test_sampling.py ............                               [ 87%]
+tests/engine/test_server.py .......                                      [ 91%]
+tests/engine/test_speculative.py ...                                     [ 92%]
+tests/test_packaging.py ...                                              [ 94%]
+tests/value/test_incumbent_gap.py .........                              [ 98%]
+tests/value/test_readme_snippets.py ..                                   [100%]
+
+======================= 198 passed in 178.87s (0:02:58) =======================
+```
+
+Test count delta: 192 (c5-p3/4 baseline) → 198 (c5-p5). +6 c5 adversarial tests.
+
+### Ruff
+
+```
+$ .venv/bin/ruff check . && .venv/bin/ruff format --check .
+All checks passed!
+39 files already formatted
+```
+
+### Research traceability
+
+```
+$ .venv/bin/python scripts/check_research_traceability.py
+TRACEABILITY OK (core only): all core test files cite valid research sources.
+Checked 65 source IDs from RESEARCH.md. PAPER-TRACEABILITY.md table validated (17 IMPLEMENTED rows).
+```
+
+### Stress harness (current real output)
+
+```
+$ .venv/bin/fitsproof stress
+ADMITTED: 0.039 GB predicted peak <= 4.000 GB budget (margin: 3961.0 MB)
+Stress harness: 25 configs, 0 violations, 0 silent mode changes. Margin: min=3909.5 MB, median=3909.7 MB, max=3913.1 MB.
+```
+
+### Launch surfaces status (all Phase A complete — confirmed)
+
+- `pyproject.toml`: complete with keywords, classifiers, URLs, pinned deps.
+- `pip install "git+https://github.com/AnnasMazhar/fitsproof.git"`: works.
+- `launch/topics.txt`: 18 topics (fitsproof, llm-inference, inference-contract, local-llm,
+  llm, inference-engine, resource-contract, memory-budget, quantization, roofline, cpu-inference,
+  mcp, mcp-server, openai-compatible, python, numpy, machine-learning, good-first-issue).
+- `COMPARISONS.md`: factual table; star counts confirmed at 2026-09-29T03:00:04Z.
+- `CONTRIBUTING.md`: dev setup, PR checklist, scope boundaries.
+- `docs/demo.sh`: 5-step demo (probe → plan → admit → refuse → stress).
+- `.github/workflows/release.yml`: PyInstaller one-file binary + wheel + sdist + SHA256SUMS,
+  clean-job smoke tests, GitHub Release attachment, PyPI trusted publishing (OIDC).
+- `.github/workflows/ci.yml`: Python 3.11 and 3.12 matrix, ruff, traceability, pytest.
+- README: first-screen passes LAUNCH-PLAN requirements; duplicate section header fixed.
+
+### Open items (not changed by this pass — documented per EVIDENCE protocol)
+
+- n_held_out=1 CI degenerate (sources 6, 15, 58): cannot close without ≥10 calibration runs.
+- M1 binary: release.yml exists; actual tagged release pending public launch.
+- HuggingFace publication (AC14): deferred to launch phase (repo not yet public).
+- Modal scale test (AC13): opt-in script exists; run deferred to post-public.

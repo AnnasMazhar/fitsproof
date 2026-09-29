@@ -34,8 +34,6 @@ If this is useful, star the repo.
 
 ## Prediction accuracy — the benchmark, published even though it is unflattering
 
-## Prediction accuracy — the benchmark, published even though it is unflattering
-
 The claim above says fitsproof *predicts* peak memory. How accurately? Measured on this
 machine, offline, against the in-repo reference model (reproduce:
 `python scripts/calibration_demo.py`):
