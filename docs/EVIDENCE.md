@@ -1267,3 +1267,59 @@ PASSED
 - HuggingFace publication (AC14): deferred to launch phase (repo not yet public).
 - Modal scale test (AC13): opt-in script exists; run deferred to post-public.
 - YaRN/NTK-aware RoPE (item 20): v0.2 scope.
+
+---
+
+## Cycle 7, Pass 5 (implement-2) — 2026-09-29
+
+**5 cycle-7 adversarial tests added, grounded in sources 76-85.**
+
+Sources cited:
+- [76] H2O (Zhang et al. 2023, arXiv:2306.14048): KV eviction conservativeness
+- [77] BLOOM (BigScience 2023, arXiv:2211.05100): embedding dtype KAT
+- [78] proc_pid_smaps(5): smaps_rollup PSS fast path consistency
+- [81] LIMINAL (Davies et al. 2025, arXiv:2507.14397): decode_tok_s monotone in bandwidth
+- [85] smaps_rollup kernel ABI: rollup vs per-VMA sum agreement
+
+New tests:
+- test_kv_cache_bytes_full_never_less_than_h2o_eviction_budget
+- test_kv_cache_full_formula_exceeds_h2o_20pct_budget
+- test_smaps_rollup_pss_matches_smaps_pss
+- test_decode_tok_s_monotone_in_bandwidth
+- test_weight_bytes_bloom_embed_fp16_exactly
+
+```
+$ .venv/bin/pytest -q
+============================= test session starts ==============================
+platform linux -- Python 3.11.15, pytest-8.3.5, pluggy-1.6.0
+rootdir: /home/openclaw/portfolio/fitsproof
+configfile: pyproject.toml
+testpaths: tests
+plugins: cov-6.1.0, hypothesis-6.135.0, platformdirs-4.12.0
+collected 220 items
+
+tests/adversarial/test_byzantine_inputs.py ............................. [ 13%]
+...........................................................              [ 40%]
+tests/contract/test_cost.py ...................                          [ 48%]
+tests/contract/test_plan_admit_verify.py ............................... [ 62%]
+..........                                                               [ 67%]
+tests/engine/test_attention.py ...............                           [ 74%]
+tests/engine/test_quant.py ................                              [ 81%]
+tests/engine/test_sampling.py ............                               [ 86%]
+tests/engine/test_server.py .......                                      [ 90%]
+tests/engine/test_speculative.py ...                                     [ 91%]
+tests/test_packaging.py ....                                             [ 93%]
+tests/value/test_incumbent_gap.py .........                              [ 97%]
+tests/value/test_ollama_gate.py ....                                     [ 99%]
+tests/value/test_readme_snippets.py ..                                   [100%]
+
+======================= 220 passed in 143.72s (0:02:23) ========================
+```
+
+```
+$ .venv/bin/ruff check . && .venv/bin/ruff format --check .
+All checks passed!
+40 files already formatted
+```
+
+Delta from cycle 6: +5 tests (215 → 220). All adversarial. All grounded in named research sources.

@@ -1,0 +1,22 @@
+{
+  "cycle": 6,
+  "pass": 7,
+  "tests_run": 207,
+  "failures": 4,
+  "pytest_rc": 1,
+  "pytest_tail": [
+    "            f\"budget_respected={result.budget_respected}\"",
+    "        )",
+    "E       OSError: [Errno 122] Disk quota exceeded",
+    "",
+    "tests/value/test_incumbent_gap.py:264: OSError",
+    "- generated xml file: /home/openclaw/portfolio/fitsproof/.cycle-eval-c6-p7.xml -",
+    "=========================== short test summary info ============================",
+    "FAILED tests/value/test_incumbent_gap.py::test_stress_harness_measured_le_budget",
+    "ERROR tests/engine/test_speculative.py::test_speculative_equals_greedy - OSEr...",
+    "ERROR tests/engine/test_speculative.py::test_speculative_respects_max_tokens",
+    "ERROR tests/engine/test_speculative.py::test_speculative_is_deterministic - O...",
+    "1 failed, 203 passed, 3 errors in 108.03s (0:01:48)"
+  ],
+  "generated_at": 1790672530.6783311
+}
