@@ -1574,40 +1574,39 @@ original plan.degradations: 1
 | ADV-03 | N/A | silent_mode_changes counter hardcoded False | c1-p10 | limitation |
 | ADV-04 | N/A | RSS measurement is process-lifetime HWM | c1-p10 | limitation |
 
-**ADV-08 Accepted Limitation Rationale:** The mutable degradations list cannot bypass
-the safety contract because: (1) critical fields affecting admission decisions
-(verdict, predicted_peak_bytes, budget_bytes) are frozen; (2) ADV-06 fix validates
-degradation.predicted_peak_bytes <= budget; (3) verify() measures actual RSS
-independent of plan contents. Converting to tuple would be a minor hardening but
-is not required for safety.
-
 ---
 
-### 6.4 Final Verification
+### 6.4 Final Verification (updated c7-p09: ADV-08 fixed, test count current)
 
 ```
 $ pytest tests/ -q --tb=no
-214 passed in 144.23s
+222 passed in 251.71s
 
 $ ruff check . && ruff format --check .
 All checks passed!
 
 $ fitsproof stress
 ADMITTED: 0.039 GB predicted peak <= 4.000 GB budget (margin: 3961.0 MB)
-Stress harness: 25 configs, 0 violations, 0 silent mode changes. Margin: min=3909.4 MB, median=3909.7 MB, max=3913.1 MB.
+Stress harness: 25 configs, 0 violations, 0 silent mode changes. Margin: min=3909.6 MB, median=3909.8 MB, max=3913.2 MB.
 ```
 
 ---
 
-## Conclusion (Pass 6)
+## Conclusion (Pass 6 — updated c7-p09)
 
 Six passes of adversarial review have verified:
 - **2 blocker findings** (ADV-05, ADV-06) — both fixed
-- **3 minor findings** (ADV-01, ADV-07, ADV-08) — 2 fixed, 1 accepted limitation
+- **3 minor findings** (ADV-01, ADV-07, ADV-08) — **all 3 fixed** (ADV-08 fixed c7-p08)
 - **3 documented limitations** (ADV-02, ADV-03, ADV-04) — accepted
+
+ADV-08 was classified "accepted limitation" before c7-p08; that classification was
+incorrect — the mutable `list` allowed post-construction injection that changed
+`admit()` output on a `DOES_NOT_FIT` plan. Fixed by changing `degradations` to
+`tuple[DegradationStep, ...]`; injection attempt now raises `AttributeError`
+immediately. Evidence in `reports/improvements.md` pass c7-p08.
 
 **14 novel attack vectors tested in this pass.** None bypassed the core safety property.
 The defense-in-depth architecture (admit() validates plans, verify() measures actual
 RSS) protects against both prediction manipulation and structural attacks.
 
-**Suite: 214 passed. Ruff: clean. Core safety property holds.**
+**Suite: 222 passed. Ruff: clean. Core safety property holds.**

@@ -1915,3 +1915,126 @@ Operational guidance remains unchanged from §13.8:
 | C7-P3-F5 | PSS substantially differs from RSS in this deployment, invalidating the RSS budget | **CLOSED — measured.** PSS=30591 kB vs RSS=40644 kB (24% lower). Conservative direction holds; does not invalidate the budget claim. |
 | C7-P3-F6 | A new tool surfaces (independent adversarial search) covering all three gap properties | NOT YET TESTED independently. Seven cycles, 40+ queries at this desk; adversarial pass is the correct remaining test. |
 | C7-P3-F7 | MAPE drops below 20% on real-model measurement before cost-model fix lands | NOT OBSERVABLE — cost model unchanged since c6; the fixture-based MAPE of ~31–65% is expected to remain until F-1 is fixed in implement. |
+
+---
+
+## 15. Cycle 7 — Pass 9 (improve-2) — State as of 2026-09-29T17:00Z
+
+### 15.1 What changed since c7-p08-improve-1
+
+| Item | c7-p08 state | c7-p09 state |
+|---|---|---|
+| Test count | 222 passed | **222 passed** (no new tests; fixes were doc/review corrections) |
+| MAPE (held-out) | — (no calibration run this pass) | 53.6% (bw 7.08 GB/s; within documented ~30–65% range) |
+| Stress harness | 25 configs, 0 violations | 25 configs, 0 violations (confirmed) |
+| Stress margin | min=3909.4 MB | min=3909.6 MB, median=3909.8 MB, max=3913.2 MB |
+| ADVERSARIAL_REVIEW.md conclusion | Inconsistent: findings table showed ADV-08 fixed, but "ADV-08 Accepted Limitation Rationale" block and conclusion summary still described it as an accepted limitation | **Fixed** — stale rationale block removed; conclusion updated to "3 minor findings — all 3 fixed" |
+| COMPARISONS.md star counts | c7-p2 (2026-09-29T12:31Z) | **c7-p9 (2026-09-29T17:00Z)** — llama.cpp 129,868 (+15), vLLM 92,940 (+19) |
+| ADVERSARIAL_REVIEW.md test count in §6.4 | 214 (stale) | **222** (current) |
+| Binary release (L5) | Not built | Not built — v0.2 MANDATE M1 pending |
+
+### 15.2 Biggest credibility gap fixed (c7-p09)
+
+**The ADVERSARIAL_REVIEW.md conclusion was internally inconsistent after the c7-p08 fix.**
+
+c7-p08-improve-1 fixed ADV-08 (Plan.degradations mutable list → tuple), correctly
+marking it `fixed (c7-p08)` in the findings table. However, two artifacts from when
+ADV-08 was still classified as an "accepted limitation" were left in the document:
+
+1. **"ADV-08 Accepted Limitation Rationale"** block (lines after the findings table):
+   still described ADV-08 as acceptable because "critical fields are frozen". This was
+   the original pre-fix rationale for accepting the limitation — after the fix, it
+   became a stale description of a superseded decision.
+
+2. **Conclusion summary**: stated "3 minor findings — 2 fixed, 1 accepted limitation"
+   when the correct state post-c7-p08 is "3 minor findings — all 3 fixed".
+
+A skeptical reviewer reading the adversarial review document would encounter: (a) the
+findings table correctly listing ADV-08 as `fixed (c7-p08)`, then (b) an "Accepted
+Limitation Rationale" block explaining *why the fix was not needed*, then (c) a
+conclusion saying one finding remains a limitation. This internal contradiction
+undermines the document's credibility — if the review document cannot accurately
+summarise its own findings, a reviewer will not trust the severity assessments either.
+
+**Fix applied:**
+- Removed the stale "ADV-08 Accepted Limitation Rationale" block entirely.
+- Updated §6.4 test count from 214 to 222 (current suite count).
+- Updated §6.4 stress harness numbers to current run.
+- Updated conclusion: "3 minor findings — all 3 fixed" with a brief explanation of
+  why ADV-08 was reclassified from limitation to fixed.
+
+### 15.3 COMPARISONS.md star count refresh
+
+Retrieved at 2026-09-29T17:00Z via GitHub REST API:
+
+```
+ggml-org/llama.cpp       stars=129868  (+15 vs c7-p2 at 12:31Z)
+vllm-project/vllm        stars=92940   (+19 vs c7-p2 at 12:31Z)
+kvcache-ai/ktransformers stars=19544   (unchanged)
+Isk4R1oT/ridgepoint      stars=1       (unchanged)
+pochenai/llm-inference-calculator stars=21 (unchanged)
+Shun-Calvin/llm-vram-calculator stars=1    (unchanged)
+tommasocerruti/detllm    stars=20      (unchanged)
+Grevix/aura              stars=4       (unchanged; 0 commits since 2026-09-03)
+```
+
+Rankings and gap claim remain stable. No new tools entered the table.
+
+Aura: zero commits since 2026-09-03 confirmed via API (`GET /repos/Grevix/aura/commits?since=2026-09-03T17:50:25Z → []`).
+
+### 15.4 Terminal evidence
+
+```
+$ .venv/bin/pytest -q --tb=no 2>&1 | tail -3
+======================= 222 passed in 251.71s (0:04:11) ========================
+
+$ .venv/bin/ruff check src/ tests/ scripts/ && .venv/bin/ruff format --check src/ tests/ scripts/
+All checks passed!
+40 files already formatted
+
+$ .venv/bin/python scripts/check_research_traceability.py
+TRACEABILITY OK (core only): all core test files cite valid research sources.
+Checked 85 source IDs from RESEARCH.md. PAPER-TRACEABILITY.md table validated (21 IMPLEMENTED rows).
+
+$ .venv/bin/fitsproof stress
+ADMITTED: 0.039 GB predicted peak <= 4.000 GB budget (margin: 3961.0 MB)
+Stress harness: 25 configs, 0 violations, 0 silent mode changes. Margin: min=3909.6 MB, median=3909.8 MB, max=3913.2 MB.
+
+$ .venv/bin/python scripts/calibration_demo.py
+=== Calibration demo ===
+bandwidth: 7.08 GB/s
+gemm:      114.70 GFLOPS
+RAM:       33.5 GB
+bandwidth_utilisation: 0.0270
+MAPE (held-out):       53.6%
+CI (95%):              [53.6%, 53.6%]  ← n_held_out=1: degenerate interval (not a range); see docs/ADOPTION.md F-3
+n_train=2, n_held_out=1
+Note: n_held_out=1 — the CI is a point, not an interval. Collect n >= 10 held-out
+measurements for a meaningful interval (Davison & Hinkley 1997, §2.4). The MAPE itself is still valid.
+```
+
+### 15.5 Open items — c7-p09 state
+
+Unchanged from §14.7. ADV-08 closed; all other items unchanged.
+
+| # | Item | Status |
+|---|---|---|
+| 6 / 15 | Bootstrap CI (n_held_out=1 → point mass) | Open — structural; runtime annotation explains it to users |
+| 17 | Binary release (M1) | Open — v0.2 MANDATE M1 pending |
+| c6-p1-F5 | BLOOM KAT not in test suite | Open — requires cost model fix (F-1) first |
+| All others | See §14.7 | Unchanged |
+
+### 15.6 Adversarial findings final state — c7-p09
+
+| ID | Severity | Finding | Status |
+|----|----------|---------|--------|
+| ADV-05 | blocker | admit() trusted verdict without validating predicted <= budget | **fixed** (c4-p11) |
+| ADV-06 | blocker | admit() trusted fits_budget without validating degradation predicted <= budget | **fixed** (c4-p11) |
+| ADV-01 | minor | MAPE variance exceeds documented range | **fixed** (c5-p08: range corrected to ~30–65%) |
+| ADV-07 | minor | Plan dataclass not frozen | **fixed** (c6-p08) |
+| ADV-08 | minor | degradations field mutable list — injection attack succeeded | **fixed** (c7-p08: tuple; injection raises AttributeError) |
+| ADV-02 | documented | Several KATs compute expected from implementation constants | limitation |
+| ADV-03 | documented | silent_mode_changes counter hardcoded False | limitation |
+| ADV-04 | documented | RSS measurement is process-lifetime HWM | limitation |
+
+**0 open blockers, 0 open minors, 3 documented limitations.** All severity findings fixed.

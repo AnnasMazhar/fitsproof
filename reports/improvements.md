@@ -1,6 +1,158 @@
 # Improvement log — fitsproof
 
-## Pass c7-p08-improve-1 (2026-09-29) — ADV-08: Plan.degradations tuple fix
+## Pass c7-p09-improve-2 (2026-09-29) — ADVERSARIAL_REVIEW.md internal inconsistency + star-count refresh
+
+### Finding fixed
+
+**ADVERSARIAL_REVIEW.md conclusion was internally inconsistent after the c7-p08 fix.**
+
+c7-p08-improve-1 fixed ADV-08 (Plan.degradations mutable list → tuple) and correctly
+marked it `fixed (c7-p08)` in the findings table. However, two stale artifacts from
+when ADV-08 was classified as an "accepted limitation" were left in the document:
+
+1. **"ADV-08 Accepted Limitation Rationale" block** directly below the findings table
+   still described ADV-08 as acceptable because "critical fields affecting admission
+   decisions are frozen" and "Converting to tuple would be a minor hardening but is not
+   required for safety". This was the rationale written before the fix — after the fix
+   it described a superseded decision as if it were still active.
+
+2. **Conclusion summary** stated "3 minor findings — 2 fixed, 1 accepted limitation"
+   when the correct state post-c7-p08 is "3 minor findings — all 3 fixed".
+
+3. **§6.4 test count** showed 214 (from cycle 6 pass 11 when the adversarial review
+   was last written); current suite has 222 tests.
+
+**Why this matters:** A skeptical reviewer reading the adversarial review encounters:
+- (a) the findings table: ADV-08 `fixed (c7-p08)` ✓
+- (b) "ADV-08 Accepted Limitation Rationale" block explaining why the fix was NOT needed ✗
+- (c) conclusion: one finding is still a limitation ✗
+
+Items (b) and (c) directly contradict (a). A reviewer cannot trust a document that
+contradicts itself on the status of its own findings — if the review cannot accurately
+count how many findings were fixed, the severity assessments are also suspect.
+
+**Attack proof (the internal contradiction, verbatim):**
+
+```
+# From docs/ADVERSARIAL_REVIEW.md §6.3 findings table — correct:
+| ADV-08 | minor | degradations field is mutable list ... | **fixed (c7-p08)** — degradations changed to tuple[...]; injection raises AttributeError |
+
+# From docs/ADVERSARIAL_REVIEW.md §6.3 rationale block — stale, contradicts above:
+ADV-08 Accepted Limitation Rationale: The mutable degradations list cannot bypass
+the safety contract because: (1) critical fields affecting admission decisions
+(verdict, predicted_peak_bytes, budget_bytes) are frozen; (2) ADV-06 fix validates
+degradation.predicted_peak_bytes <= budget; (3) verify() measures actual RSS
+independent of plan contents. Converting to tuple would be a minor hardening but
+is not required for safety.
+
+# From docs/ADVERSARIAL_REVIEW.md §6 Conclusion — stale, contradicts the table:
+- 3 minor findings (ADV-01, ADV-07, ADV-08) — 2 fixed, 1 accepted limitation
+```
+
+**Fix:**
+- Removed the stale "ADV-08 Accepted Limitation Rationale" block.
+- Updated §6.4 test count: 214 → 222; stress harness numbers updated to current run.
+- Updated conclusion: "3 minor findings — all 3 fixed" with a brief explanation that
+  ADV-08 was reclassified from limitation to fixed after c7-p08 root-cause fix.
+
+**After fix (no contradictions remain):**
+
+```
+# docs/ADVERSARIAL_REVIEW.md §6.3 findings table:
+| ADV-08 | minor | ... | fixed (c7-p08) — degradations changed to tuple; injection raises AttributeError |
+
+# docs/ADVERSARIAL_REVIEW.md §6 Conclusion:
+- 3 minor findings (ADV-01, ADV-07, ADV-08) — all 3 fixed
+ADV-08 was classified "accepted limitation" before c7-p08; that classification was
+incorrect — ... Fixed by changing `degradations` to `tuple[DegradationStep, ...]`.
+```
+
+### COMPARISONS.md star count refresh
+
+Star counts retrieved at 2026-09-29T17:00Z via GitHub REST API (previous refresh was
+2026-09-29T12:31Z, c7-p2):
+
+```
+ggml-org/llama.cpp         129,868   (+15 vs c7-p2)
+vllm-project/vllm           92,940   (+19 vs c7-p2)
+kvcache-ai/ktransformers    19,544   (unchanged)
+All others                  unchanged
+Grevix/aura: 0 commits since 2026-09-03 confirmed via API
+```
+
+COMPARISONS.md timestamp and star counts updated to c7-p09 values.
+
+### ADOPTION.md §15 added (c7-p09 state)
+
+Standard per-cycle state section added. Documents what changed since c7-p08, terminal
+evidence, MAPE session reading (53.6%, bw 7.08 GB/s), and the final adversarial
+findings table showing 0 open blockers, 0 open minors, 3 documented limitations.
+
+### No tests added or removed
+
+The changes are documentation corrections, not code changes. The 222-test suite is
+unchanged; the fixes are to prose that a reviewer reads, not to any executable path.
+There is no "test that would have caught it" in the sense of a pytest test —
+the detection mechanism is the document reader noticing the contradiction.
+
+### Before/after metrics
+
+| Metric | Before (c7-p08-improve-1) | After | Delta |
+|---|---|---|---|
+| `pytest -q` test count | 222 | 222 | — |
+| `pytest -q` failures | 0 | 0 | — |
+| ADVERSARIAL_REVIEW.md: ADV-08 stale rationale block | present (stale) | removed | fixed |
+| ADVERSARIAL_REVIEW.md conclusion: ADV-08 count | "2 fixed, 1 limitation" | "all 3 fixed" | fixed |
+| ADVERSARIAL_REVIEW.md §6.4 test count | 214 (stale) | 222 (current) | updated |
+| ADVERSARIAL_REVIEW.md §6.4 stress numbers | min=3909.4, median=3909.7, max=3913.1 (stale) | min=3909.6, median=3909.8, max=3913.2 (current) | updated |
+| COMPARISONS.md llama.cpp star count | 129,853 | 129,868 (+15) | refreshed |
+| COMPARISONS.md vLLM star count | 92,921 | 92,940 (+19) | refreshed |
+| COMPARISONS.md timestamp | 2026-09-29T12:31Z | 2026-09-29T17:00Z | refreshed |
+| ADOPTION.md c7-p09 section | missing | §15 added | added |
+| `ruff check src/ tests/ scripts/` | clean | clean | — |
+| `ruff format --check src/ tests/ scripts/` | clean | clean | — |
+| `check_research_traceability.py` | TRACEABILITY OK | TRACEABILITY OK | — |
+
+### Terminal evidence
+
+```
+$ .venv/bin/pytest -q --tb=no 2>&1 | tail -3
+======================= 222 passed in 251.71s (0:04:11) ========================
+
+$ .venv/bin/ruff check src/ tests/ scripts/ && .venv/bin/ruff format --check src/ tests/ scripts/
+All checks passed!
+40 files already formatted
+
+$ .venv/bin/python scripts/check_research_traceability.py
+TRACEABILITY OK (core only): all core test files cite valid research sources.
+Checked 85 source IDs from RESEARCH.md. PAPER-TRACEABILITY.md table validated (21 IMPLEMENTED rows).
+
+$ .venv/bin/fitsproof stress
+ADMITTED: 0.039 GB predicted peak <= 4.000 GB budget (margin: 3961.0 MB)
+Stress harness: 25 configs, 0 violations, 0 silent mode changes. Margin: min=3909.6 MB, median=3909.8 MB, max=3913.2 MB.
+
+$ .venv/bin/python scripts/calibration_demo.py
+=== Calibration demo ===
+bandwidth: 7.08 GB/s
+gemm:      114.70 GFLOPS
+RAM:       33.5 GB
+bandwidth_utilisation: 0.0270
+MAPE (held-out):       53.6%
+CI (95%):              [53.6%, 53.6%]  ← n_held_out=1: degenerate interval (not a range); see docs/ADOPTION.md F-3
+n_train=2, n_held_out=1
+Note: n_held_out=1 — the CI is a point, not an interval. Collect n >= 10 held-out
+measurements for a meaningful interval (Davison & Hinkley 1997, §2.4). The MAPE itself is still valid.
+
+$ git diff --stat HEAD
+ COMPARISONS.md                |   6 +--
+ docs/ADOPTION.md              | 105 ++++++++++++++++++++++++++++++++++++++++++
+ docs/ADVERSARIAL_REVIEW.md    |  22 ++++-----
+ reports/improvements.md       | ...
+```
+
+---
+
+
 
 ### Finding fixed
 
