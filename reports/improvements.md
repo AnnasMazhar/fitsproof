@@ -1,5 +1,172 @@
 # Improvement log — fitsproof
 
+## Pass c6-p08-improve-1 (2026-09-29) — ADV-07 fixed: Plan and DegradationStep frozen
+
+### Finding fixed
+
+**ADV-07 — Plan dataclass not frozen; mutation possible between plan() and admit().**
+
+The adversarial review (c5-p11, pass 4) filed this as "minor — limitation, mitigated by
+ADV-05/06 validation in admit()." That mitigation claim was incorrect.
+
+**Attack 12 reproduces a bypass before this fix:**
+
+```
+$ .venv/bin/python -c "
+from fitsproof.contract.plan import Plan, Verdict
+from fitsproof.contract.admit import admit
+
+plan_obj = Plan(
+    verdict=Verdict.DOES_NOT_FIT,
+    predicted_peak_bytes=8_000_000_000,
+    predicted_peak_ci=(7_500_000_000, 8_500_000_000),
+    predicted_tok_s=10.0,
+    predicted_tok_s_ci=(5.0, 15.0),
+    budget_bytes=4_000_000_000,
+    quant='none',
+    context_len=512,
+    degradations=[],
+    binding_constraint='needs 8 GB, budget 4 GB',
+)
+
+plan_obj.predicted_peak_bytes = 3_000_000_000  # Lie
+plan_obj.verdict = Verdict.FITS
+record = admit(plan_obj)
+print(f'Status: {record.status}')
+print(f'Message: {record.message}')
+"
+Status: AdmitStatus.ADMITTED
+Message: ADMITTED: 3.000 GB predicted peak <= 4.000 GB budget (margin: 1000.0 MB)
+```
+
+ADV-05 validates `predicted_peak_bytes > budget_bytes` — but Attack 12 mutates
+**both** `predicted_peak_bytes` (to 3 GB) **and** `verdict` (to FITS) simultaneously,
+so the ADV-05 check passes: `3 GB <= 4 GB` is true. The plan that was originally
+`DOES_NOT_FIT` for an 8 GB footprint is admitted with a fabricated 3 GB reading.
+
+**Root cause:** `Plan` and `DegradationStep` are plain `@dataclass`, so any field
+can be reassigned after construction. The only correct fix is `frozen=True` — prevent
+all mutation at the Python level rather than trying to re-validate every combination
+of mutations in `admit()`.
+
+### Fix
+
+`src/fitsproof/contract/plan.py`:
+
+- `@dataclass` → `@dataclass(frozen=True)` on `DegradationStep`
+- `@dataclass` → `@dataclass(frozen=True)` on `Plan`
+
+Both docstrings updated with an ADV-07 note explaining why frozen matters.
+
+**After fix (same attack):**
+
+```
+$ .venv/bin/python -c "
+from fitsproof.contract.plan import Plan, Verdict
+plan_obj = Plan(verdict=Verdict.DOES_NOT_FIT, predicted_peak_bytes=8_000_000_000,
+    predicted_peak_ci=(7_500_000_000, 8_500_000_000), predicted_tok_s=10.0,
+    predicted_tok_s_ci=(5.0, 15.0), budget_bytes=4_000_000_000, quant='none',
+    context_len=512, degradations=[], binding_constraint='needs 8 GB, budget 4 GB')
+plan_obj.predicted_peak_bytes = 3_000_000_000
+"
+Traceback (most recent call last):
+  File '<string>', line 7, in <module>
+  File '<string>', line 4, in __setattr__
+dataclasses.FrozenInstanceError: cannot assign to field 'predicted_peak_bytes'
+```
+
+### Tests added
+
+Three new tests in `tests/contract/test_plan_admit_verify.py::TestAdmitTrustBoundary`:
+
+- `test_plan_is_immutable_predicted_peak_bytes` — Attack 12: asserts
+  `FrozenInstanceError` is raised when attempting to replace `predicted_peak_bytes`.
+  **Fails when `Plan` is not frozen.**
+
+- `test_plan_is_immutable_verdict` — Attack 10: asserts `FrozenInstanceError`
+  is raised when attempting to replace `verdict`.
+  **Fails when `Plan` is not frozen.**
+
+- `test_degradation_step_is_immutable_fits_budget` — Attack 3 variant: asserts
+  `FrozenInstanceError` is raised when attempting to flip `fits_budget`.
+  **Fails when `DegradationStep` is not frozen.**
+
+Two existing tests that relied on Plan mutability were corrected:
+
+- `tests/adversarial/test_byzantine_inputs.py::test_admit_verdict_immutable_after_plan`:
+  Previously mutated `budget_bytes` to test a re-planning property that was no longer
+  correct. Rewritten: now asserts `FrozenInstanceError` on the mutation attempt AND that
+  a `DOES_NOT_FIT` plan is refused by `admit()` — the original contract still holds.
+
+- `tests/contract/test_plan_admit_verify.py::test_verify_zero_budget_fails`:
+  Previously set `p_fits.verdict = Verdict.FITS` — a redundant mutation (the 1 GB
+  budget for the 38 MB reference model already produces `FITS`). Line removed;
+  an explicit `assert p_fits.verdict.value == "fits"` added to document the precondition.
+
+### Fault injection proof
+
+```
+# Inject fault: @dataclass(frozen=True) → @dataclass on DegradationStep only
+$ .venv/bin/pytest tests/contract/test_plan_admit_verify.py::TestAdmitTrustBoundary::test_degradation_step_is_immutable_fits_budget -v
+FAILED tests/contract/test_plan_admit_verify.py::TestAdmitTrustBoundary::test_degradation_step_is_immutable_fits_budget
+  Failed: DID NOT RAISE <class 'dataclasses.FrozenInstanceError'>
+1 failed in 0.28s
+
+# Inject fault: @dataclass(frozen=True) → @dataclass on Plan only
+$ .venv/bin/pytest tests/contract/test_plan_admit_verify.py::TestAdmitTrustBoundary::test_plan_is_immutable_predicted_peak_bytes tests/contract/test_plan_admit_verify.py::TestAdmitTrustBoundary::test_plan_is_immutable_verdict tests/adversarial/test_byzantine_inputs.py::test_admit_verdict_immutable_after_plan -v
+FAILED tests/contract/test_plan_admit_verify.py::TestAdmitTrustBoundary::test_plan_is_immutable_predicted_peak_bytes
+  Failed: DID NOT RAISE <class 'dataclasses.FrozenInstanceError'>
+FAILED tests/contract/test_plan_admit_verify.py::TestAdmitTrustBoundary::test_plan_is_immutable_verdict
+  Failed: DID NOT RAISE <class 'dataclasses.FrozenInstanceError'>
+FAILED tests/adversarial/test_byzantine_inputs.py::test_admit_verdict_immutable_after_plan
+  Failed: DID NOT RAISE <class 'dataclasses.FrozenInstanceError'>
+3 failed in 0.26s
+
+# After restoring the fix:
+$ .venv/bin/pytest -q --tb=no 2>&1 | tail -3
+======================= 210 passed in 146.09s (0:02:26) ========================
+
+$ .venv/bin/ruff check src/ tests/ && .venv/bin/ruff format --check src/ tests/
+All checks passed!
+36 files already formatted
+
+$ .venv/bin/python scripts/check_research_traceability.py
+TRACEABILITY OK (core only): all core test files cite valid research sources.
+Checked 75 source IDs from RESEARCH.md. PAPER-TRACEABILITY.md table validated (20 IMPLEMENTED rows).
+```
+
+### ADV-07 status update
+
+The finding was incorrectly classified as "limitation — mitigated by ADV-05/ADV-06":
+- ADV-05 validates `predicted_peak_bytes > budget_bytes`
+- ADV-06 validates `degradation.predicted_peak_bytes <= budget_bytes`
+- Neither guards against mutating **both** `predicted_peak_bytes` and `verdict`
+  simultaneously (Attack 12).
+
+Status: **fixed (c6-p08)** — root-cause fix, not re-validation workaround.
+
+### Before/after metrics
+
+| Metric | Before (eval-c6-p7) | After | Delta |
+|---|---|---|---|
+| `pytest -q` test count | 207 | **210** | +3 |
+| `pytest -q` failures | 4 (disk quota, transient) | 0 | — |
+| Plan dataclass frozen | NO | YES | fixed |
+| DegradationStep dataclass frozen | NO | YES | fixed |
+| Attack 12 (mutate predicted_peak_bytes + verdict) | **SUCCEEDS** | blocked (FrozenInstanceError) | fixed |
+| Attack 10 (mutate verdict + budget_bytes) | SUCCEEDS | blocked (FrozenInstanceError) | fixed |
+| test_plan_is_immutable_predicted_peak_bytes | missing | present; kills fault | added |
+| test_plan_is_immutable_verdict | missing | present; kills fault | added |
+| test_degradation_step_is_immutable_fits_budget | missing | present; kills fault | added |
+| ADV-07 status in ADVERSARIAL_REVIEW.md | limitation | **fixed (c6-p08)** | closed |
+| `ruff check src/ tests/` | clean | clean | — |
+| `ruff format --check src/ tests/` | clean | clean | — |
+| `check_research_traceability.py` | TRACEABILITY OK | TRACEABILITY OK | — |
+
+---
+
+
+
 ## Pass c4-p09-improve-2 (2026-09-28) — ADV-14 fixed + ADV-15 false finding retracted
 
 ### Finding fixed

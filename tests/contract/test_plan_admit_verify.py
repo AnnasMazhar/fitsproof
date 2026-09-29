@@ -412,12 +412,14 @@ def test_verify_zero_budget_fails(transformer) -> None:
     KAT: budget=0 must always result in budget_respected=False.
     This tests the comparison logic directly.
     Fault: if measured_peak <= 0 is possible (wrong RSS), we'd get false positives.
-    """
-    from fitsproof.contract.plan import Verdict
 
+    ADV-07 fix (c6-p08): Plan is now frozen. The old test set p_fits.verdict = FITS,
+    which was redundant — plan() with a 1GB budget for the 38MB reference model already
+    returns FITS. The mutation is removed; the test correctness is unchanged.
+    """
     machine = make_machine()
     p_fits = plan(REFERENCE_CONFIG, machine, context_len=64, budget_bytes=10**9)
-    p_fits.verdict = Verdict.FITS  # Fake a FITS plan for the zero-budget test
+    assert p_fits.verdict.value == "fits", "reference model fits a 1GB budget — test setup"
     record_fits = admit(p_fits)
 
     rec = verify_run(
@@ -1150,6 +1152,92 @@ class TestAdmitTrustBoundary:
         assert honest_plan.budget_bytes - honest_plan.predicted_peak_bytes > 0, (
             "Test setup error: margin should be positive"
         )
+
+    def test_plan_is_immutable_predicted_peak_bytes(self) -> None:
+        """
+        ADV-07 root-cause fix (c6-p08): Plan must be frozen (immutable).
+
+        Attack 12 (c5-p11 adversarial): mutate predicted_peak_bytes to a value
+        below budget, then set verdict=FITS — bypasses ADV-05 validation because
+        both predicted AND budget are now consistent (just with a lie about predicted).
+
+        Before fix: FrozenInstanceError was NOT raised; plan.predicted_peak_bytes
+        could be replaced, allowing the attack to succeed.
+
+        Fault detected: if Plan is not frozen=True, this test raises no exception
+        and the attack path is open.
+        """
+        import dataclasses
+
+        plan_obj = Plan(
+            verdict=Verdict.DOES_NOT_FIT,
+            predicted_peak_bytes=8_000_000_000,  # 8 GB — true cost
+            predicted_peak_ci=(7_500_000_000, 8_500_000_000),
+            predicted_tok_s=10.0,
+            predicted_tok_s_ci=(5.0, 15.0),
+            budget_bytes=4_000_000_000,  # 4 GB budget
+            quant="none",
+            context_len=512,
+            degradations=[],
+            binding_constraint="needs 8 GB, budget 4 GB",
+        )
+
+        # Attack 12: lie about predicted_peak_bytes after construction
+        with pytest.raises(dataclasses.FrozenInstanceError):
+            plan_obj.predicted_peak_bytes = 3_000_000_000  # type: ignore[misc]
+
+    def test_plan_is_immutable_verdict(self) -> None:
+        """
+        ADV-07 root-cause fix (c6-p08): Plan.verdict must be immutable.
+
+        Attack 10 (c5-p11 adversarial): set verdict=FITS and budget_bytes=16GB
+        after creation to admit a DOES_NOT_FIT plan.
+
+        Fault detected: if Plan is not frozen=True, verdict reassignment succeeds
+        and admit() may accept a plan that was originally refused.
+        """
+        import dataclasses
+
+        plan_obj = Plan(
+            verdict=Verdict.DOES_NOT_FIT,
+            predicted_peak_bytes=8_000_000_000,
+            predicted_peak_ci=(7_500_000_000, 8_500_000_000),
+            predicted_tok_s=10.0,
+            predicted_tok_s_ci=(5.0, 15.0),
+            budget_bytes=4_000_000_000,
+            quant="none",
+            context_len=512,
+            degradations=[],
+            binding_constraint="needs 8 GB, budget 4 GB",
+        )
+
+        with pytest.raises(dataclasses.FrozenInstanceError):
+            plan_obj.verdict = Verdict.FITS  # type: ignore[misc]
+
+    def test_degradation_step_is_immutable_fits_budget(self) -> None:
+        """
+        ADV-07 root-cause fix (c6-p08): DegradationStep must be frozen.
+
+        Attack 3 (c4-p11): set fits_budget=True on a step that doesn't fit.
+        ADV-06 re-validates predicted_peak_bytes, but freezing is the defense
+        in depth that prevents the flip before admit() is even called.
+
+        Fault detected: if DegradationStep is not frozen=True, fits_budget
+        can be flipped, and any code that trusts fits_budget without re-checking
+        predicted_peak_bytes is vulnerable.
+        """
+        import dataclasses
+
+        step = DegradationStep(
+            kind="lower_quant",
+            description="int4 (test)",
+            predicted_peak_bytes=10_000_000_000,  # 10 GB — does not fit a 4 GB budget
+            predicted_tok_s=50.0,
+            fits_budget=False,
+        )
+
+        with pytest.raises(dataclasses.FrozenInstanceError):
+            step.fits_budget = True  # type: ignore[misc]
 
 
 # ---------------------------------------------------------------------------

@@ -34,10 +34,14 @@ class Verdict(str, Enum):
 QUANT_ORDER = ["none", "int8_sym", "int4_sym"]  # increasingly aggressive
 
 
-@dataclass
+@dataclass(frozen=True)
 class DegradationStep:
     """
     One concrete degradation option with its predicted resource impact.
+
+    frozen=True: prevents mutation after construction — a caller cannot
+    flip fits_budget=False→True to smuggle a non-fitting step past admit().
+    This is the root-cause fix for ADV-07 (c6-p08).
 
     Fault detected: if a degradation step is listed but actually exceeds
     the budget, admit.py would accept a plan that violates the contract.
@@ -51,10 +55,17 @@ class DegradationStep:
     fits_budget: bool
 
 
-@dataclass
+@dataclass(frozen=True)
 class Plan:
     """
     Full resource plan for a given configuration.
+
+    frozen=True: prevents mutation after construction — a caller cannot
+    change verdict, predicted_peak_bytes, or budget_bytes between plan()
+    and admit().  ADV-05/06 re-validate these fields, but a mutation of
+    predicted_peak_bytes simultaneously with verdict could still bypass
+    them (Attack 12, c5-p11).  Freezing is the correct root-cause fix
+    for ADV-07 (c6-p08).
 
     predicted_peak_bytes: best estimate of peak memory usage.
     predicted_peak_ci: (lower, upper) 95% confidence interval (filled by calibrate).

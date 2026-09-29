@@ -522,33 +522,32 @@ def test_verify_run_raises_on_refused_record() -> None:
 def test_admit_verdict_immutable_after_plan() -> None:
     """
     Sources: [1] Roofline enforcement model.
-    Fault (c2): a caller who mutates plan.budget_bytes after plan() but before admit()
-    could sneak a refused plan through as admitted. plan objects are dataclasses and
-    mutable — this test verifies admit() evaluates the verdict live from the stored
-    plan state, not a cached verdict that could be out of sync.
+    Fault (c2): a caller who could mutate plan.budget_bytes after plan() but before
+    admit() might sneak a refused plan through as admitted.
 
-    Specifically: if we build a plan with a tiny budget (DOES_NOT_FIT), then mutate
-    budget_bytes to a huge value and call admit(), the admit() must re-check the
-    verdict against the original plan data and still refuse (the plan's verdict field
-    was set at plan-time and is what admit() uses). The mutated budget_bytes does not
-    re-run the planner. This is a design choice — admit() trusts plan.verdict, not
-    budget_bytes — and we verify this property holds consistently.
+    ADV-07 fix (c6-p08): Plan is now a frozen dataclass — mutation raises
+    FrozenInstanceError, so the original attack vector (mutate budget_bytes to a
+    large value) is impossible.  This test verifies two things:
+      1. A DOES_NOT_FIT plan is refused by admit() — the contract holds.
+      2. Attempting to mutate budget_bytes raises FrozenInstanceError — the attack
+         vector is closed.
     """
+    import dataclasses
+
     from fitsproof.contract.admit import AdmitStatus, admit
     from fitsproof.contract.plan import Verdict, plan
 
     p = plan(REFERENCE_CONFIG, _machine(), context_len=512, budget_bytes=1, quant="none")
     assert p.verdict == Verdict.DOES_NOT_FIT
 
-    # Mutate budget_bytes to a large value after planning
-    p.budget_bytes = 4 * 1024**3  # 4 GiB — would admit if re-planned
+    # Verify attack vector is closed: mutation raises FrozenInstanceError
+    with pytest.raises(dataclasses.FrozenInstanceError):
+        p.budget_bytes = 4 * 1024**3  # type: ignore[misc]  # 4 GiB — would admit if re-planned
 
-    # admit() must use p.verdict (DOES_NOT_FIT), not re-derive from mutated budget_bytes
+    # The plan is unmodified; admit() must REFUSE a DOES_NOT_FIT plan
     record = admit(p)
-    # The verdict in the plan is DOES_NOT_FIT, so admit must REFUSE
     assert record.status == AdmitStatus.REFUSED, (
-        f"admit() must use plan.verdict, not mutated budget_bytes: got {record.status}. "
-        f"This means admit() does not re-derive the verdict from budget_bytes — correct."
+        f"admit() must REFUSE a DOES_NOT_FIT plan: got {record.status}"
     )
 
 

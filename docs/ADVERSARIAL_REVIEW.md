@@ -825,7 +825,7 @@ This is a structural note: data classes don't self-validate. The harness functio
 |----|----------|---------|----------|--------|
 | ADV-05 | blocker | admit() trusted verdict without validating predicted <= budget | Attack 1 (pass 2) | **fixed** (c4-p11) |
 | ADV-06 | blocker | admit() trusted fits_budget without validating degradation predicted <= budget | Attack 3 (pass 2) | **fixed** (c4-p11) |
-| ADV-07 | minor | Plan dataclass not frozen; mutation possible between plan() and admit() | Attack 10 (pass 4) | limitation — mitigated by ADV-05/06 |
+| ADV-07 | minor | Plan dataclass not frozen; mutation possible between plan() and admit() | Attack 10 (pass 4) | **fixed (c6-p08)** — frozen=True on Plan and DegradationStep |
 | ADV-01 | minor | MAPE variance exceeds documented range | 63.8% in pass 1 | **fixed** (c5-p08 widened range to ~30-65%) |
 | ADV-02 | minor | Several KATs compute expected from implementation constants | Self-consistency | limitation |
 | ADV-03 | N/A | silent_mode_changes counter hardcoded False | c1-p10 | limitation |
