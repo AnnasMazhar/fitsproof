@@ -52,7 +52,7 @@ n_train=2, n_held_out=1
 
 The bandwidth reading above (1.92 GB/s) is low because the box was under load when
 this transcript was recorded. MAPE varies with bandwidth measurement: across sessions
-on this machine the observed range is **~46–62%** (documented in `docs/ADOPTION.md`
+on this machine the observed range is **~30–65%** (documented in `docs/ADOPTION.md`
 §8.1 and F-3). Run `calibration_demo.py` yourself; your number will differ.
 
 And against a real 4.3 GB model through ollama (raw transcripts in `docs/ADOPTION.md` §2):
@@ -288,7 +288,7 @@ These are honest. A repo with no stated limitations is not credible.
   and NumPy GEMM measurements. It does not account for GPU memory hierarchy or
   compute rooflines.
 
-- **Prediction error is large and one-sided.** Held-out MAPE is ~46–62% at reference
+- **Prediction error is large and one-sided.** Held-out MAPE is ~30–65% at reference
   scale (n_held_out=1, varies with machine load at measurement time — see F-3 in
   `docs/ADOPTION.md`), and on a real GGUF model (gemma3:4b) the peak is over-predicted
   by +64% (7.22 GB predicted vs 4.4 GB observed): `head_dim` defaults to hidden/heads

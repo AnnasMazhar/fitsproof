@@ -227,6 +227,26 @@ and vice versa. Operational rule: re-run `fitsproof probe` when the
 sustained load profile changes, and store the profile with the job that
 consumes it — probe records what was measured, when, and where.
 
+MAPE is directly coupled to the bandwidth measurement (bandwidth_utilisation =
+measured_bw / nominal_bw, and this ratio scales predicted_peak linearly). Full
+observed MAPE range across sessions on this machine:
+
+```
+2026-09-27 (c1-p9):   46.1% (bw: 1.92 GB/s — loaded box)
+2026-09-28 (c3-p3):   49.1% (bw: 6.62 GB/s)
+2026-09-28 (c3-p8):   61.9% (bw: 6.94 GB/s)
+2026-09-28 (c4-p3):   61.2% (bw: 6.84 GB/s)
+2026-09-28 (c4-p10):  63.8% (bw: adversarial run)
+2026-09-28 (c3-p8):   60.1% (bw: session measurement)
+2026-09-29 (c5-p3):   51.5% (bw: 7.06 GB/s)
+2026-09-29 (c5-p8):   31.3% (bw: 6.73 GB/s — loaded box)
+```
+
+Documented range: **~30–65%** (previously stated as 46–62%; corrected c5-p8-improve-1
+after ADV-01 was observed at 63.8% and a subsequent session produced 31.3%).
+The range is wide because the bandwidth probe samples DRAM under whatever load the
+machine carries at that moment.
+
 ### F-4 — CPU roofline vs hybrid CPU/GPU engines
 
 The throughput model is calibrated from DRAM bandwidth and GEMM
@@ -627,7 +647,7 @@ footprint.
 
 ### 8.5 The single most likely reason someone would NOT adopt it — cycle 3 update
 
-No change from §5. The prediction accuracy (MAPE 46–62% across sessions, +64% on the
+No change from §5. The prediction accuracy (MAPE ~30–65% across sessions, +64% on the
 one real-model test) remains the adoption blocker. The contract surfaces (L2–L4) work
 correctly; the number the contract enforces is the weak link.
 
@@ -660,7 +680,7 @@ is resolved and the adoption-blocker analysis changes.
 | Item | Cycle 3 (c3-p3, 2026-09-28T06:00Z) | Cycle 4 (c4-p3, 2026-09-28T14:00Z) |
 |---|---|---|
 | Test count | 169 passed | **178 passed** (+9, all from c3-p09-improve-2) |
-| MAPE (held-out) | 49.1% this session | **61.2%** this session (n_held_out=1, bandwidth 6.84 GB/s; within documented 46–62% range) |
+| MAPE (held-out) | 49.1% this session | **61.2%** this session (n_held_out=1, bandwidth 6.84 GB/s; within documented ~30–65% range) |
 | Stress harness | 25 configs, 0 violations | 25 configs, 0 violations (confirmed) |
 | Stress margin | min=3909.2 MB | min=3909.3 MB (stable) |
 | Research base | 44 sources (c3-p1) | **54 sources** (+10 in c4-p1: FlashAttention, int4 asym, PagedAttention deeper, softmax numerics, GPT-2 weight tying, FlashAttention-2, LoRA, NF4, temperature calibration, Orca) |
@@ -858,7 +878,7 @@ source ID in its docstring (M4 requirement). The traceability script
 ### 9.6 The single most likely reason someone would NOT adopt it — cycle 4 update
 
 Unchanged from §5 (cycle 1) and §8.5 (cycle 3). The prediction accuracy remains the
-adoption blocker: MAPE 46–62% across sessions, +64% on the one real-model datapoint
+adoption blocker: MAPE ~30–65% across sessions, +64% on the one real-model datapoint
 (gemma3:4b), producing false DEGRADED verdicts for budgets between 4.4 GB (true) and
 7.22 GB (predicted).
 
@@ -885,7 +905,7 @@ Until the fix lands, the operational guidance from §5 applies:
 | C4-P3-F2 | The `@guard` decorator invokes the wrapped callable on a refused config | NOT OBSERVED (`loaded == []` confirmed in raw output above) |
 | C4-P3-F3 | The MCP `admit` tool returns `isError:false` for a refused config | NOT OBSERVED (`admit 1MiB isError: True` confirmed above) |
 | C4-P3-F4 | aura ships held-out calibration + CI-wired zero-violation stress harness before fitsproof release | NOT OBSERVED as of c4-p2 (2026-09-28T12:30Z); aura last push 2026-09-03, zero new commits confirmed |
-| C4-P3-F5 | MAPE drops below 20% on real-model measurement before cost-model fix lands | NOT OBSERVABLE — the fix is not yet in the cost model; the MAPE on the fixture remains 46–62% |
+| C4-P3-F5 | MAPE drops below 20% on real-model measurement before cost-model fix lands | NOT OBSERVABLE — the fix is not yet in the cost model; the MAPE on the fixture remains ~30–65% |
 | C4-P3-F6 | The int4_asym round-then-clip order bug (source 46) is present in quant.py | NOT OBSERVED — the test in `tests/engine/test_quant.py` asserts `max(|w - w_hat|) <= S/2 + epsilon` and passes in the 178-test suite |
 | C4-P3-F7 | The subtract-max softmax produces NaN/inf for any input in the reference model | NOT OBSERVED — softmax is tested under all-masked rows (source 48 known failure mode); 178 tests pass |
 
@@ -1104,7 +1124,7 @@ properties, no single tool has all three as of 2026-09-29T01:01Z:
 
 1. **Calibrate prediction constants from measurements on the user's own hardware** with a
    train/hold-out split and a published held-out MAPE (honest even when the number is bad:
-   51.5% this session, range 46.1–62% across all five cycle sessions).
+   51.5% this session, range ~31–64% across all observed sessions).
 
 2. **Enforce a declared budget with a structured degradation record that names exactly
    what changed** (quant mode, context length, offload fraction) and its predicted cost.

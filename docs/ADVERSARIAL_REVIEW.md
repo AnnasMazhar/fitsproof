@@ -228,7 +228,7 @@ fitting = next(
 |----|----------|---------|----------|--------|
 | ADV-05 | blocker | admit() trusted verdict without validating predicted <= budget | Attack 1 | **fixed** |
 | ADV-06 | blocker | admit() trusted fits_budget without validating degradation predicted <= budget | Attack 3 | **fixed** |
-| ADV-01 | minor | MAPE variance exceeds documented range | 63.8% vs ~46–62% | open |
+| ADV-01 | minor | MAPE variance exceeds documented range | 63.8% vs ~46–62% | **fixed (c5-p08)** |
 | ADV-02 | minor | Several KATs compute expected from implementation constants | Self-consistency | limitation |
 | ADV-03 | N/A | silent_mode_changes counter hardcoded False | c1-p10 | limitation |
 | ADV-04 | N/A | RSS measurement is process-lifetime HWM | c1-p10 | limitation |
