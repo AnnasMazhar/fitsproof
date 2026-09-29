@@ -67,10 +67,15 @@ class Plan:
     them (Attack 12, c5-p11).  Freezing is the correct root-cause fix
     for ADV-07 (c6-p08).
 
+    degradations is typed as tuple[DegradationStep, ...] (immutable) because
+    frozen=True only blocks direct attribute reassignment; a mutable list
+    attribute can still be mutated via append/pop after construction, allowing
+    injection of degradation steps.  ADV-08 (c7-p08): fixed by using tuple.
+
     predicted_peak_bytes: best estimate of peak memory usage.
     predicted_peak_ci: (lower, upper) 95% confidence interval (filled by calibrate).
     verdict: fits | fits_with_degradation | does_not_fit.
-    degradations: ordered list of alternatives if the base config doesn't fit.
+    degradations: immutable ordered tuple of alternatives if the base config doesn't fit.
     binding_constraint: human-readable string naming what would be violated.
     """
 
@@ -82,12 +87,12 @@ class Plan:
     budget_bytes: int
     quant: str
     context_len: int
-    degradations: list[DegradationStep] = field(default_factory=list)
+    degradations: tuple[DegradationStep, ...] = field(default_factory=tuple)
     binding_constraint: str = ""
 
 
 def no_fit_reason(
-    predicted_peak: int, budget_bytes: int, degradations: list[DegradationStep]
+    predicted_peak: int, budget_bytes: int, degradations: tuple[DegradationStep, ...]
 ) -> str:
     """
     Refusal wording for the DOES_NOT_FIT verdict.
@@ -246,6 +251,6 @@ def plan(
         budget_bytes=budget_bytes,
         quant=quant,
         context_len=context_len,
-        degradations=degradations,
+        degradations=tuple(degradations),
         binding_constraint=binding,
     )

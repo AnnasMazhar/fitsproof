@@ -520,7 +520,7 @@ def test_verify_run_raises_on_refused_record() -> None:
         budget_bytes=1,
         quant="none",
         context_len=512,
-        degradations=[],
+        degradations=(),
     )
     refused_record = AdmitRecord(
         status=AdmitStatus.REFUSED,

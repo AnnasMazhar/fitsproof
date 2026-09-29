@@ -859,7 +859,7 @@ def _make_inconsistent_plan():
         budget_bytes=10**9,
         quant="none",
         context_len=64,
-        degradations=[deg],
+        degradations=(deg,),
     )
 
 
@@ -1080,7 +1080,7 @@ class TestAdmitTrustBoundary:
             budget_bytes=4_000_000_000,  # 4 GB
             quant="none",
             context_len=512,
-            degradations=[],
+            degradations=(),
             binding_constraint="",
         )
 
@@ -1115,7 +1115,7 @@ class TestAdmitTrustBoundary:
             budget_bytes=4_000_000_000,  # 4 GB
             quant="none",
             context_len=512,
-            degradations=[lying_degradation],
+            degradations=(lying_degradation,),
             binding_constraint="",
         )
 
@@ -1139,7 +1139,7 @@ class TestAdmitTrustBoundary:
             budget_bytes=4_000_000_000,  # 4 GB - plenty of room
             quant="none",
             context_len=512,
-            degradations=[],
+            degradations=(),
             binding_constraint="",
         )
 
@@ -1178,7 +1178,7 @@ class TestAdmitTrustBoundary:
             budget_bytes=4_000_000_000,  # 4 GB budget
             quant="none",
             context_len=512,
-            degradations=[],
+            degradations=(),
             binding_constraint="needs 8 GB, budget 4 GB",
         )
 
@@ -1207,7 +1207,7 @@ class TestAdmitTrustBoundary:
             budget_bytes=4_000_000_000,
             quant="none",
             context_len=512,
-            degradations=[],
+            degradations=(),
             binding_constraint="needs 8 GB, budget 4 GB",
         )
 
@@ -1238,6 +1238,98 @@ class TestAdmitTrustBoundary:
 
         with pytest.raises(dataclasses.FrozenInstanceError):
             step.fits_budget = True  # type: ignore[misc]
+
+    def test_degradations_tuple_is_immutable(self) -> None:
+        """
+        ADV-08 root-cause fix (c7-p08): Plan.degradations must be a tuple,
+        not a list.
+
+        frozen=True on the Plan dataclass only blocks direct attribute
+        reassignment (plan.degradations = ...).  If degradations is typed
+        as list[DegradationStep], the list itself remains mutable after
+        construction: plan.degradations.append(injected_step) succeeds
+        silently, allowing a malicious caller to inject a fits_budget=True
+        degradation step with predicted_peak_bytes < budget — causing
+        admit() to emit DEGRADED instead of REFUSED for a plan that
+        should be refused.
+
+        Fix: degrade degradations from list[DegradationStep] to
+        tuple[DegradationStep, ...].  Tuples are immutable; append(),
+        pop(), and __setitem__ all raise AttributeError.
+
+        Fault detected: if degradations is still list[DegradationStep],
+        plan.degradations.append(step) succeeds and this test fails
+        because the length check shows the injection worked.
+        """
+        plan_obj = Plan(
+            verdict=Verdict.DOES_NOT_FIT,
+            predicted_peak_bytes=8_000_000_000,
+            predicted_peak_ci=(7_500_000_000, 8_500_000_000),
+            predicted_tok_s=10.0,
+            predicted_tok_s_ci=(5.0, 15.0),
+            budget_bytes=4_000_000_000,
+            quant="none",
+            context_len=512,
+            degradations=(),
+            binding_constraint="needs 8 GB, budget 4 GB",
+        )
+
+        assert isinstance(plan_obj.degradations, tuple), (
+            f"Plan.degradations must be a tuple, got {type(plan_obj.degradations).__name__}"
+        )
+
+        injected = DegradationStep(
+            kind="lower_quant",
+            description="injected post-construction",
+            predicted_peak_bytes=3_000_000_000,  # fits in 4 GB budget
+            predicted_tok_s=50.0,
+            fits_budget=True,  # would trigger DEGRADED in admit()
+        )
+
+        with pytest.raises(AttributeError):
+            plan_obj.degradations.append(injected)  # type: ignore[union-attr]
+
+        # The injection was blocked — list is still empty
+        assert len(plan_obj.degradations) == 0, (
+            "Degradation was injected into a frozen Plan — tuple fix not applied"
+        )
+
+    def test_degradations_injection_blocked_by_tuple(self) -> None:
+        """
+        ADV-08 end-to-end: injecting a degradation via list mutation, then calling
+        admit(), must NOT produce DEGRADED.  With the fix (tuple), the injection
+        raises AttributeError before admit() is ever reached.
+
+        Without the fix (list): admit() would see a fits_budget=True degradation
+        and emit DEGRADED for a DOES_NOT_FIT plan — a silent bypass.
+
+        Fault detected: if this test passes without the AttributeError being raised,
+        the list is still mutable and the bypass is open.
+        """
+        plan_obj = Plan(
+            verdict=Verdict.DOES_NOT_FIT,
+            predicted_peak_bytes=8_000_000_000,
+            predicted_peak_ci=(7_500_000_000, 8_500_000_000),
+            predicted_tok_s=10.0,
+            predicted_tok_s_ci=(5.0, 15.0),
+            budget_bytes=4_000_000_000,
+            quant="none",
+            context_len=512,
+            degradations=(),
+            binding_constraint="needs 8 GB, budget 4 GB",
+        )
+
+        injected = DegradationStep(
+            kind="lower_quant",
+            description="injected — should not reach admit()",
+            predicted_peak_bytes=3_500_000_000,  # fits in 4 GB budget
+            predicted_tok_s=50.0,
+            fits_budget=True,
+        )
+
+        # The fix: tuple raises AttributeError before admit() can be confused
+        with pytest.raises(AttributeError):
+            plan_obj.degradations.append(injected)  # type: ignore[union-attr]
 
 
 # ---------------------------------------------------------------------------

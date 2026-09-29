@@ -1,5 +1,185 @@
 # Improvement log — fitsproof
 
+## Pass c7-p08-improve-1 (2026-09-29) — ADV-08: Plan.degradations tuple fix
+
+### Finding fixed
+
+**ADV-08 (minor) — `Plan.degradations` is a mutable list despite `Plan` being `frozen=True`.**
+
+Filed by adversarial review pass 6 (`c6-p11-adversarial-2`, Attack 35/36).  Status was
+"accepted limitation" — that classification was incorrect.
+
+**Root cause:** `frozen=True` on a Python dataclass only blocks direct attribute
+reassignment (`plan.degradations = ...`).  If the attribute holds a mutable container
+(a `list`), the container itself is still mutable: `plan.degradations.append(step)` runs
+without raising any exception.  This allows a caller to inject a `DegradationStep` with
+`fits_budget=True` and `predicted_peak_bytes < budget` into a `DOES_NOT_FIT` plan after
+construction.  When `admit()` is then called, it finds a fitting degradation in the list
+and emits `DEGRADED` instead of `REFUSED`.
+
+**Attack proof (before fix):**
+
+```
+$ .venv/bin/python -c "
+from fitsproof.contract.plan import Plan, Verdict, DegradationStep
+from fitsproof.contract.admit import admit
+
+plan_obj = Plan(
+    verdict=Verdict.DOES_NOT_FIT,
+    predicted_peak_bytes=8_000_000_000,
+    predicted_peak_ci=(7_500_000_000, 8_500_000_000),
+    predicted_tok_s=10.0,
+    predicted_tok_s_ci=(5.0, 15.0),
+    budget_bytes=4_000_000_000,
+    quant='none',
+    context_len=512,
+    degradations=[],
+    binding_constraint='needs 8 GB, budget 4 GB',
+)
+
+# Inject a fitting degradation step post-construction
+plan_obj.degradations.append(DegradationStep(
+    kind='lower_quant',
+    description='injected post-construction',
+    predicted_peak_bytes=3_000_000_000,
+    predicted_tok_s=50.0,
+    fits_budget=True,
+))
+
+record = admit(plan_obj)
+print(f'Status: {record.status}')
+print(f'Message: {record.message}')
+"
+# BEFORE FIX:
+Status: AdmitStatus.DEGRADED
+Message: DEGRADED: base config needs 8.000 GB > budget 4.000 GB. Applying: injected post-construction...
+>>> ATTACK SUCCEEDED: DOES_NOT_FIT plan admitted via injected degradation step
+```
+
+**Fix — `src/fitsproof/contract/plan.py`:**
+
+Changed the `degradations` field annotation and default from
+`list[DegradationStep]` with `default_factory=list` to
+`tuple[DegradationStep, ...]` with `default_factory=tuple`.
+
+Updated `no_fit_reason()` signature accordingly.
+
+Updated `plan()` to build a local `list[DegradationStep]` for accumulation
+(immutable tuples cannot be appended to), then pass `tuple(degradations)` to
+the `Plan` constructor.  No other call sites needed changes — all usages of
+`.degradations` are iteration-only.
+
+**After fix (same attack):**
+
+```
+$ .venv/bin/python -c "
+from fitsproof.contract.plan import Plan, Verdict, DegradationStep
+
+plan_obj = Plan(
+    verdict=Verdict.DOES_NOT_FIT,
+    predicted_peak_bytes=8_000_000_000,
+    predicted_peak_ci=(7_500_000_000, 8_500_000_000),
+    predicted_tok_s=10.0,
+    predicted_tok_s_ci=(5.0, 15.0),
+    budget_bytes=4_000_000_000,
+    quant='none',
+    context_len=512,
+    degradations=(),
+    binding_constraint='needs 8 GB, budget 4 GB',
+)
+
+plan_obj.degradations.append(DegradationStep(
+    kind='lower_quant',
+    description='injected post-construction',
+    predicted_peak_bytes=3_000_000_000,
+    predicted_tok_s=50.0,
+    fits_budget=True,
+))
+"
+Traceback (most recent call last):
+  ...
+AttributeError: 'tuple' object has no attribute 'append'
+>>> FIX CONFIRMED: injection attempt raises AttributeError immediately
+```
+
+### Tests added
+
+Two new tests in `tests/contract/test_plan_admit_verify.py::TestAdmitTrustBoundary`:
+
+1. **`test_degradations_tuple_is_immutable`** — asserts `Plan.degradations` is a
+   `tuple` at runtime AND that calling `.append()` on it raises `AttributeError`.
+   Fault injected: reverting `degradations: tuple[DegradationStep, ...]` to
+   `degradations: list[DegradationStep]` causes `.append()` to succeed and the
+   length check at the end of the test to fail (len would be 1, not 0).
+
+2. **`test_degradations_injection_blocked_by_tuple`** — end-to-end: attempts the
+   injection attack and asserts `AttributeError` is raised before `admit()` is
+   reached.  Fault injected: with a list, `.append()` succeeds, no `AttributeError`,
+   `pytest.raises` fails, test fails.
+
+### Fault injection proof
+
+```
+# Inject fault: revert to list in plan.py (sed -i 's/tuple\[DegradationStep/list[DegradationStep/; s/default_factory=tuple/default_factory=list/')
+$ .venv/bin/pytest tests/contract/test_plan_admit_verify.py::TestAdmitTrustBoundary::test_degradations_tuple_is_immutable tests/contract/test_plan_admit_verify.py::TestAdmitTrustBoundary::test_degradations_injection_blocked_by_tuple -v --tb=short 2>&1 | tail -10
+FAILED tests/contract/test_plan_admit_verify.py::TestAdmitTrustBoundary::test_degradations_tuple_is_immutable
+  AssertionError: Plan.degradations must be a tuple, got list
+FAILED tests/contract/test_plan_admit_verify.py::TestAdmitTrustBoundary::test_degradations_injection_blocked_by_tuple
+  Failed: DID NOT RAISE <class 'AttributeError'>
+2 failed in 0.02s
+
+# After restoring the fix:
+$ .venv/bin/pytest tests/contract/test_plan_admit_verify.py::TestAdmitTrustBoundary -v --tb=no 2>&1 | tail -4
+tests/contract/test_plan_admit_verify.py::TestAdmitTrustBoundary::test_degradations_tuple_is_immutable PASSED
+tests/contract/test_plan_admit_verify.py::TestAdmitTrustBoundary::test_degradations_injection_blocked_by_tuple PASSED
+8 passed in 0.83s
+```
+
+### Before/after metrics
+
+| Metric | Before (eval-c7-p7, 220 tests) | After | Delta |
+|---|---|---|---|
+| `pytest -q` test count | 220 | **222** | +2 |
+| `pytest -q` failures | 0 | 0 | — |
+| `Plan.degradations` type | `list[DegradationStep]` | `tuple[DegradationStep, ...]` | fixed |
+| Degradation injection attack | **SUCCEEDS** (emit DEGRADED) | blocked (AttributeError) | fixed |
+| ADV-08 status | limitation | **fixed (c7-p08)** | closed |
+| `ruff check src/ tests/ scripts/` | clean | clean | — |
+| `ruff format --check src/ tests/ scripts/` | clean | clean | — |
+
+### Terminal evidence
+
+```
+$ .venv/bin/pytest tests/contract/test_plan_admit_verify.py::TestAdmitTrustBoundary -v --tb=no
+============================= test session starts ==============================
+platform linux -- Python 3.11.15, pytest-8.3.5, pluggy-1.6.0
+rootdir: /home/openclaw/portfolio/fitsproof
+configfile: pyproject.toml
+collected 8 items
+
+tests/contract/test_plan_admit_verify.py::TestAdmitTrustBoundary::test_lying_verdict_fits_rejected PASSED [ 12%]
+tests/contract/test_plan_admit_verify.py::TestAdmitTrustBoundary::test_lying_degradation_fits_budget_rejected PASSED [ 25%]
+tests/contract/test_plan_admit_verify.py::TestAdmitTrustBoundary::test_honest_plan_still_admitted PASSED [ 37%]
+tests/contract/test_plan_admit_verify.py::TestAdmitTrustBoundary::test_plan_is_immutable_predicted_peak_bytes PASSED [ 50%]
+tests/contract/test_plan_admit_verify.py::TestAdmitTrustBoundary::test_plan_is_immutable_verdict PASSED [ 62%]
+tests/contract/test_plan_admit_verify.py::TestAdmitTrustBoundary::test_degradation_step_is_immutable_fits_budget PASSED [ 75%]
+tests/contract/test_plan_admit_verify.py::TestAdmitTrustBoundary::test_degradations_tuple_is_immutable PASSED [ 87%]
+tests/contract/test_plan_admit_verify.py::TestAdmitTrustBoundary::test_degradations_injection_blocked_by_tuple PASSED [100%]
+
+8 passed in 0.83s
+
+$ .venv/bin/pytest -q --tb=no 2>&1 | tail -3
+222 passed in 266.55s (0:04:26)
+
+$ .venv/bin/ruff check src/ tests/ scripts/ && .venv/bin/ruff format --check src/ tests/ scripts/
+All checks passed!
+40 files already formatted
+```
+
+---
+
+
+
 ## Pass c6-p09-improve-2 (2026-09-29) — docs accuracy + ollama gate integration test + OSError coverage
 
 ### Findings fixed

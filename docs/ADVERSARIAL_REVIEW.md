@@ -1568,7 +1568,7 @@ original plan.degradations: 1
 | ADV-05 | blocker | admit() trusted verdict without validating predicted <= budget | Attack 1 (pass 2) | **fixed** (c4-p11) |
 | ADV-06 | blocker | admit() trusted fits_budget without validating degradation predicted <= budget | Attack 3 (pass 2) | **fixed** (c4-p11) |
 | ADV-07 | minor | Plan dataclass not frozen; mutation possible between plan() and admit() | Attack 10 (pass 4) | **fixed** (c6-p08) |
-| ADV-08 | minor | degradations field is mutable list; AdmitRecord.plan shares reference | Attack 35/36 (pass 6) | limitation |
+| ADV-08 | minor | degradations field is mutable list; AdmitRecord.plan shares reference | Attack 35/36 (pass 6) | **fixed (c7-p08)** — degradations changed to tuple[DegradationStep, ...]; injection raises AttributeError |
 | ADV-01 | minor | MAPE variance exceeds documented range | 63.8% in pass 1 | **fixed** (c5-p08 widened range to ~30-65%) |
 | ADV-02 | minor | Several KATs compute expected from implementation constants | Self-consistency | limitation |
 | ADV-03 | N/A | silent_mode_changes counter hardcoded False | c1-p10 | limitation |
