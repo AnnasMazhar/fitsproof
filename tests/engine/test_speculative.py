@@ -44,9 +44,27 @@ def target(bundle):
 
 
 @pytest.fixture(scope="module")
-def draft(bundle):
-    """Use the same model as draft (trivial case, but guarantees correctness)."""
-    cfg, weights = bundle
+def draft(tmp_path_factory):
+    """
+    ADV-05 fix: the draft model uses a DIFFERENT random seed from the target.
+
+    Using draft=target makes the test vacuous — all draft proposals are trivially
+    accepted (they're the greedy target proposals), so the verification step never
+    exercises the rejection path and 'accept a wrong draft token' cannot be observed.
+
+    With a different seed, the draft produces different logit distributions, so:
+    - Some draft proposals will DIFFER from the target's greedy choice
+    - The verifier must REJECT those and emit the target's token instead
+    - The speculative output must still equal the target greedy output
+
+    This makes the test non-trivial: it exercises both the accept path and the
+    reject-then-correct path.
+    """
+    path = tmp_path_factory.mktemp("draft_model")
+    generate_reference_model(path, seed=999)  # different seed from target (42)
+    from fitsproof.engine.model import load_bundle
+
+    cfg, weights = load_bundle(path)
     return Transformer(cfg, weights)
 
 

@@ -282,7 +282,7 @@ def test_stress_harness_measured_le_budget(transformer_bundle) -> None:
 
 def test_mcp_tool_list_and_call() -> None:
     """
-    Source: MCP spec (https://spec.modelcontextprotocol.io/specification/2025-03-26/).
+    Source: [23] MCP spec (https://modelcontextprotocol.io/specification/2025-03-26/).
     Fault: an MCP server that does not list tools cannot be connected by an agent framework.
 
     Tests:
@@ -329,7 +329,7 @@ def test_mcp_tool_list_and_call() -> None:
 
 def test_mcp_admit_refused_returns_is_error() -> None:
     """
-    Source: MCP spec — isError=True is the mechanism for tool errors.
+    Source: [23] MCP spec — isError=True is the mechanism for tool errors.
     Fault: a refused plan returned as isError=False would be mistaken for success by agents.
     """
     import io

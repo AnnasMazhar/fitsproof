@@ -36,7 +36,9 @@ def test_plan_smoke() -> None:
     """plan must exit 0 for a default 4 GB budget."""
     r = _run("plan", "--budget-gb", "4")
     assert r.returncode == 0, f"plan crashed: {r.stderr}"
-    assert "ADMITTED" in r.stdout or "DEGRADED" in r.stdout
+    # plan shows the prediction with verdict (fits/does_not_fit/fits_with_degradation),
+    # not the enforcement messages (ADMITTED/DEGRADED/REFUSED) which belong to admit.
+    assert "verdict:" in r.stdout and "fits" in r.stdout
 
 
 def test_admit_smoke_fits() -> None:

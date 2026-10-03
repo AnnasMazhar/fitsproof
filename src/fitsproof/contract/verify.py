@@ -161,6 +161,22 @@ def _get_hwm_bytes() -> int:
     return 0
 
 
+def _get_peak_rss_hwm() -> int:
+    """
+    Return the process-lifetime peak RSS high-water mark in bytes.
+
+    On Linux, ru_maxrss is the VmHWM — the maximum RSS since process start.
+    This is useful for reporting the absolute maximum across the whole run.
+    """
+    try:
+        usage = resource.getrusage(resource.RUSAGE_SELF)
+        if os.uname().sysname == "Linux":
+            return usage.ru_maxrss * 1024
+        return usage.ru_maxrss
+    except (OSError, AttributeError):
+        return 0
+
+
 def _sample_peak_rss(
     fn: Callable[[], list[int]],
     sample_interval_s: float = 0.001,
@@ -288,10 +304,31 @@ def verify_run(
     budget_respected = peak_rss <= budget_bytes
     margin = budget_bytes - peak_rss
 
-    # Check for silent mode changes: if admit_record is DEGRADED, the
-    # applied degradation must have been described; we can only check
-    # that the record exists (runtime mode enforcement is in admit.py).
-    mode_changed_silently = False  # no silent changes if admit() was called
+    # Detect silent mode changes: a silent mode change occurs when execution
+    # proceeds via a different path than what was admitted without emitting a record.
+    #
+    # Detectable cases:
+    #   1. admit_record.status == ADMITTED but the plan verdict was FITS_WITH_DEGRADATION
+    #      (someone bypassed admit() and passed a hand-constructed ADMITTED record for
+    #      a config that required degradation). This is a builder error, not a user error.
+    #   2. admit_record.status == DEGRADED but applied_degradation is None
+    #      (admitted as degraded without naming what changed — the record is incomplete).
+    #
+    # Non-detectable at this layer: runtime backend switches that happen inside fn()
+    # without touching the admit/plan layer (e.g., NumPy falling back to a different
+    # BLAS). Those are outside the contract boundary.
+    mode_changed_silently = False
+
+    if admit_record.status == AdmitStatus.ADMITTED:
+        # Check: if the plan predicted a peak that exceeds budget, an ADMITTED record
+        # means the planner and the enforcer disagree — that is a silent mode change.
+        if admit_record.plan is not None and admit_record.plan.predicted_peak_bytes > budget_bytes:
+            mode_changed_silently = True
+
+    elif admit_record.status == AdmitStatus.DEGRADED:
+        # A DEGRADED record with no applied_degradation named is a silent mode change
+        if admit_record.applied_degradation is None:
+            mode_changed_silently = True
 
     # Determinism tier assessment
     tier = DeterminismTier.TIER_0

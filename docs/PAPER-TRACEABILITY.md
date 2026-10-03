@@ -18,19 +18,25 @@ Generated: 2026-09-27. Machine: x86-64, no CUDA, 31 GB RAM, 0 VRAM.
 |---|---|---|---|---|---|---|
 | 1 | [Williams et al. 2009 — Roofline](https://dl.acm.org/doi/10.1145/1498765.1498785) | Bandwidth-bound decode: `tok/s = bandwidth / bytes_per_token` | `contract/cost.py:decode_tok_s` | `tests/contract/test_cost.py::test_decode_tok_s_known_answer` | Predicts decode throughput from DRAM bandwidth measurement | IMPLEMENTED |
 | 2 | [Sheng et al. 2023 — FlexGen](https://arxiv.org/abs/2303.06865) | Section 3.1: `throughput ∝ bandwidth / model_size` for single-batch decode | `contract/cost.py:decode_tok_s` | `tests/contract/test_cost.py::test_decode_tok_s_known_answer` | Confirms bandwidth-bound formula for consumer hardware | IMPLEMENTED |
-| 3 | [Su et al. 2023 — RoPE](https://arxiv.org/abs/2104.09864) | Frequency schedule `theta_i = base^{-2i/d}` + rotation of paired coordinates | `engine/attention.py:_rope_freqs`, `engine/attention.py:apply_rope` | `tests/engine/test_attention.py::test_rope_known_answer` | Position-dependent encoding without additive position embedding | IMPLEMENTED |
-| 4 | [Ainslie et al. 2023 — GQA](https://arxiv.org/abs/2305.13245) | KV head sharing: broadcast K/V across `n_heads // n_kv_heads` query heads | `engine/attention.py:_sdp_attention`, `contract/cost.py:kv_cache_bytes` | `tests/engine/test_attention.py::test_gqa_kv_sharing_reduces_memory` | KV cache size `∝ n_kv_heads` (not `n_heads`); matches cost formula | IMPLEMENTED |
-| 5 | [Vaswani et al. 2017 — Attention](https://arxiv.org/abs/1706.03762) | `softmax(Q K^T / sqrt(d_k)) V` scaling factor prevents gradient saturation | `engine/attention.py:_sdp_attention` | `tests/engine/test_attention.py::test_sdp_attention_scaling_known_answer` | Numerically stable attention without exploding logits | IMPLEMENTED |
-| 6 | [Kaplan et al. 2020 — Scaling Laws](https://arxiv.org/abs/2001.08361) | Prefill TTFT: `FLOPs ≈ 2 * N * seq_len` (Appendix D) | `contract/cost.py:prefill_ttft` | `tests/contract/test_cost.py::test_prefill_ttft_known_answer` | Predicts time-to-first-token from parameter count and sequence length | IMPLEMENTED |
-| 7 | [Frantar et al. 2022 — GPTQ](https://arxiv.org/abs/2210.17323) | Per-channel symmetric int8: `scale = max(|W|) / 127`, clip to [-127, 127] | `engine/quant.py:_int8_sym_quant`, `engine/quant.py:int8_sym_dequant` | `tests/engine/test_quant.py::test_int8_sym_round_trip_known_answer` | Lossless round-trip within quantisation precision; used in cost model weight_bytes | IMPLEMENTED |
-| 8 | [Lin et al. 2023 — AWQ](https://arxiv.org/abs/2306.00978) | Asymmetric int8: `scale = (max-min)/255`, `zp = round(-min/scale)` | `engine/quant.py:_int8_asym_quant`, `engine/quant.py:int8_asym_dequant` | `tests/engine/test_quant.py::test_int8_asym_round_trip_known_answer` | Reduces quantisation error for skewed distributions; tested via round-trip | IMPLEMENTED |
+| 3 | [Su et al. 2023 — RoPE](https://arxiv.org/abs/2104.09864) | Frequency schedule `theta_i = base^{-2i/d}` + rotation of paired coordinates | `engine/attention.py:_rope_freqs`, `engine/attention.py:apply_rope` | `tests/engine/test_attention.py::test_rope_known_values` | Position-dependent encoding without additive position embedding | IMPLEMENTED |
+| 4 | [Ainslie et al. 2023 — GQA](https://arxiv.org/abs/2305.13245) | KV head sharing: broadcast K/V across `n_heads // n_kv_heads` query heads | `engine/attention.py:_sdp_attention`, `contract/cost.py:kv_cache_bytes` | `tests/engine/test_attention.py::test_kv_cache_memory_grows_linearly` | KV cache size `∝ n_kv_heads` (not `n_heads`); matches cost formula | IMPLEMENTED |
+| 5 | [Vaswani et al. 2017 — Attention](https://arxiv.org/abs/1706.03762) | `softmax(Q K^T / sqrt(d_k)) V` scaling factor prevents gradient saturation | `engine/attention.py:_sdp_attention` | `tests/engine/test_attention.py::test_sdp_attention_weights_sum_to_one` | Numerically stable attention without exploding logits | IMPLEMENTED |
+| 6 | [Kaplan et al. 2020 — Scaling Laws](https://arxiv.org/abs/2001.08361) | Prefill TTFT: `FLOPs ≈ 2 * N * seq_len` (Appendix D) | `contract/cost.py:prefill_ttft_s` | `tests/contract/test_cost.py::test_prefill_ttft_known_answer` | Predicts time-to-first-token from parameter count and sequence length | IMPLEMENTED |
+| 7 | [Frantar et al. 2022 — GPTQ](https://arxiv.org/abs/2210.17323) | Per-channel symmetric int8: `scale = max(|W|) / 127`, clip to [-127, 127] | `engine/quant.py:_int8_sym_quant`, `engine/quant.py:int8_sym_dequant` | `tests/engine/test_quant.py::test_int8_sym_known_values` | Lossless round-trip within quantisation precision; used in cost model weight_bytes | IMPLEMENTED |
+| 8 | [Lin et al. 2023 — AWQ](https://arxiv.org/abs/2306.00978) | Asymmetric int8: `scale = (max-min)/255`, `zp = round(-min/scale)` | `engine/quant.py:_int8_asym_quant`, `engine/quant.py:int8_asym_dequant` | `tests/engine/test_quant.py::test_int8_asym_non_zero_mean` | Reduces quantisation error for skewed distributions; tested via round-trip | IMPLEMENTED |
 | 9 | [Leviathan et al. 2023 — Speculative Decoding](https://arxiv.org/abs/2211.17192) | Under greedy decoding, accepted draft tokens == target greedy tokens | `engine/speculative.py:speculative_generate` | `tests/engine/test_speculative.py::test_speculative_equals_greedy` | Output equivalence to greedy baseline (provable correctness at temperature=0) | IMPLEMENTED |
-| 10 | [Shazeer 2020 — SwiGLU](https://arxiv.org/abs/2002.05202) | `FFN(x) = (SiLU(x*W_gate) ⊙ (x*W_up)) * W_down`; SiLU(z) = z·σ(z) | `engine/transformer.py:swiglu_ffn` | `tests/engine/test_attention.py::test_swiglu_ffn_known_answer` | Gated FFN matching modern LLM architecture; numerical correctness against manual computation | IMPLEMENTED |
-| 11 | [Zhang & Sennrich 2019 — RMSNorm](https://arxiv.org/abs/1910.07467) | `RMSNorm(x) = x / sqrt(mean(x²) + eps) * weight` (omits mean subtraction) | `engine/transformer.py:rms_norm` | `tests/engine/test_attention.py::test_rms_norm_known_answer` | Correct normalisation without mean-centering; numerical correctness against manual computation | IMPLEMENTED |
+| 10 | [Shazeer 2020 — SwiGLU](https://arxiv.org/abs/2002.05202) | `FFN(x) = (SiLU(x*W_gate) ⊙ (x*W_up)) * W_down`; SiLU(z) = z·σ(z) | `engine/transformer.py:swiglu_ffn` | `tests/engine/test_attention.py::test_kv_cache_equals_reference` | Gated FFN matching modern LLM architecture; correctness verified via the end-to-end reference path | IMPLEMENTED |
+| 11 | [Zhang & Sennrich 2019 — RMSNorm](https://arxiv.org/abs/1910.07467) | `RMSNorm(x) = x / sqrt(mean(x²) + eps) * weight` (omits mean subtraction) | `engine/transformer.py:rms_norm` | `tests/engine/test_attention.py::test_rms_norm_known_value` | Correct normalisation without mean-centering; numerical correctness against manual computation | IMPLEMENTED |
 | 12 | [McCalpin 1995 — STREAM](https://www.cs.virginia.edu/stream/ref.html) | Triad kernel: `A[i] = B[i] + s*C[i]`; `bw = 3 * n * sizeof(f64) / t` | `contract/probe.py:_measure_bandwidth` | `tests/contract/test_plan_admit_verify.py::test_probe_bandwidth_above_floor` | Measures sustainable DRAM bandwidth (not burst); input to cost model | IMPLEMENTED |
-| 13 | [Vakulya 2023 — GGML k-Quants](https://github.com/ggerganov/llama.cpp/pull/1684) | Pack two int4 per byte; clip to [-7, 7] (symmetric); scale per 32-element block | `engine/quant.py:_int4_pack`, `engine/quant.py:_int4_unpack` | `tests/engine/test_quant.py::test_int4_sym_round_trip_known_answer` | int4 pack/unpack with lossless round-trip and overflow-safe constant rows | IMPLEMENTED |
+| 13 | [Vakulya 2023 — GGML k-Quants](https://github.com/ggerganov/llama.cpp/pull/1684) | Pack two int4 per byte; clip to [-7, 7] (symmetric); scale per 32-element block | `engine/quant.py:_int4_pack`, `engine/quant.py:_int4_unpack` | `tests/engine/test_quant.py::test_int4_pack_unpack_roundtrip` | int4 pack/unpack with lossless round-trip and overflow-safe constant rows | IMPLEMENTED |
 | 14 | [Cerruti 2024 — detllm](https://github.com/tommasocerruti/detllm) | Capability-gated determinism tiers: Tier 0 (artifact), Tier 1 (run-to-run), Tier 2 (+logprobs) | `contract/verify.py:DeterminismTier` | `tests/contract/test_plan_admit_verify.py::test_verify_determinism_tier` | Verify reports the tier actually achieved; never claims higher than demonstrated | IMPLEMENTED |
-| 15 | [Kwon et al. 2023 — PagedAttention](https://arxiv.org/abs/2309.06180) | KV cache as a first-class memory resource; formula `2*L*H_kv*S*d*bytes` | `contract/cost.py:kv_cache_bytes` | `tests/contract/test_cost.py::test_kv_cache_bytes_known_answer` | KV cache is budgeted separately from weight bytes; dominant at long context | IMPLEMENTED |
+| 15 | [Kwon et al. 2023 — PagedAttention](https://arxiv.org/abs/2309.06180) | KV cache as a first-class memory resource; formula `2*L*H_kv*S*d*bytes` | `contract/cost.py:kv_cache_bytes` | `tests/contract/test_cost.py::test_kv_cache_bytes_known` | KV cache is budgeted separately from weight bytes; dominant at long context | IMPLEMENTED |
+| 57 | [Ma et al. 2024 — BitNet b1.58](https://arxiv.org/abs/2402.17764) | General weight memory formula: `weight_memory = n_params × n_bits / 8`; applies across 1-bit, 4-bit, 8-bit, and float32 (32-bit) | `engine/quant.py:memory_reduction_factor` | `tests/engine/test_quant.py::test_memory_reduction_factor_int8` | int8 reduces to 1/4 of float32 (8/32); int4 reduces to 1/8 (4/32) — formula verified against source eq. | IMPLEMENTED |
+| 60 | [Linux kernel /proc/pid/status](https://man7.org/linux/man-pages/man5/proc.5.html) | VmRSS = current resident set size (can decrease after frees); VmHWM = process-lifetime high-water mark (never decreases) | `contract/verify.py:_get_rss_bytes` | `tests/contract/test_plan_admit_verify.py::test_verify_large_budget_respected` | Per-config delta = max(rss_before, rss_after) − rss_before; conservative (safe) direction since arena memory inflates baselines | IMPLEMENTED |
+| 67 | [BigScience Workshop 2023 — BLOOM](https://arxiv.org/abs/2211.05100) | Embedding dtype must match model precision: non-tied lm_head at fp16 for fp16 models; fp32 hardcoding causes 2× over-prediction for fp16 models (F-1 finding) | `contract/cost.py:weight_bytes` | `tests/contract/test_cost.py::test_weight_bytes_fp16_model_uses_fp16_for_embed` | Prevents false degradations for fp16 large-vocabulary models by accounting embeddings at the correct dtype | IMPLEMENTED |
+| 71 | [Linux kernel proc_pid_smaps](https://man7.org/linux/man-pages/man5/proc_pid_smaps.5.html) | PSS = Proportional Set Size: RSS minus shared-page fraction; in single-process deployment PSS ≈ RSS; budget in RSS terms is conservative (safe) | `contract/verify.py:_get_rss_bytes` (uses VmRSS / VmHWM) | `tests/contract/test_plan_admit_verify.py::test_pss_vs_rss_delta` | Closes c6-p1-F2: measured PSS/RSS ratio > 0.5 confirms RSS is safe to use as budget unit in single-process deployment | IMPLEMENTED |
+| 75 | [BLOOM KAT (source 75 in RESEARCH.md)](https://arxiv.org/abs/2211.05100) | BLOOM-176B known-answer test: weight_bytes with fp16 config must use fp16 for embed (not fp32); embed+unembed ≈ 14.39 GB (fp16) not 28.77 GB (fp32) | `contract/cost.py:weight_bytes` | `tests/contract/test_cost.py::test_weight_bytes_bloom_176b` | Guards against F-1 recurrence: verifies fp16 embed bytes = 14.39 GB for BLOOM-scale vocab (250880 × 14336 × 2 × 2) | IMPLEMENTED |
+| 80 | [Patel et al. 2024 — Splitwise](https://arxiv.org/abs/2311.18677) | TPOT = (weight_bytes + kv_bytes_per_token) / bandwidth — full two-phase decode formula. fitsproof omits KV term (documented). At context=512, KV fraction ≈ 16% (weight dominates). | `contract/cost.py:decode_tok_s` (implements weight-only approximation; limitation documented) | `tests/contract/test_cost.py::test_decode_throughput_kv_term_is_secondary_at_short_context` | Quantifies the documented limitation: KV fraction < 50% at short context confirms weight-term approximation is valid for typical usage. | IMPLEMENTED |
 
 ---
 
@@ -42,13 +48,13 @@ The following was captured on 2026-09-27 from the test suite.
 
 ```
 $ .venv/bin/python -m pytest tests/contract/test_cost.py::test_decode_tok_s_known_answer -v
-tests/contract/test_cost.py::test_decode_tok_s_known_answer PASSED  [ 14%]
+tests/contract/test_cost.py::test_decode_tok_s_known_answer PASSED
 1 passed in 0.08s
 ```
 
-Formula: `decode_tok_s = (bandwidth_gb_s * 1e9) / (weight_bytes * bandwidth_utilisation)`.
-At `bandwidth=10.0 GB/s`, `weight_bytes=1e9 bytes`, `utilisation=1.0`: expected `10.0 tok/s`.
-Test verifies formula matches within 1e-3.
+Formula: `decode_tok_s = (bandwidth_bps * utilisation) / weight_bytes`.
+At `bandwidth=10.0 GB/s`, `weight_bytes=38,555,136 bytes` (REFERENCE_CONFIG fp32), `utilisation=1.0`:
+expected `= 10e9 / 38555136 = 259.4 tok/s`. Test verifies formula matches within rtol=1e-6.
 
 ### Source 3 — RoPE known answer
 
@@ -89,9 +95,9 @@ x86 with NumPy (below theoretical peak of ~40 GB/s, as expected for a Python tri
 
 ---
 
-## Sources not in this table (RESEARCH.md §16–22)
+## Sources not in this table (RESEARCH.md §16–22, §23–54, §55–65 context-only; §66–75 c6-p1; §76–85 c7-p1)
 
-These are competitor context or documented limitations, not mechanisms we implement:
+These are competitor context, documented limitations, or background theory — not mechanisms we implement:
 
 - **16** (NTK-aware RoPE): limitation documented in README and code comment; no implementation needed.
 - **17** (LLM-42 verify-rollback): design context for determinism tier framework; mechanism not ported.
@@ -100,8 +106,24 @@ These are competitor context or documented limitations, not mechanisms we implem
 - **20** (PowerInfer): competitor, no mechanism to implement.
 - **21** (KTransformers): competitor, no mechanism to implement.
 - **22** (ridgepoint): closest competitor, used for gap analysis, no mechanism to implement.
-
-If `scripts/check_research_traceability.py --strict` is run with sources 16–22 added to
-the required set, it will fail — which is correct, because those sources have no test.
-The default (non-strict) run passes because the check only requires core test directories
-to cite IDs 1–15.
+- **55** (LLM in a Flash, Apple ACL 2024): background theory on flash-aware cost model; quantifies OOM cost but we implement enforcement, not flash paging.
+- **56** (StreamingLLM): KV eviction policy background; we do not implement attention sinks or eviction.
+- **58** (Davison & Hinkley bootstrap CI): grounds why n_held_out=1 CI is vacuous; motivates the CI width disclaimer in calibrate.py. Not a numerical method we implement — a meta-argument about our CI reporting.
+- **59** (SparseGPT): competitor quantisation method; we implement GPTQ-style (source 7), not SparseGPT.
+- **61–65** (PyInstaller, cibuildwheel, TinyLlama, k-bit scaling, perf_event_open): tooling and context sources; no implementation.
+- **66** (Mistral 7B SWA): documented as a limitation in README (SWA over-prediction in kv_cache_bytes for seq > window_size); no implementation — v0.2 scope.
+- **68** (Efficient Inference Survey taxonomy): external taxonomy grounding fitsproof's cost model; no new mechanism.
+- **69** (Train Large Then Compress): grounds plan.py degradation ordering; not directly tested (reference model randomly initialised, no quality signal).
+- **70** (H2O KV eviction): documented limitation; H2O not implemented in v0.1.
+- **72** (vLLM BATCH_INVARIANT): competitor analysis for COMPARISONS.md; no mechanism to implement.
+- **73** (Understanding LLMs survey): activation_bytes heuristic background; no new formula.
+- **74** (FastGen adaptive KV): documented limitation; per-head eviction v0.2 scope.
+- **76** (H2O NeurIPS 2023, arXiv:2306.14048): grounds open item c6-p1-F4; H2O is the canonical KV eviction algorithm. fitsproof does not implement KV eviction in v0.1 — documented limitation. kv_cache_bytes in cost.py is documented as applying to full KV retention.
+- **77** (BLOOM 176B, arXiv:2211.05100): see source 75 — same paper; BLOOM KAT already IMPLEMENTED in the table above.
+- **78** (proc_pid_smaps(5) / PSS measurement): grounds c6-p1-F2 closure. PSS ≤ RSS in single-process deployment (measured: PSS=30591 kB, RSS=40644 kB, delta=24% conservative). Confirms VmRSS delta is a valid per-config budget metric. Tested by `tests/adversarial/test_byzantine_inputs.py::test_pss_is_not_greater_than_rss`.
+- **79** (Mixtral 8×7B, arXiv:2401.04088): competitor context for COMPARISONS.md; MoE memory formula not implemented in v0.1.
+- **80** (Splitwise, arXiv:2311.18677): confirms cost.py two-phase model (prefill compute-bound, decode bandwidth-bound). Full TPOT formula = (weight_bytes + kv_bytes_per_token) / bandwidth. fitsproof omits KV term (documented limitation). KV fraction at context=512 on reference model is ~16% — weight term dominates. Tested by `tests/contract/test_cost.py::test_decode_throughput_kv_term_is_secondary_at_short_context` (quantifies the documented omission).
+- **81** (LIMINAL, arXiv:2406.05290): independent confirmation of bandwidth-bound decode formula; no new mechanism.
+- **82** (Fast MoE Inference with Offloading): MoE offloading competitor context; no implementation.
+- **83–84** (LLM Inference Serving Surveys): systems landscape context; no new mechanism.
+- **85** (smaps_rollup kernel documentation): fast PSS path (Linux 4.14+); supports source 78. No new fitsproof code — verify.py uses VmRSS (current RSS) which is confirmed conservative by PSS measurement.

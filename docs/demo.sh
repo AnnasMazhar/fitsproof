@@ -24,13 +24,17 @@ echo "=== 1. probe: characterise this machine ==="
 fitsproof probe
 
 echo
-echo "=== 2. admit: config fits a 4 GB budget ==="
+echo "=== 2. plan: inspect the prediction (exit 0 — no enforcement) ==="
+fitsproof plan --budget-gb 4
+
+echo
+echo "=== 3. admit: config fits a 4 GB budget ==="
 fitsproof admit --budget-gb 4
 
 echo
-echo "=== 3. admit: config cannot fit — refused, loudly (exit 2) ==="
+echo "=== 4. admit: config cannot fit — refused, loudly (exit 2) ==="
 fitsproof admit --budget-gb 0.001 || echo "(exit code: $?)"
 
 echo
-echo "=== 4. stress: >=20 configs, zero budget violations, zero silent mode changes ==="
+echo "=== 5. stress: >=20 configs, zero budget violations, zero silent mode changes ==="
 fitsproof stress

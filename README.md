@@ -9,6 +9,9 @@ of machine every mainstream engine either ignores or silently falls back from. I
 peak memory for your machine from an on-device calibration, **enforces** a declared budget
 (admit / degrade loudly / refuse), and **proves** it with a measured stress harness.
 
+<!-- Record with: asciinema rec -c "bash docs/demo.sh" demo.cast && agg --speed 1.5 demo.cast docs/demo.gif -->
+<!-- ![fitsproof demo](docs/demo.gif) -->
+
 ## Quickstart (clean machine, no GPU, no CUDA toolkit, no model download)
 
 ```bash
@@ -21,18 +24,66 @@ fitsproof admit --budget-gb 0.001   # REFUSED — names the binding constraint, 
 Python 3.11+. Everything runs offline after install. Once the PyPI release is published
 (pending — `pip install fitsproof` is not yet available), use the Git-URL form above.
 
-If this is useful, star the repo.
-
-## Headline evidence
-
-`fitsproof stress` runs 25 configurations against a declared budget and fails the build on any
-violation or undocumented mode change. Real output (budget: 4 GB, reference model ~70 MB):
+**Stress harness result** — 25 configs, zero budget violations, zero silent mode changes:
 
 ```
 $ fitsproof stress
-ADMITTED: 0.070 GB predicted peak <= 4.000 GB budget (margin: 3930.5 MB)
-Stress harness: 25 configs, 0 violations, 0 silent mode changes. Margin: min=3912.7 MB, median=3912.9 MB, max=3916.2 MB.
+ADMITTED: 0.039 GB predicted peak <= 4.000 GB budget (margin: 3961.0 MB)
+Stress harness: 25 configs, 0 violations, 0 silent mode changes. Margin: min=3909.4 MB, median=3909.7 MB, max=3913.1 MB.
 ```
+
+If this is useful, star the repo.
+
+## Prediction accuracy — the benchmark, published even though it is unflattering
+
+The claim above says fitsproof *predicts* peak memory. How accurately? Measured on this
+machine, offline, against the in-repo reference model (reproduce:
+`python scripts/calibration_demo.py`):
+
+```
+$ python scripts/calibration_demo.py
+=== Calibration demo ===
+bandwidth: 1.92 GB/s
+gemm:      37.19 GFLOPS
+RAM:       33.5 GB
+bandwidth_utilisation: 0.0487
+MAPE (held-out):       46.1%
+CI (95%):              [46.1%, 46.1%]  ← n_held_out=1: degenerate interval (not a range); see docs/ADOPTION.md F-3
+n_train=2, n_held_out=1
+Note: n_held_out=1 — the CI is a point, not an interval. Collect n >= 10 held-out
+measurements for a meaningful interval (Davison & Hinkley 1997, §2.4). The MAPE itself is still valid.
+```
+
+The bandwidth reading above (1.92 GB/s) is low because the box was under load when
+this transcript was recorded. MAPE varies with bandwidth measurement: across sessions
+on this machine the observed range is **~30–65%** (documented in `docs/ADOPTION.md`
+F-3). Run `calibration_demo.py` yourself; your number will differ.
+
+The `[46.1%, 46.1%]` interval is a degenerate point because the calibration run uses
+only 3 measurements (n_train=2, n_held_out=1). Bootstrap CI requires n ≥ 2 held-out
+samples to produce a genuine range. With n_held_out=1, every resample returns the
+same single value, so lower == upper. The MAPE itself (46.1%) is valid; the CI is
+not informative at n=1. See `docs/ADOPTION.md` F-3 for the full analysis and closure
+path (Davison & Hinkley 1997, §2.4).
+
+And against a real 4.3 GB model through ollama (raw transcripts in `docs/ADOPTION.md` §2):
+
+```
+predicted peak: 7.219 GB    ollama observed resident: 4.4 GB    error: +64% (over-prediction)
+```
+
+How to read this honestly:
+
+- **The error is one-sided, in the safe direction for a refusal gate.** fitsproof
+  over-predicts: if it admits a config, the real load fits with margin. The dangerous
+  direction — predicting a fit that then OOMs — has not been observed
+  (`docs/RESEARCH.md`, Pass 3 falsification check 1).
+- **It is not free.** A budget between the true footprint (4.4 GB) and the prediction
+  (7.22 GB) gets a *false degradation*. Held-out n is small (1) and the MAPE is large.
+  This is the top adoption risk — documented as finding F-1 in `docs/ADOPTION.md` §5,
+  not hidden.
+- Prediction is the least-proven of the three pillars. Enforcement (`admit`) and proof
+  (`stress`, `verify`) are measured directly; the prediction feeds them conservatively.
 
 ## Plug it in — four surfaces, every snippet below is executed by the test suite
 
@@ -173,15 +224,43 @@ correctness-first runtime that runs offline with no GPU and no CUDA toolkit.
 
 ## CLI
 
+`plan` and `admit` are distinct commands. `plan` describes the prediction without enforcing;
+`admit` enforces it (exit 2 on refusal). Use `plan` to inspect before committing to the gate.
+
 ```
+fitsproof --version  # print the package version (also -V)
 fitsproof probe    # measure this machine (bandwidth, GEMM, RAM/VRAM)
-fitsproof plan     # predict peak memory for a budget (--model <bundle> for a saved model)
-fitsproof admit    # admit / degrade loudly / refuse (exit 2 on refusal)
+fitsproof plan     # show predicted peak, CI, tok/s, verdict — does NOT enforce (always exit 0)
+fitsproof admit    # enforce the contract — ADMITTED / DEGRADED / REFUSED (exit 2 on refusal)
 fitsproof verify   # measure peak RSS during generation, assert <= budget
 fitsproof stress   # >=20 configs: zero violations, zero silent mode changes
 fitsproof serve    # OpenAI-compatible HTTP server (alias: fitsproof server)
 fitsproof mcp      # MCP server (stdio): plan / admit / probe tools
 fitsproof pareto   # measured Pareto frontier over (quant, context)
+```
+
+Example — inspect the prediction, then enforce:
+
+```
+$ fitsproof plan --budget-gb 4
+predicted peak:  0.042 GB  (95% CI: [0.033, 0.050] GB)
+predicted tok/s: 104.0  (95% CI: [72.8, 135.1])
+budget:          4.000 GB
+verdict:         fits
+
+$ fitsproof admit --budget-gb 4
+ADMITTED: 0.042 GB predicted peak <= 4.000 GB budget (margin: 3958.3 MB)
+
+$ fitsproof plan --budget-gb 0.001
+predicted peak:  0.042 GB  (95% CI: [0.033, 0.050] GB)
+predicted tok/s: 106.3  (95% CI: [74.4, 138.2])
+budget:          0.001 GB
+verdict:         does_not_fit
+degradation options:
+  [does not fit] Use int8_sym quantisation instead of none -> 0.011 GB  (400.0 tok/s)
+  [does not fit] Use int4_sym quantisation instead of none -> 0.006 GB  (741.6 tok/s)
+  ...
+# plan exits 0 — it describes; admit enforces (exit 2 on does_not_fit)
 ```
 
 ## Architecture
@@ -220,6 +299,22 @@ These are honest. A repo with no stated limitations is not credible.
   and NumPy GEMM measurements. It does not account for GPU memory hierarchy or
   compute rooflines.
 
+- **Prediction error is large and one-sided.** Held-out MAPE is ~30–65% at reference
+  scale (n_held_out=1, varies with machine load at measurement time — see F-3 in
+  `docs/ADOPTION.md`), and on a real GGUF model (gemma3:4b) the peak is over-predicted
+  by +64% (7.22 GB predicted vs 4.4 GB observed): `head_dim` defaults to hidden/heads
+  and embeddings are accounted in fp32. Refusals stay safe (the error is conservative),
+  but budgets between the true and predicted footprint get false degradations.
+  Full analysis: `docs/ADOPTION.md` F-1.
+
+- **Bootstrap CI degenerates to a point at n_held_out=1.** The calibration demo uses
+  3 measurements (n_train=2, n_held_out=1). With a single held-out sample, every
+  bootstrap resample returns the same value — lower == upper. The MAPE itself is
+  valid; the interval is not informative at n=1. Collecting n ≥ 10 held-out
+  measurements produces a genuine range (Davison & Hinkley 1997, §2.4;
+  `docs/ADOPTION.md` F-3). The `[X%, X%]` in the calibration demo output is
+  annotated at runtime to explain the degeneracy.
+
 - **Contract covers memory, not latency SLOs.** fitsproof enforces a peak RSS budget;
   it does not guarantee latency targets (tok/s predictions are estimates).
 
@@ -227,8 +322,11 @@ These are honest. A repo with no stated limitations is not credible.
   streaming adds to the bandwidth cost. The current formula is accurate for the
   reference model and short contexts; it underpredicts decode time at very long contexts.
 
-- **RSS measurement is coarse.** Peak RSS on Linux is the high-water mark since
-  process start. Allocations freed before the post-call sample may not be captured.
+- **RSS measurement is per-config delta, not absolute.** The proof harness reads
+  `/proc/self/status` VmRSS (current RSS) before and after each run and reports
+  the delta. It cannot attribute RSS held across calls (e.g. NumPy arena memory)
+  to any single configuration, so the margin figures are conservative rather than
+  exact. The per-config peak is the maximum of pre- and post-call samples.
 
 - **Boundary safety margin.** `admit` returns NEAR_BOUNDARY (exit 1) when the
   predicted peak is within 50 MiB (52 MB) of the declared budget. This covers a ~25%
@@ -257,9 +355,12 @@ See `COMPARISONS.md` for the full table with star counts and release dates. Shor
 | KTransformers | CPU/GPU hybrid MoE, AMX kernels, runs 671B on ~14 GB VRAM |
 | ridgepoint | Calibrated VRAM/roofline prediction for GPU (A100/H100) |
 | Strata | Consumer packaging, one-click install |
+| aura | Kernel-level (cgroup v2 / Win32 Job Object) budget enforcement for local LLMs |
 
-fitsproof's position: none of the above enforces a *resource contract* with a measured
-proof of compliance and explicit degradation on any configuration. That is the claim.
+fitsproof's position: aura enforces budgets at the OS level, but none of the above pairs
+enforcement with an on-device calibrated prediction (held-out MAPE published) and a
+*measured proof of compliance* — the stress harness asserting `measured <= budget` over
+25 configurations. That is the claim.
 
 ## Demo
 

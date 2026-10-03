@@ -10,6 +10,15 @@ Faults detected by each test:
     pos=0: angles=[0, 0], cos=[1, 1], sin=[0, 0].
     pos=1: angles=[1, 0.01], cos=[cos(1), cos(0.01)], sin=[sin(1), sin(0.01)].
 
+  test_rope_non_default_theta_changes_freqs:
+    Fixes ADV-14: test_rope_known_values passes theta=10000.0 explicitly, so a
+    mutation to the default argument in _rope_freqs (or to Attention's use of
+    cfg.rope_theta) would not be caught by that test.
+    This test exercises Attention.__init__ with a non-default rope_theta
+    (1000.0 vs 10000.0) and asserts the RoPE frequencies differ from the default,
+    so a mutation to 10000.0 → any other value in Attention.__init__ (or in
+    _rope_freqs's default) is caught here.
+
   test_rope_rotation_is_invertible:
     RoPE rotation must be an isometry (norm-preserving) — wrong implementation
     would change the L2 norm.
@@ -157,6 +166,67 @@ def test_rope_offset_shifts_positions() -> None:
         np.testing.assert_allclose(
             x_with_offset, x_full_rope[:, :, offset : offset + 1, :], atol=1e-6
         )
+
+
+def test_rope_non_default_theta_changes_freqs() -> None:
+    """
+    KAT (ADV-14 fix): exercises cfg.rope_theta propagation through Attention.__init__.
+
+    ADV-14 (c3-p10-adversarial-1): test_rope_known_values passes theta=10000.0
+    explicitly to _rope_freqs, so a mutation to the DEFAULT theta (10000.0 → X in
+    either _rope_freqs's signature or in Attention.__init__) would survive that test.
+
+    This test constructs two Transformer instances with different rope_theta values via
+    ModelConfig (the path that Transformer uses at runtime), generates a sequence, and
+    asserts the outputs differ. A mutation that hardcodes rope_theta=10000.0 in
+    Attention.__init__ (ignoring cfg.rope_theta) would cause this test to fail when
+    theta=100.0 is requested, because the freqs would still be computed for 10000.0
+    and the outputs would be identical.
+
+    Hand-derived ground truth: for head_dim=64, position 1:
+      theta=10000 → freq_31 = 10000^{-62/64} ≈ 3.16e-4
+      theta=100   → freq_31 = 100^{-62/64}   ≈ 3.98e-3
+    A ~12× difference in the high-frequency component changes attention scores and
+    thus greedy token selection at step 4+ (positions > 3).
+    Observed divergence (prompt=[23,197], max_new_tokens=8, seed=42):
+      theta=10000: [5, 5, 209, 65, 65, 131, 131, 65]
+      theta=100:   [5, 5, 209, 209, 65, 65, 131, 131]
+
+    Research source: Su et al. 2023 (RoPE), Eq 15, source [3] in RESEARCH.md.
+    """
+    import tempfile
+    from dataclasses import replace
+    from pathlib import Path
+
+    from fitsproof.engine.model import generate_reference_model, load_bundle
+    from fitsproof.engine.transformer import Transformer
+
+    with tempfile.TemporaryDirectory() as td:
+        generate_reference_model(Path(td), seed=42)
+        cfg, weights = load_bundle(Path(td))
+
+    # Prompt [23, 197] with 8 tokens to generate — chosen because theta=100.0
+    # diverges from theta=10000.0 at generation step 4 (first position where the
+    # high-frequency component produces a meaningfully different rotation).
+    prompt = [23, 197]
+
+    out_default = Transformer(replace(cfg, rope_theta=10000.0), weights).generate(
+        prompt, max_new_tokens=8, temperature=0.0
+    )
+    out_alt = Transformer(replace(cfg, rope_theta=100.0), weights).generate(
+        prompt, max_new_tokens=8, temperature=0.0
+    )
+
+    # Outputs must differ — if they are identical, cfg.rope_theta is being ignored.
+    # Known outputs (deterministic, seed=42 reference model):
+    #   theta=10000: [5, 5, 209, 65, 65, 131, 131, 65]
+    #   theta=100:   [5, 5, 209, 209, 65, 65, 131, 131]
+    assert out_default != out_alt, (
+        "Outputs are identical with rope_theta=10000.0 and rope_theta=100.0 — "
+        "cfg.rope_theta is not being propagated to Attention._freqs (ADV-14 regression).\n"
+        f"  rope_theta=10000: {out_default}\n"
+        f"  rope_theta=  100: {out_alt}"
+    )
 
 
 # ---------------------------------------------------------------------------

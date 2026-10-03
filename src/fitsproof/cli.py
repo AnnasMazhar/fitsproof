@@ -18,6 +18,8 @@ import argparse
 import math
 import sys
 
+from fitsproof import __version__
+
 
 def _budget_bytes(gb: float) -> int | None:
     """Convert --budget-gb to bytes; None if not a positive finite number."""
@@ -44,6 +46,13 @@ def main() -> int:
     parser = argparse.ArgumentParser(
         prog="fitsproof",
         description="Predicts, enforces, and proves an LLM inference resource contract.",
+    )
+    parser.add_argument(
+        "-V",
+        "--version",
+        action="version",
+        version=f"fitsproof {__version__}",
+        help="Print the fitsproof version and exit",
     )
     sub = parser.add_subparsers(dest="command")
 
@@ -118,7 +127,52 @@ def main() -> int:
             save_profile(profile, Path(args.out))
             print(f"  saved to:   {args.out}")
 
-    elif args.command in ("plan", "admit"):
+    elif args.command == "plan":
+        # plan — show the prediction (peak, CI, tok/s, verdict) without enforcing.
+        # admit — enforce the contract (ADMITTED/REFUSED/DEGRADED, exit 2 on refusal).
+        # They are separate commands: plan lets you inspect what the contract predicts
+        # before you commit to enforcement; admit is the gate you wire into CI.
+        from fitsproof.contract.plan import plan as make_plan
+        from fitsproof.contract.probe import probe
+
+        budget = _budget_bytes(args.budget_gb)
+        if budget is None:
+            print(
+                f"ERROR: --budget-gb must be a positive finite number, got {args.budget_gb}",
+                file=sys.stderr,
+            )
+            return 2
+        try:
+            model_cfg = _load_model_config(args.model)
+            machine = probe()
+            p = make_plan(model_cfg, machine, args.context, budget, args.quant)
+        except (ValueError, OSError) as e:
+            print(f"ERROR: {e}", file=sys.stderr)
+            return 2
+        # Show the prediction — peak, CI, tok/s — not an enforcement decision.
+        lo_gb = p.predicted_peak_ci[0] / 1e9
+        hi_gb = p.predicted_peak_ci[1] / 1e9
+        tok_lo = p.predicted_tok_s_ci[0]
+        tok_hi = p.predicted_tok_s_ci[1]
+        verdict_str = p.verdict.value  # fits / fits_with_degradation / does_not_fit
+        print(
+            f"predicted peak:  {p.predicted_peak_bytes / 1e9:.3f} GB  "
+            f"(95% CI: [{lo_gb:.3f}, {hi_gb:.3f}] GB)"
+        )
+        print(f"predicted tok/s: {p.predicted_tok_s:.1f}  (95% CI: [{tok_lo:.1f}, {tok_hi:.1f}])")
+        print(f"budget:          {p.budget_bytes / 1e9:.3f} GB")
+        print(f"verdict:         {verdict_str}")
+        if p.degradations:
+            print("degradation options:")
+            for d in p.degradations:
+                fits = "fits" if d.fits_budget else "does not fit"
+                print(
+                    f"  [{fits}] {d.description} -> {d.predicted_peak_bytes / 1e9:.3f} GB"
+                    f"  ({d.predicted_tok_s:.1f} tok/s)"
+                )
+        # plan exits 0 even on does_not_fit — it describes, it does not enforce.
+
+    elif args.command == "admit":
         from fitsproof.contract.admit import admit as _admit
         from fitsproof.contract.plan import plan as make_plan
         from fitsproof.contract.probe import probe

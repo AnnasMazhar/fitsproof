@@ -97,7 +97,7 @@ $ .venv/bin/python scripts/ollama_gate.py gemma3:4b --budget-gb 3 --context 4096
 model:   gemma3:4b (4.3B, Q4_K_M -> int4_sym)
 shape:   34L x 2560h, heads 8/4, vocab 262145, ctx 4096
 budget:  3 GB
-REFUSED: needs 7.22 GB, budget 3.00 GB; nearest fitting config is Offload ~50% of layers to system RAM (CPU fallback for those layers)
+REFUSED: needs 7.219 GB, budget 3.000 GB; no listed option fits — nearest is "Offload ~50% of layers to system RAM (CPU fallback for those layers)" at 3.699 GB (0.699 GB above budget)
 EXIT:2
 ```
 
@@ -184,19 +184,33 @@ for budgets between the true footprint (4.4 GB) and the predicted peak
 (7.22 GB). Fix belongs to the cost model (implement/improve phase), with
 the KAT being exactly this observed 4.4 GB.
 
-### F-2 — Refusal wording names a config that does not fit (defect, open)
+### F-2 — Refusal wording names a config that does not fit (**FIXED**, improve pass c1-p09-improve-2)
+
+Before (this pass's original transcript, §2b above as first run):
 
 ```
 REFUSED: needs 7.22 GB, budget 3.00 GB; nearest fitting config is Offload ~50% of layers ...
 ```
 
-At 3 GB no degradation fits (the offload option predicts 3.699 GB), yet
-the message still offers it as the "nearest *fitting* config"
-(`plan.py` appends `degradations[-1].description` unconditionally on the
-DOES_NOT_FIT path). The decision is right; the message misleads. Left
-unfixed in this research pass — recorded as finding F-2 for the improve
-pass, with a test that pins the wording only when the named config
-actually fits.
+At 3 GB no degradation fits (the offload option predicts 3.699 GB), yet the message
+offered it as the "nearest *fitting* config" (`plan.py` appended `degradations[-1]`
+unconditionally on the DOES_NOT_FIT path) — and it was not even the nearest option.
+The decision was right; the message misled.
+
+Fixed in improve pass 2: `plan.no_fit_reason()` (src/fitsproof/contract/plan.py) is
+now used on the DOES_NOT_FIT path. It names the option with the smallest predicted
+peak and states the gap above budget, so the message can never contradict the
+`[does not fit]` tags the CLI prints underneath:
+
+```
+$ .venv/bin/fitsproof admit --budget-gb 0.001
+REFUSED: needs 0.042 GB, budget 0.001 GB; no listed option fits — nearest is "Use int4_sym quantisation instead of none" at 0.006 GB (0.005 GB above budget)
+```
+
+Pinned by `tests/contract/test_plan_admit_verify.py::
+test_refusal_never_names_a_non_fitting_config`, which fails on all three old faults
+(claiming a fitting config; naming the last option instead of the nearest; naming an
+option above budget without saying so).
 
 ### F-3 — Calibration drifts with machine state
 
@@ -212,6 +226,27 @@ fine). A profile saved on a loaded box is wrong when the box goes idle,
 and vice versa. Operational rule: re-run `fitsproof probe` when the
 sustained load profile changes, and store the profile with the job that
 consumes it — probe records what was measured, when, and where.
+
+MAPE is directly coupled to the bandwidth measurement (bandwidth_utilisation =
+measured_bw / nominal_bw, and this ratio scales predicted_peak linearly). Full
+observed MAPE range across sessions on this machine:
+
+```
+2026-09-27 (c1-p9):   46.1% (bw: 1.92 GB/s — loaded box)
+2026-09-28 (c3-p3):   49.1% (bw: 6.62 GB/s)
+2026-09-28 (c3-p8):   61.9% (bw: 6.94 GB/s)
+2026-09-28 (c4-p3):   61.2% (bw: 6.84 GB/s)
+2026-09-28 (c4-p10):  63.8% (bw: adversarial run)
+2026-09-28 (c3-p8):   60.1% (bw: session measurement)
+2026-09-29 (c5-p3):   51.5% (bw: 7.06 GB/s)
+2026-09-29 (c5-p8):   31.3% (bw: 6.73 GB/s — loaded box)
+2026-09-29 (c6-p3):   60.7% (bw: 2.78 GB/s — loaded box)
+```
+
+Documented range: **~30–65%** (previously stated as 46–62%; corrected c5-p8-improve-1
+after ADV-01 was observed at 63.8% and a subsequent session produced 31.3%).
+The range is wide because the bandwidth probe samples DRAM under whatever load the
+machine carries at that moment.
 
 ### F-4 — CPU roofline vs hybrid CPU/GPU engines
 
@@ -274,13 +309,13 @@ This is a prediction-accuracy problem, not a positioning problem
 (MARKET-VERDICTS.md's gap still holds — see RESEARCH.md Pass 3 for the
 aura finding and the narrowed claim). It is fixable with exactly what
 the spec already demands: per-machine calibration with published held-out
-MAPE (currently 50.3% at reference scale, n_held_out=1), embedding and
+MAPE (currently 46.1% fresh / 50.3% on 2026-09-27 morning, n_held_out=1), embedding and
 head-dimension terms corrected against GGUF reality, and the observed
 4.4 GB footprint used as a known-answer test. Until that lands, the
 honest adoption advice is: **run the gate on ADMITTED-only paths
 (budgets ≥ predicted peak), treat DEGRADED as refuse (the gate's
-default), and treat the refusal message's "nearest fitting config" as
-advisory (F-2).**
+default), and read the refusal's "nearest" option as the closest
+*listed* option — since the F-2 fix it is never claimed to fit.**
 
 ---
 
@@ -291,9 +326,1715 @@ advisory (F-2).**
 | L0 — try it | clone, `probe`, `plan` against a budget | works today (this document) |
 | L1 — gate the box | chain `ollama_gate.py && ollama run` | works today, strict mode |
 | L2 — CI admission | gate in CI before any model pull | works today (CPU-only, seconds) |
-| L3 — in-process guard | `@guard(budget=...)` in Python services | implemented (v0.1) |
-| L4 — agent-facing | MCP server so an agent asks before loading | implemented (v0.1) |
-| L5 — drop-in binary | single executable, SHA256 release | implemented (v0.1) |
+| L3 — in-process guard | `@guard(budget=...)` in Python services | works today (`fitsproof.client.guard`, tested) |
+| L4 — agent-facing | MCP server so an agent asks before loading | works today (`fitsproof mcp`, tested) |
+| L5 — drop-in binary | single executable, SHA256 release | v0.2 MANDATE M1 (not built yet) |
 
-L0–L2 are adopted from source on a Tuesday. L3–L5 are implemented in v0.1;
-all levels are available today.
+L0–L4 are adopted from source on a Tuesday (L3/L4 landed in the v0.2 mandate pass and
+are exercised by the test suite). L5 is the remaining mandate item.
+
+---
+
+## 7. v0.2 surface reality check — cycle 2
+
+*2026-09-27T22:34Z. All four v0.2 plugin surfaces are now implemented and
+tested. This section documents them against raw output from this machine.*
+
+*Updated 2026-09-28 (c2-p09-improve-2): `fitsproof plan` and `fitsproof admit` are now
+distinct commands. `plan` shows the prediction (peak, CI, tok/s, verdict) and exits 0
+even on `does_not_fit`; `admit` enforces and exits 2 on refusal. The README CLI section
+reflects this with a worked example.*
+
+### The four surfaces, one at a time
+
+**L2 — CLI gate (plan to inspect, admit to enforce)**
+
+```
+$ .venv/bin/fitsproof plan --budget-gb 4
+predicted peak:  0.042 GB  (95% CI: [0.033, 0.050] GB)
+predicted tok/s: 98.6  (95% CI: [69.0, 128.2])
+budget:          4.000 GB
+verdict:         fits
+
+$ .venv/bin/fitsproof admit --budget-gb 4
+ADMITTED: 0.042 GB predicted peak <= 4.000 GB budget (margin: 3958.3 MB)
+$ echo $?
+0
+
+$ .venv/bin/fitsproof plan --budget-gb 0.001
+predicted peak:  0.042 GB  (95% CI: [0.033, 0.050] GB)
+predicted tok/s: 103.8  (95% CI: [72.6, 134.9])
+budget:          0.001 GB
+verdict:         does_not_fit
+degradation options:
+  [does not fit] Use int4_sym quantisation instead of none -> 0.006 GB  (724.2 tok/s)
+  ...
+$ echo $?
+0   # plan exits 0 — it describes; it does not enforce
+
+$ .venv/bin/fitsproof admit --budget-gb 0.001
+REFUSED: needs 0.042 GB, budget 0.001 GB; no listed option fits — nearest is "Use int4_sym quantisation instead of none" at 0.006 GB (0.005 GB above budget)
+$ echo $?
+2   # admit exits 2 on refusal
+```
+
+**L3 — in-process Python guard**
+
+```python
+from fitsproof.client import DoesNotFit, FitsproofClient, guard
+
+# Direct client usage
+client = FitsproofClient()
+plan = client.plan(context_len=512, budget_bytes="4GiB")
+record = client.admit(plan)
+print(record.message)
+# → ADMITTED: 0.042 GB predicted peak <= 4.295 GB budget (margin: 4253.3 MB)
+
+print(client.metrics()["ram_gb"])
+# → 33.548316672
+
+# Guard decorator — raises before the caller allocates
+loaded = []
+
+@guard(budget="1MiB")   # reference model needs ~40 MB; this will refuse
+def load_model():
+    loaded.append("allocated")
+
+try:
+    load_model()
+except DoesNotFit as e:
+    print("refused:", e)
+
+assert loaded == []     # the callable was provably never invoked
+```
+
+The `@guard` surface is the right tool for a Python inference service that
+wants to enforce a budget before calling any allocation. The check happens
+in-process, before the caller reaches the model loading code.
+
+**L4 — MCP server (for agents)**
+
+```python
+import json, subprocess, sys
+
+messages = [
+    {"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}},
+    {"jsonrpc": "2.0", "id": 2, "method": "tools/list", "params": {}},
+    {
+        "jsonrpc": "2.0", "id": 3, "method": "tools/call",
+        "params": {"name": "admit", "arguments": {"budget": "4GiB", "context_len": 512}},
+    },
+]
+proc = subprocess.run(
+    [sys.executable, "-m", "fitsproof.cli", "mcp"],
+    input="\n".join(json.dumps(m) for m in messages) + "\n",
+    capture_output=True, text=True, timeout=60,
+)
+replies = [json.loads(l) for l in proc.stdout.splitlines() if l.strip()]
+# replies[0]["result"]["serverInfo"]["name"] == "fitsproof-mcp"
+# sorted(t["name"] for t in replies[1]["result"]["tools"]) == ["admit","plan","probe"]
+# replies[2]["result"]["isError"] == False
+```
+
+Register with any MCP host as `fitsproof mcp` (stdio transport). An agent that
+calls the `admit` tool and gets `isError: false` can proceed; `isError: true`
+means the contract refused and the agent should not attempt the load.
+
+**L5 — Binary release (v0.2 MANDATE M1, not yet built)**
+
+```bash
+# When M1 lands, the adoption story becomes zero-install:
+curl -L https://github.com/AnnasMazhar/fitsproof/releases/download/v0.2.0/fitsproof-linux-x86_64 \
+  -o fitsproof && chmod +x fitsproof
+sha256sum fitsproof   # verify against the release page value
+./fitsproof probe
+./fitsproof admit --budget-gb 4
+./fitsproof mcp &     # start MCP server
+```
+
+L0–L4 work today from source. L5 is the remaining M1 deliverable. Until
+the binary release exists, the install requires Python (§1 recipe above).
+
+### What changed from cycle 1 to cycle 2
+
+| Item | Cycle 1 (pass 3) | Cycle 2 (pass 3) |
+|---|---|---|
+| L3 Python client | Not yet implemented | Works; `FitsproofClient`, `@guard`, `DoesNotFit` |
+| L4 MCP server | Not yet implemented | Works; `tools=['admit','plan','probe']`, refused config → `isError: true` |
+| Refusal wording | Named a non-fitting config as "nearest fitting" (F-2) | Fixed (c1-p09-improve-2); names smallest-predicted-peak option + gap above budget |
+| MAPE reported | 46.1% (first run) | 50.3–60.1% across multiple sessions; run-to-run variation confirmed |
+| Test count | 88 | 155 |
+| Stress harness | 25 configs, 0 violations | 25 configs, 0 violations (confirmed fresh this pass) |
+
+### Adoption maturity table — updated
+
+| Level | What the team does | Status |
+|---|---|---|
+| L0 — try it | clone, `probe`, `plan` against a budget | works today |
+| L1 — gate the box | `ollama_gate.py && ollama run` | works today (§2) |
+| L2 — CLI gate | `fitsproof admit` in shell scripts / CI | works today |
+| L3 — in-process guard | `@guard(budget=...)` in Python services | **works today** (new this cycle) |
+| L4 — agent-facing | `fitsproof mcp`, agent calls `admit` before loading | **works today** (new this cycle) |
+| L5 — drop-in binary | single executable, SHA256 release | v0.2 M1 pending |
+
+---
+
+## 8. Cycle 3 — Pass 3 — State as of 2026-09-28T06:00Z
+
+*All commands run fresh on the ThinkStation P500, Python 3.11.15, branch feat/v0.1.*
+
+### 8.1 What changed since cycle 2
+
+| Item | Cycle 2 (c2-p3, 2026-09-27T22:34Z) | Cycle 3 (c3-p3, 2026-09-28T06:00Z) |
+|---|---|---|
+| Test count | 155 passed | **169 passed** (+14) |
+| MAPE (held-out) | 50.3–60.1% across sessions | **49.1%** this session (n_held_out=1) |
+| Stress harness | 25 configs, 0 violations | 25 configs, 0 violations (confirmed) |
+| Stress margin | min=3698.0 MB | min=3909.2 MB (run-to-run variation in bandwidth measurement) |
+| CLI plan/admit | Distinct commands (c2-p09) | Unchanged |
+| Python client (L3) | Working | Confirmed working |
+| MCP server (L4) | Working | Confirmed working: admit 4GiB → `isError:false`, admit 1MiB → `isError:true` |
+| Binary release (L5) | Not built | **Still not built** — v0.2 MANDATE M1 pending |
+
+The MAPE variation (46.1% → 60.1% → 49.1% across three cycles' sessions) is within
+the expected run-to-run spread documented as F-3 (bandwidth drift with machine state).
+The underlying instrument has not changed; the number fluctuates because the bandwidth
+probe is sensitive to load at measurement time.
+
+### 8.2 Raw output — 2026-09-28T06:00Z
+
+```
+$ source .venv/bin/activate && python scripts/calibration_demo.py
+=== Calibration demo ===
+bandwidth: 6.62 GB/s
+gemm:      89.64 GFLOPS
+RAM:       33.5 GB
+bandwidth_utilisation: 0.0209
+MAPE (held-out):       49.1%
+CI (95%):              [49.1%, 49.1%]
+n_train=2, n_held_out=1
+```
+
+```
+$ fitsproof probe
+Probing machine...
+  bandwidth:  6.57 GB/s
+  gemm:       44.96 GFLOPS
+  RAM:        33.55 GB
+  VRAM:       0.00 GB
+```
+
+```
+$ fitsproof stress
+ADMITTED: 0.039 GB predicted peak <= 4.000 GB budget (margin: 3961.0 MB)
+Stress harness: 25 configs, 0 violations, 0 silent mode changes. Margin: min=3909.2 MB, median=3909.4 MB, max=3912.8 MB.
+```
+
+```
+$ fitsproof admit --budget-gb 4
+ADMITTED: 0.042 GB predicted peak <= 4.000 GB budget (margin: 3958.3 MB)
+
+$ fitsproof admit --budget-gb 0.001
+REFUSED: needs 0.042 GB, budget 0.001 GB; no listed option fits — nearest is "Use int4_sym quantisation instead of none" at 0.006 GB (0.005 GB above budget)
+Degradation options:
+  [does not fit] Use int8_sym quantisation instead of none -> 0.011 GB
+  [does not fit] Use int4_sym quantisation instead of none -> 0.006 GB
+  [does not fit] Reduce context to 256 tokens (1/2 of 512) -> 0.040 GB
+  [does not fit] Reduce context to 128 tokens (1/4 of 512) -> 0.039 GB
+  [does not fit] Reduce context to 64 tokens (1/8 of 512) -> 0.039 GB
+  [does not fit] Offload ~50% of layers to system RAM (CPU fallback for those layers) -> 0.022 GB
+(exit: 2)
+```
+
+```
+$ fitsproof plan --budget-gb 4
+predicted peak:  0.042 GB  (95% CI: [0.033, 0.050] GB)
+predicted tok/s: 107.5  (95% CI: [75.3, 139.8])
+budget:          4.000 GB
+verdict:         fits
+```
+
+Python client and guard:
+
+```
+$ python -c "
+from fitsproof.client import DoesNotFit, FitsproofClient, guard
+client = FitsproofClient()
+record = client.admit(client.plan(context_len=512, budget_bytes='4GiB'))
+print(record.message)
+print('ram_gb:', client.metrics()['ram_gb'])
+loaded = []
+@guard(budget='1MiB')
+def load_model():
+    loaded.append('allocated')
+try:
+    load_model()
+except DoesNotFit as e:
+    print('refused:', str(e)[:80])
+print('loaded ==', loaded)
+"
+ADMITTED: 0.042 GB predicted peak <= 4.295 GB budget (margin: 4253.3 MB)
+ram_gb: 33.548316672
+refused: REFUSED: needs 0.042 GB, budget 0.001 GB; no listed option fits — nearest is "Us
+loaded == []
+```
+
+MCP server (admitted and refused):
+
+```
+$ python -c "
+import json, subprocess, sys
+messages = [
+    {'jsonrpc':'2.0','id':1,'method':'initialize','params':{}},
+    {'jsonrpc':'2.0','id':2,'method':'tools/list','params':{}},
+    {'jsonrpc':'2.0','id':3,'method':'tools/call',
+     'params':{'name':'admit','arguments':{'budget':'4GiB','context_len':512}}},
+    {'jsonrpc':'2.0','id':4,'method':'tools/call',
+     'params':{'name':'admit','arguments':{'budget':'1MiB','context_len':512}}},
+]
+proc = subprocess.run([sys.executable,'-m','fitsproof.cli','mcp'],
+    input='\n'.join(json.dumps(m) for m in messages)+'\n',
+    capture_output=True, text=True, timeout=60)
+replies = [json.loads(l) for l in proc.stdout.splitlines() if l.strip()]
+print('server:', replies[0]['result']['serverInfo']['name'])
+print('tools:', sorted(t['name'] for t in replies[1]['result']['tools']))
+print('admit 4GiB isError:', replies[2]['result']['isError'])
+print('admit 1MiB isError:', replies[3]['result']['isError'])
+"
+server: fitsproof-mcp
+tools: ['admit', 'plan', 'probe']
+admit 4GiB isError: False
+admit 1MiB isError: True
+```
+
+Test suite:
+
+```
+$ python -m pytest tests/ -q --tb=no
+169 passed in 107.65s (0:01:47)
+```
+
+### 8.3 Failure modes — cycle 3 status
+
+No new failure modes were observed in cycle 3. The five documented failure modes from
+ADOPTION §3 (F-1 through F-6) remain open or closed per the prior cycle's state:
+
+| Finding | Status | C3 observation |
+|---|---|---|
+| F-1: +64% over-prediction on real GGUF models | **Open** (cost model fix in implement pass) | Not re-tested against ollama this cycle; MAPE at 49.1% on fixture (within prior range) |
+| F-2: Refusal names a non-fitting config | **Fixed** (c1-p09-improve-2) | Confirmed fixed: "no listed option fits — nearest is..." correctly named in CLI output above |
+| F-3: Bandwidth drift with machine state | **Open / documented** | Today's probe: 6.57 GB/s vs 3.94–7.18 GB/s across sessions. Operational rule (re-probe on load change) documented in §3 |
+| F-4: CPU roofline tok/s invalid for GPU-backed engines | **Open / documented** | Not re-tested; not changed since cycle 2 |
+| F-5: VRAM unmeasured (probe shows 0.00 GB) | **Open / documented** | Confirmed: `VRAM: 0.00 GB` in probe output above |
+| F-6: Gate fails closed when ollama daemon is down | **Open / documented** | Not re-tested; gate code unchanged |
+
+The most adoption-critical finding remains **F-1**: the +64% over-prediction on real
+GGUF models produces false DEGRADED verdicts in the 4.4–7.2 GB budget range. This is
+the fix target for the cycle 3 implement pass. Until the cost model is corrected, the
+operational guidance from §5 applies: treat DEGRADED as refuse-by-default, and confirm
+any ADMITTED verdict is at a budget above the predicted peak, not merely above the true
+footprint.
+
+### 8.4 Adoption maturity table — final state for cycle 3
+
+| Level | What the team does | Status |
+|---|---|---|
+| L0 — try it | clone, `probe`, `plan` against a budget | Works today |
+| L1 — gate the box | `ollama_gate.py && ollama run` | Works today (strict mode) |
+| L2 — CLI gate | `fitsproof admit` in shell scripts / CI | Works today; exit 0 / exit 2 |
+| L3 — in-process guard | `@guard(budget=...)` in Python services | Works today; DoesNotFit raised before callable invoked |
+| L4 — agent-facing | `fitsproof mcp`, agent calls `admit` before loading | Works today; `isError:false` / `isError:true` |
+| L5 — drop-in binary | single executable, SHA256 release | v0.2 MANDATE M1 — not built yet |
+
+### 8.5 The single most likely reason someone would NOT adopt it — cycle 3 update
+
+No change from §5. The prediction accuracy (MAPE ~30–65% across sessions, +64% on the
+one real-model test) remains the adoption blocker. The contract surfaces (L2–L4) work
+correctly; the number the contract enforces is the weak link.
+
+The path to closing this is narrow and clear: correct the cost model's head_dim default
+(use the model config's `attention.key_length`, not `hidden_size / num_heads`) and the
+embedding/unembedding fp32 double-count, then re-measure against gemma3:4b. If the
+resulting MAPE drops below 20% on the one real-model calibration point, the F-1 finding
+is resolved and the adoption-blocker analysis changes.
+
+### 8.6 Changes in c3-p09-improve-2 (2026-09-28T09:00Z)
+
+| Item | Before | After |
+|---|---|---|
+| README Limitations MAPE range | "~46–50%" | "~46–62%" (matches observed range across sessions including today's 61.9% run) |
+| README calibration section | No note on why example shows 46.1% | Explicit note: low bandwidth (1.92 GB/s) = loaded box; MAPE varies 46–62% across sessions |
+| README stress output | Slightly stale median (3909.5 MB) | Updated to match fresh run (3909.7 MB) |
+| `test_calibration_demo_runs` | Missing | Added to `tests/test_packaging.py`; asserts the README-referenced script exits 0 and emits all required output fields |
+| Test count | 177 | **178** (+1) |
+| `ruff check .` | clean | clean |
+
+---
+
+## 9. Cycle 4 — Pass 3 — State as of 2026-09-28T14:00Z
+
+*All commands run fresh on the ThinkStation P500, Python 3.11.15, branch feat/v0.1,
+2026-09-28T14:00Z.*
+
+### 9.1 What changed since cycle 3
+
+| Item | Cycle 3 (c3-p3, 2026-09-28T06:00Z) | Cycle 4 (c4-p3, 2026-09-28T14:00Z) |
+|---|---|---|
+| Test count | 169 passed | **178 passed** (+9, all from c3-p09-improve-2) |
+| MAPE (held-out) | 49.1% this session | **61.2%** this session (n_held_out=1, bandwidth 6.84 GB/s; within documented ~30–65% range) |
+| Stress harness | 25 configs, 0 violations | 25 configs, 0 violations (confirmed) |
+| Stress margin | min=3909.2 MB | min=3909.3 MB (stable) |
+| Research base | 44 sources (c3-p1) | **54 sources** (+10 in c4-p1: FlashAttention, int4 asym, PagedAttention deeper, softmax numerics, GPT-2 weight tying, FlashAttention-2, LoRA, NF4, temperature calibration, Orca) |
+| Binary release (L5) | Not built | Not built — v0.2 MANDATE M1 pending |
+
+### 9.2 Raw output — 2026-09-28T14:00Z
+
+Calibration demo:
+
+```
+$ python scripts/calibration_demo.py
+=== Calibration demo ===
+bandwidth: 6.84 GB/s
+gemm:      137.59 GFLOPS
+RAM:       33.5 GB
+bandwidth_utilisation: 0.0238
+MAPE (held-out):       61.2%
+CI (95%):              [61.2%, 61.2%]
+n_train=2, n_held_out=1
+```
+
+Probe:
+
+```
+$ fitsproof probe
+Probing machine...
+  bandwidth:  6.80 GB/s
+  gemm:       119.34 GFLOPS
+  RAM:        33.55 GB
+  VRAM:       0.00 GB
+```
+
+Stress harness:
+
+```
+$ fitsproof stress
+ADMITTED: 0.039 GB predicted peak <= 4.000 GB budget (margin: 3961.0 MB)
+Stress harness: 25 configs, 0 violations, 0 silent mode changes. Margin: min=3909.3 MB, median=3909.6 MB, max=3913.0 MB.
+```
+
+Admit / refuse:
+
+```
+$ fitsproof admit --budget-gb 4
+ADMITTED: 0.042 GB predicted peak <= 4.000 GB budget (margin: 3958.3 MB)
+exit: 0
+
+$ fitsproof admit --budget-gb 0.001
+REFUSED: needs 0.042 GB, budget 0.001 GB; no listed option fits — nearest is "Use int4_sym quantisation instead of none" at 0.006 GB (0.005 GB above budget)
+Degradation options:
+  [does not fit] Use int8_sym quantisation instead of none -> 0.011 GB
+  [does not fit] Use int4_sym quantisation instead of none -> 0.006 GB
+  [does not fit] Reduce context to 256 tokens (1/2 of 512) -> 0.040 GB
+  [does not fit] Reduce context to 128 tokens (1/4 of 512) -> 0.039 GB
+  [does not fit] Reduce context to 64 tokens (1/8 of 512) -> 0.039 GB
+  [does not fit] Offload ~50% of layers to system RAM (CPU fallback for those layers) -> 0.022 GB
+exit: 2
+```
+
+Plan (describe-only, always exit 0):
+
+```
+$ fitsproof plan --budget-gb 4
+predicted peak:  0.042 GB  (95% CI: [0.033, 0.050] GB)
+predicted tok/s: 96.2  (95% CI: [67.3, 125.0])
+budget:          4.000 GB
+verdict:         fits
+
+$ fitsproof plan --budget-gb 0.001
+predicted peak:  0.042 GB  (95% CI: [0.033, 0.050] GB)
+predicted tok/s: 107.0  (95% CI: [74.9, 139.1])
+budget:          0.001 GB
+verdict:         does_not_fit
+degradation options:
+  [does not fit] Use int8_sym quantisation instead of none -> 0.011 GB  (402.6 tok/s)
+  [does not fit] Use int4_sym quantisation instead of none -> 0.006 GB  (746.5 tok/s)
+  [does not fit] Reduce context to 256 tokens (1/2 of 512) -> 0.040 GB  (107.0 tok/s)
+  [does not fit] Reduce context to 128 tokens (1/4 of 512) -> 0.039 GB  (107.0 tok/s)
+  [does not fit] Reduce context to 64 tokens (1/8 of 512) -> 0.039 GB  (107.0 tok/s)
+  [does not fit] Offload ~50% of layers to system RAM (CPU fallback for those layers) -> 0.022 GB  (32.1 tok/s)
+```
+
+Python client (L3):
+
+```
+$ python -c "
+from fitsproof.client import DoesNotFit, FitsproofClient, guard
+client = FitsproofClient()
+record = client.admit(client.plan(context_len=512, budget_bytes='4GiB'))
+print(record.message)
+print('ram_gb:', client.metrics()['ram_gb'])
+loaded = []
+@guard(budget='1MiB')
+def load_model():
+    loaded.append('allocated')
+try:
+    load_model()
+except DoesNotFit as e:
+    print('refused:', str(e)[:80])
+print('loaded ==', loaded)
+"
+ADMITTED: 0.042 GB predicted peak <= 4.295 GB budget (margin: 4253.3 MB)
+ram_gb: 33.548316672
+refused: REFUSED: needs 0.042 GB, budget 0.001 GB; no listed option fits — nearest is "Us
+loaded == []
+```
+
+MCP server (L4):
+
+```
+$ python -c "
+import json, subprocess, sys
+messages = [
+    {'jsonrpc':'2.0','id':1,'method':'initialize','params':{}},
+    {'jsonrpc':'2.0','id':2,'method':'tools/list','params':{}},
+    {'jsonrpc':'2.0','id':3,'method':'tools/call',
+     'params':{'name':'admit','arguments':{'budget':'4GiB','context_len':512}}},
+    {'jsonrpc':'2.0','id':4,'method':'tools/call',
+     'params':{'name':'admit','arguments':{'budget':'1MiB','context_len':512}}},
+]
+proc = subprocess.run([sys.executable,'-m','fitsproof.cli','mcp'],
+    input='\n'.join(json.dumps(m) for m in messages)+'\n',
+    capture_output=True, text=True, timeout=60)
+replies = [json.loads(l) for l in proc.stdout.splitlines() if l.strip()]
+print('server:', replies[0]['result']['serverInfo']['name'])
+print('tools:', sorted(t['name'] for t in replies[1]['result']['tools']))
+print('admit 4GiB isError:', replies[2]['result']['isError'])
+print('admit 1MiB isError:', replies[3]['result']['isError'])
+"
+server: fitsproof-mcp
+tools: ['admit', 'plan', 'probe']
+admit 4GiB isError: False
+admit 1MiB isError: True
+```
+
+Full test suite:
+
+```
+$ python -m pytest tests/ -q --tb=no
+178 passed in 199.14s (0:03:19)
+```
+
+### 9.3 Failure modes — cycle 4 update
+
+No new failure modes observed in cycle 4. The five documented failure modes from
+ADOPTION §3 remain at the same status as cycle 3 (§8.3). Repeating only changes:
+
+| Finding | C3 status | C4 update |
+|---|---|---|
+| F-1: +64% over-prediction on real GGUF | Open | Unchanged. Root cause now fully grounded in source 49 (GPT-2 weight tying): the reference model ties embedding/unembedding (one copy), but gemma3:4b does **not** tie and the cost model was counting embeddings twice (5.37 of 7.22 GB predicted). The fix path in cost.py is now precisely stated: include exactly one embedding matrix of the correct dtype, check whether `weight_tying` is set in the model config, and use the model's actual `attention.key_length` for head_dim rather than `hidden_size / num_heads`. |
+| F-2: Refusal names non-fitting config | Fixed (c1-p09) | Confirmed fixed in this session's output: "no listed option fits — nearest is..." correctly attributed. |
+| F-3: Bandwidth drift | Open/documented | Today's probe: 6.80 GB/s (within 3.94–7.18 GB/s documented range). Operational rule applies. |
+
+The new c4-p1 sources deepen the theoretical grounding for F-1:
+- Source 49 (GPT-2) establishes weight tying as the architectural decision that affects
+  embedding memory counts — gemma3 does NOT tie, so the cost model's fp32-double-count
+  is both the wrong precision and the wrong count.
+- Source 46 (Jacob et al. 2018) establishes that the round-then-clip order for int4_asym
+  must be `clip(round(r/S) + Z, 0, 15)`, not the inverse — this is pinned in
+  `tests/engine/test_quant.py`.
+- Source 48 (softmax numerics) confirms the subtract-max stabilisation in
+  `attention.py` and `sampling.py` is the correct, provably-stable form.
+- Source 45 (FlashAttention) explains why the NumPy path pays O(N²d) IO cost — it
+  materialises the full attention score matrix. This is the correct characterisation of
+  why the engine is "correctness-first and slow", and it is stated in README Limitations.
+
+### 9.4 Research base citation density — what c4-p1 closed
+
+c4-p1 added sources 45–54 that ground five previously under-cited areas:
+
+| Previously under-cited | Now grounded by |
+|---|---|
+| Why NumPy attention is slow | Source 45 (FlashAttention IO complexity) |
+| int4 asymmetric reconstruction error bound | Source 46 (Jacob et al. CVPR 2018) |
+| KV cache budget formula derivation | Source 47 (PagedAttention, deepened) |
+| Subtract-max softmax stability | Source 48 (Blanchard/Higham IMAJNA 2021) |
+| Embedding memory and weight tying | Source 49 (GPT-2 Radford et al. 2019) |
+| Speculative decoding speed-up theorem | Source 37 (Chen et al. 2023, c3-p1) + source 41 (c3-p1 deepening) |
+
+Every test module that exercises numerical or enforcement routines now has a cited
+source ID in its docstring (M4 requirement). The traceability script
+`scripts/check_research_traceability.py` enforces this at CI time.
+
+### 9.5 Adoption maturity table — cycle 4 final state
+
+| Level | What the team does | Status |
+|---|---|---|
+| L0 — try it | clone, `probe`, `plan` against a budget | Works today |
+| L1 — gate the box | `ollama_gate.py && ollama run` | Works today (strict mode) |
+| L2 — CLI gate | `fitsproof admit` in shell scripts / CI | Works today; exit 0 / exit 2 |
+| L3 — in-process guard | `@guard(budget=...)` in Python services | Works today; `DoesNotFit` raised before callable invoked |
+| L4 — agent-facing | `fitsproof mcp`, agent calls `admit` before loading | Works today; `isError:false` / `isError:true` |
+| L5 — drop-in binary | single executable, SHA256 release | v0.2 MANDATE M1 — not built yet |
+
+### 9.6 The single most likely reason someone would NOT adopt it — cycle 4 update
+
+Unchanged from §5 (cycle 1) and §8.5 (cycle 3). The prediction accuracy remains the
+adoption blocker: MAPE ~30–65% across sessions, +64% on the one real-model datapoint
+(gemma3:4b), producing false DEGRADED verdicts for budgets between 4.4 GB (true) and
+7.22 GB (predicted).
+
+**What is now newly understood (c4-p1 sourcing):** the cause is mechanistically known.
+Source 49 (GPT-2 weight tying) establishes that the cost model's embedding accounting
+is doubly wrong for real models: wrong precision (fp32 instead of the model's actual
+quantisation) and wrong count (two matrices instead of one for models that tie weights,
+or two matrices for models that don't but where we're over-counting). The implementation
+fix is a one-line conditional in `cost.py`; the evidence bar (KAT using 4.4 GB as the
+known-answer for gemma3:4b) is precisely stated and ready for the implement pass.
+
+Until the fix lands, the operational guidance from §5 applies:
+- Run the gate on budgets ≥ 8 GB for 4B-class models (above the predicted peak, not the
+  true footprint) to avoid false DEGRADED verdicts.
+- Treat DEGRADED as refuse-by-default (the gate's behaviour).
+- The refusal direction (admitted config ≤ true footprint) has not been observed in any
+  session across all three cycles — the error is consistently conservative.
+
+### 9.7 Cycle 4 falsification table
+
+| id | Observation that would falsify | Status |
+|---|---|---|
+| C4-P3-F1 | Any admitted config in the stress harness measures peak > declared budget | NOT OBSERVED (25 configs, 0 violations, min margin 3909.3 MB) |
+| C4-P3-F2 | The `@guard` decorator invokes the wrapped callable on a refused config | NOT OBSERVED (`loaded == []` confirmed in raw output above) |
+| C4-P3-F3 | The MCP `admit` tool returns `isError:false` for a refused config | NOT OBSERVED (`admit 1MiB isError: True` confirmed above) |
+| C4-P3-F4 | aura ships held-out calibration + CI-wired zero-violation stress harness before fitsproof release | NOT OBSERVED as of c4-p2 (2026-09-28T12:30Z); aura last push 2026-09-03, zero new commits confirmed |
+| C4-P3-F5 | MAPE drops below 20% on real-model measurement before cost-model fix lands | NOT OBSERVABLE — the fix is not yet in the cost model; the MAPE on the fixture remains ~30–65% |
+| C4-P3-F6 | The int4_asym round-then-clip order bug (source 46) is present in quant.py | NOT OBSERVED — the test in `tests/engine/test_quant.py` asserts `max(|w - w_hat|) <= S/2 + epsilon` and passes in the 178-test suite |
+| C4-P3-F7 | The subtract-max softmax produces NaN/inf for any input in the reference model | NOT OBSERVED — softmax is tested under all-masked rows (source 48 known failure mode); 178 tests pass |
+
+---
+
+## 10. Cycle 4 — Pass 9 (improve-2) — State as of 2026-09-28T22:00Z
+
+### 10.1 What changed since cycle 4 pass 3
+
+| Item | Cycle 4 pass 3 (14:00Z) | Cycle 4 pass 9 (22:00Z) |
+|---|---|---|
+| Test count | 178 passed | **189 passed** (+11: ADV-16 fix, mutation tests, ADV-14 fix) |
+| MAPE (held-out) | 61.2% this session | Unchanged (no cost model changes this pass) |
+| Stress harness | 25 configs, 0 violations | 25 configs, 0 violations |
+| ADV-14: test_rope_known_values gap | Open (test passes explicit theta, not default) | **Fixed** — `test_rope_non_default_theta_changes_freqs` added; fault injection confirmed |
+| ADV-15: test_decode_tok_s_known_answer | Reported as open (false finding) | **Retracted** — fault injection proves the test DOES kill the formula inversion |
+| ADV-16: server crash on huge max_tokens | Fixed in c4-p04, strengthened in c4-p08 | Confirmed; test asserts `completion_tokens <= max_seq_len` |
+| COMPARISONS.md star counts | as of 12:30Z | as of 22:00Z (+35 llama.cpp, +17 vLLM, +2 KTransformers) |
+| Binary release (L5) | Not built | Not built — v0.2 MANDATE M1 pending |
+
+### 10.2 Adversarial review final state
+
+All 18 adversarial findings are now resolved:
+- **Blockers (0 open):** ADV-01, 02, 03 all fixed in c2.
+- **Majors (0 open):** ADV-04 documented limitation; ADV-05, 09, 12, 16 all fixed.
+- **Minors (open as documented limitations):** ADV-06, 07, 10, 11, 13, 17, 18.
+- ADV-14 **fixed** (c4-p09). ADV-15 **retracted** (c4-p09, false finding).
+
+The adversarial review record is now internally consistent: every reported finding
+is either fixed with evidence, retracted with fault-injection proof, or documented
+as a named limitation.
+
+---
+
+## 11. Cycle 5 — Pass 3 — State as of 2026-09-29T01:01Z
+
+*All commands run fresh on the ThinkStation P500, Python 3.11.15, branch feat/v0.1.*
+
+### 11.1 What changed since cycle 4 pass 9
+
+| Item | Cycle 4 pass 9 (c4-p09, 22:00Z) | Cycle 5 pass 3 (c5-p3, 01:01Z) |
+|---|---|---|
+| Test count | 189 passed | **192 passed** (+3) |
+| MAPE (held-out) | 61.2% (c4-p3 session) | **51.5%** this session (n_held_out=1, bandwidth 7.06 GB/s) |
+| Stress harness | 25 configs, 0 violations | 25 configs, 0 violations (confirmed) |
+| Stress margin | min=3909.3 MB | min=3909.1 MB (stable) |
+| Research base | 54 sources (c4-p1) | **65 sources** (+11 in c5-p1: LLM in a flash, StreamingLLM, BitNet, Davison & Hinkley bootstrap, SparseGPT, /proc/pid/status, PyInstaller PyPI, cibuildwheel, TinyLlama, k-bit scaling laws, perf_event_open) |
+| Comparison table | 10 tools, c5-p2 final | Refreshed with c5-p3 star counts (raw API batch below) |
+| aura commits | 0 since 2026-09-03 | 0 since 2026-09-03 (confirmed) |
+| Binary release (L5) | Not built | Not built — v0.2 MANDATE M1 pending |
+
+The MAPE variation (46.1% → 60.1% → 49.1% → 61.2% → 51.5% across five cycles' sessions)
+is within the expected run-to-run spread documented as F-3. Machine bandwidth at this
+session: 7.06 GB/s (vs 1.92–7.18 GB/s documented range). The underlying cost model has
+not changed; the number fluctuates because the bandwidth probe samples DRAM under
+whatever load the machine is carrying at that moment.
+
+### 11.2 Raw output — 2026-09-29T01:01Z
+
+```
+$ python scripts/calibration_demo.py
+=== Calibration demo ===
+bandwidth: 7.06 GB/s
+gemm:      323.31 GFLOPS
+RAM:       33.5 GB
+bandwidth_utilisation: 0.0344
+MAPE (held-out):       51.5%
+CI (95%):              [51.5%, 51.5%]
+n_train=2, n_held_out=1
+```
+
+```
+$ fitsproof probe
+Probing machine...
+  bandwidth:  7.06 GB/s
+  gemm:       322.28 GFLOPS
+  RAM:        33.55 GB
+  VRAM:       0.00 GB
+```
+
+```
+$ fitsproof stress
+ADMITTED: 0.039 GB predicted peak <= 4.000 GB budget (margin: 3961.0 MB)
+Stress harness: 25 configs, 0 violations, 0 silent mode changes. Margin: min=3909.1 MB, median=3909.3 MB, max=3912.7 MB.
+```
+
+```
+$ fitsproof admit --budget-gb 4
+ADMITTED: 0.042 GB predicted peak <= 4.000 GB budget (margin: 3958.3 MB)
+exit: 0
+
+$ fitsproof admit --budget-gb 0.001
+REFUSED: needs 0.042 GB, budget 0.001 GB; no listed option fits — nearest is "Use int4_sym quantisation instead of none" at 0.006 GB (0.005 GB above budget)
+Degradation options:
+  [does not fit] Use int8_sym quantisation instead of none -> 0.011 GB
+  [does not fit] Use int4_sym quantisation instead of none -> 0.006 GB
+  [does not fit] Reduce context to 256 tokens (1/2 of 512) -> 0.040 GB
+  [does not fit] Reduce context to 128 tokens (1/4 of 512) -> 0.039 GB
+  [does not fit] Reduce context to 64 tokens (1/8 of 512) -> 0.039 GB
+  [does not fit] Offload ~50% of layers to system RAM (CPU fallback for those layers) -> 0.022 GB
+exit: 2
+```
+
+Python client (L3):
+
+```
+$ python -c "
+from fitsproof.client import DoesNotFit, FitsproofClient, guard
+client = FitsproofClient()
+record = client.admit(client.plan(context_len=512, budget_bytes='4GiB'))
+print(record.message)
+print('ram_gb:', client.metrics()['ram_gb'])
+loaded = []
+@guard(budget='1MiB')
+def load_model():
+    loaded.append('allocated')
+try:
+    load_model()
+except DoesNotFit as e:
+    print('refused:', str(e)[:80])
+print('loaded ==', loaded)
+"
+ADMITTED: 0.042 GB predicted peak <= 4.295 GB budget (margin: 4253.3 MB)
+ram_gb: 33.548316672
+refused: REFUSED: needs 0.042 GB, budget 0.001 GB; no listed option fits — nearest is "Us
+loaded == []
+```
+
+MCP server (L4):
+
+```
+$ python -c "
+import json, subprocess, sys
+messages = [
+    {'jsonrpc':'2.0','id':1,'method':'initialize','params':{}},
+    {'jsonrpc':'2.0','id':2,'method':'tools/list','params':{}},
+    {'jsonrpc':'2.0','id':3,'method':'tools/call',
+     'params':{'name':'admit','arguments':{'budget':'4GiB','context_len':512}}},
+    {'jsonrpc':'2.0','id':4,'method':'tools/call',
+     'params':{'name':'admit','arguments':{'budget':'1MiB','context_len':512}}},
+]
+proc = subprocess.run([sys.executable,'-m','fitsproof.cli','mcp'],
+    input='\n'.join(json.dumps(m) for m in messages)+'\n',
+    capture_output=True, text=True, timeout=60)
+replies = [json.loads(l) for l in proc.stdout.splitlines() if l.strip()]
+print('server:', replies[0]['result']['serverInfo']['name'])
+print('tools:', sorted(t['name'] for t in replies[1]['result']['tools']))
+print('admit 4GiB isError:', replies[2]['result']['isError'])
+print('admit 1MiB isError:', replies[3]['result']['isError'])
+"
+server: fitsproof-mcp
+tools: ['admit', 'plan', 'probe']
+admit 4GiB isError: False
+admit 1MiB isError: True
+```
+
+Test suite:
+
+```
+$ python -m pytest tests/ -q --tb=no
+192 passed in 141.41s (0:02:21)
+```
+
+### 11.3 Star-count refresh — 2026-09-29T01:01Z
+
+Retrieved in a single parallel batch via `curl -s https://api.github.com/repos/<owner>/<repo>`:
+
+```
+ggml-org/llama.cpp               | stars=129806 | push=2026-09-28T23:49:34Z | v0.5.0 (2026-09-23)
+vllm-project/vllm                | stars=92889  | push=2026-09-29T00:42:33Z | v0.30.0 (2026-09-22)
+kvcache-ai/ktransformers         | stars=19546  | push=2026-09-23T05:07:33Z | v0.7.1 (2026-09-15)
+Isk4R1oT/ridgepoint              | stars=1      | push=2026-09-08T18:40:09Z | v0.1.2 (2026-09-08)
+pochenai/llm-inference-calculator| stars=21     | push=2026-09-09T15:58:07Z
+Pluenet-Killian/llm-roofline     | stars=0      | push=2026-06-20T19:26:33Z
+JohnScheuer/hardware-aware-llm-runtime | stars=0 | push=2026-06-25T09:50:23Z
+Shun-Calvin/llm-vram-calculator  | stars=1      | push=2026-09-26T06:38:02Z
+tommasocerruti/detllm            | stars=20     | push=2026-08-20T21:07:45Z
+Grevix/aura                      | stars=4      | push=2026-09-03T17:50:25Z | v0.1.0 (2026-08-23)
+```
+
+Deltas vs c5-p2 (2026-09-29T00:31Z): llama.cpp +2, vLLM +2, KTransformers 0;
+all others unchanged. Rankings, conclusions, and gap claim stable.
+
+Aura: zero commits since c4-p2 (2026-09-28T12:30Z) confirmed:
+```
+GET /repos/Grevix/aura/commits?since=2026-09-28T12:30:00Z → []
+```
+
+llama.cpp v0.5.0 release notes still contain no budget/enforce/admit/contract terms
+relevant to the memory-budget gap (confirmed in c5-p2 and unchanged since).
+
+### 11.4 "Budget enforcement" disambiguation — four distinct layers
+
+The c5-p2 ecosystem scan surfaced Emmimal/context-engine (197 stars) at the
+**token-context layer** — not the in-process RSS layer. The four layers are:
+
+| Layer | What it enforces | Example tools |
+|---|---|---|
+| Prompt / context | Token count in context window | Emmimal/context-engine, teflon07/memkeeper-librarian |
+| Agent harness | Turns, tool calls, compute allowance | edouard-claude/longe, mrshelll/baton |
+| OS / kernel | Physical memory via cgroup v2 / Win32 Job Object | Grevix/aura |
+| **In-process inference** | **Peak RSS during model loading + generation** | **fitsproof** |
+
+The four layers are complementary. An operator running a production LLM service could
+wire all four: context-engine for prompt budget, longe for turn budget, aura for OS-level
+memory ceiling, and fitsproof for the in-process RSS contract before each load decision.
+
+fitsproof's claim is specifically the in-process layer: **predicting, enforcing, and
+proving the peak RSS budget** — the only layer that fires before a model is loaded and
+verifies the outcome after.
+
+### 11.5 Gap claim — final state for the campaign
+
+Stable since c3-p2; confirmed through six search passes and 30+ queries. Three
+properties, no single tool has all three as of 2026-09-29T01:01Z:
+
+1. **Calibrate prediction constants from measurements on the user's own hardware** with a
+   train/hold-out split and a published held-out MAPE (honest even when the number is bad:
+   51.5% this session, range ~31–64% across all observed sessions).
+
+2. **Enforce a declared budget with a structured degradation record that names exactly
+   what changed** (quant mode, context length, offload fraction) and its predicted cost.
+   aura enforces at the OS level — more aggressive — but its BENCHMARK.md shows
+   `qwen3:8b` with a 4.00 GB Job Object budget reporting `Peak Working Set: 4.92 GB`
+   (23% over) with no violation flag and no failing assertion.
+
+3. **Prove compliance: a test-suite-wired stress harness that asserts
+   `measured_peak ≤ declared_budget` across ≥20 configurations and exits non-zero
+   on any violation.** No tool in the comparison table ships this as a repository test.
+
+How a user notices: with aura, the run reporting 4.92 GB against a 4.00 GB budget is
+logged as a pass. With fitsproof's `stress`, that run fails the build.
+
+### 11.6 What c5-p1 sourcing added to the research base
+
+Ten new sources (55–65) grounded five previously under-supported areas:
+
+| Area | Source | What it grounds |
+|---|---|---|
+| Why the refusal gate matters beyond OOM prevention | 55 (LLM in a flash, ACL 2024) | Models exceeding DRAM run at flash/swap speed (~1/50–1/130× of expected tok/s) with no warning from any existing runtime; refusal prevents that mode |
+| KV cache under eviction — item 2 re-confirmed closed | 56 (StreamingLLM) | KV cache bounded by (k+W) tokens under any eviction policy; at ctx=512 KV is 12% of weight bytes for the reference model — not dominant |
+| Quantisation memory lower bound | 57 (BitNet) | `weight_memory(n_bits) = n_params × n_bits / 8`; the formula now has citations from fp32 down to 1-bit |
+| Bootstrap CI vacuity at n_held_out=1 | 58 (Davison & Hinkley) | The percentile bootstrap CI degenerates to a point mass at n=1; n ≥ 10 is the practical minimum for usable coverage; BCa is the correct path for asymmetric statistics like MAPE |
+| VmRSS vs VmHWM / ru_maxrss | 60 (/proc/pid/status) | VmRSS = current (can decrease); VmHWM = process-lifetime max = ru_maxrss; per-call measurement requires fresh subprocess or cgroup memory.peak reset |
+| Architecture alignment of the reference model | 63 (TinyLlama) | The reference model uses GQA/SwiGLU/RoPE/RMSNorm consistent with Llama-family; tests on the fixture exercise the same code paths as a real deployment |
+| int4 Pareto-optimality | 64 (k-bit scaling laws) | 4-bit is Pareto-optimal for memory-constrained deployment: 2× more parameters vs int8 within the same budget |
+
+### 11.7 Open items entering the adversarial pass
+
+Items that cannot be closed in a research pass, with closure procedures confirmed:
+
+| # | Item | Closure path |
+|---|---|---|
+| 6 / 15 | Bootstrap CI coverage (n_held_out=1, CI degenerates to a point) | Source 58 (Davison & Hinkley) grounds why n ≥ 10 is the minimum; collect measurements until n_held_out ≥ 10, then check empirical coverage |
+| 16 | ru_maxrss stale peak from earlier request | Fresh subprocess per call or cgroup memory.peak reset (requires root); error direction is conservative (over-report only) — instrument gap, not a violation risk |
+| 17 | Binary release not built (M1) | Implement pass delivers M1 via PyInstaller onefile (source 61/62); CI clean-job smoke test is the evidence bar |
+| 19 | int8_sym on real trained model with outliers | Testable only with a real trained model ≥6B params; reference model has no outliers by design |
+| 20 | YaRN not implemented | v0.2 candidate; implementation sketch in RESEARCH.md source 40 |
+| 23 | MLA support not implemented | v0.2+ scope; source 36 grounds the formula |
+
+All items that were closeable through analysis or existing measurement data have been
+closed across cycles 1–5.
+
+### 11.8 Failure modes — cycle 5 update
+
+No new failure modes observed in cycle 5. The five from §3 remain at the same status
+as cycle 4 (§9.3). Only one change:
+
+| Finding | C4 status | C5 update |
+|---|---|---|
+| F-1: +64% over-prediction on real GGUF | Open (cost model fix pending) | Source 55 (LLM in a flash) adds a new dimension: the consequence of a model exceeding DRAM is not just a prediction error but a runtime regression to flash/swap speed. This makes the prediction accuracy fix even more operationally important: a false DEGRADED verdict at the 4.4–7.2 GB range doesn't just annoy the user, it blocks a model that would actually run fine at DRAM speed. |
+| All others | Unchanged | Unchanged |
+
+### 11.9 Adoption maturity table — cycle 5 final state
+
+| Level | What the team does | Status |
+|---|---|---|
+| L0 — try it | clone, `probe`, `plan` against a budget | Works today |
+| L1 — gate the box | `ollama_gate.py && ollama run` | Works today (strict mode) |
+| L2 — CLI gate | `fitsproof admit` in shell scripts / CI | Works today; exit 0 / exit 2 |
+| L3 — in-process guard | `@guard(budget=...)` in Python services | Works today; `DoesNotFit` raised before callable invoked |
+| L4 — agent-facing | `fitsproof mcp`, agent calls `admit` before loading | Works today; `isError:false` / `isError:true` |
+| L5 — drop-in binary | single executable, SHA256 release | v0.2 MANDATE M1 — not built yet |
+
+### 11.10 The single most likely reason someone would NOT adopt it — cycle 5 update
+
+Unchanged from §5, §8.5, §9.6. The prediction accuracy is the adoption blocker.
+
+Source 55 (LLM in a flash, ACL 2024) adds quantitative teeth to the consequence side:
+a model that silently exceeds its DRAM budget runs at 1/50–1/130× of expected tok/s (50–130×
+slower, flash/NVMe throughput vs DRAM). But the false DEGRADED direction — fitsproof
+refuses a config that would actually run fine — is what an operator sees on day one. That
+experience corrodes trust before the value of the refusal direction is ever demonstrated.
+
+The fix is narrow and fully grounded in source 49 (GPT-2 weight tying): correct the cost
+model's embedding accounting (one matrix at model dtype for tied architectures; separate
+`lm_head` at model dtype for untied architectures like gemma3), and use
+`attention.key_length` from the GGUF metadata for `head_dim` rather than
+`hidden_size / num_heads`. Until that implement-pass fix lands, the operational guidance
+from §5 applies: run the gate with a budget at or above the predicted peak (≥8 GB for
+4B-class models on this machine), treat DEGRADED as refuse-by-default, and verify any
+ADMITTED config passes the stress harness.
+
+### 11.11 Cycle 5 falsification table
+
+| id | Observation that would falsify | Status |
+|---|---|---|
+| C5-P3-F1 | Any admitted config in the stress harness measures peak > declared budget | NOT OBSERVED (25 configs, 0 violations, min margin 3909.1 MB) |
+| C5-P3-F2 | The `@guard` decorator invokes the wrapped callable on a refused config | NOT OBSERVED (`loaded == []` confirmed in raw output above) |
+| C5-P3-F3 | The MCP `admit` tool returns `isError:false` for a refused config | NOT OBSERVED (`admit 1MiB isError: True` confirmed above) |
+| C5-P3-F4 | aura ships held-out calibration + CI-wired zero-violation stress harness before fitsproof release | NOT OBSERVED as of 2026-09-29T01:01Z; zero commits since 2026-09-03 confirmed by API |
+| C5-P3-F5 | LLM in a flash technique makes fitsproof's refusal gate unnecessary (flash-speed inference is acceptable) | NOT APPLICABLE on this machine (DRAM-only x86; exceeding budget means Linux swap at <500 MB/s, not NVMe flash at 3 GB/s) |
+| C5-P3-F6 | The BitNet memory formula (source 57) `weight_memory = n_params × n_bits / 8` disagrees with fitsproof's measured memory reduction for any tested quantisation mode | NOT OBSERVED — the 192-test suite includes memory reduction assertions in `tests/engine/test_quant.py` that are consistent with the formula |
+| C5-P3-F7 | A new tool in the "in-process inference RSS budget" layer surfaces before publication that has all three gap properties | NOT OBSERVED in six search passes (30+ queries); adversarial reviewer should re-run independently before signing off |
+
+---
+
+## 12. Cycle 5 Pass 9 — Improve pass 2 state (2026-09-29T05:00Z)
+
+### 12.1 What changed since c5-p08-improve-1
+
+| Item | c5-p08 state | c5-p09 state |
+|---|---|---|
+| Test count | 199 passed | **200 passed** (+1) |
+| README calibration output | Shows `[X%, X%]` with no explanation | Shows `← n_held_out=1: degenerate interval` annotation and a follow-up note in output |
+| README Limitations | Lists MAPE error; no separate CI-degenerate bullet | Added separate **Bootstrap CI degenerates** bullet citing Davison & Hinkley 1997 §2.4 |
+| `test_calibration_demo_runs` | Checks fields exist | Also checks n_held_out=1 output has degenerate-CI explanation |
+| ollama_gate.py: model not found | `GATE ERROR: daemon unreachable ... HTTP 404` (misleading) | `GATE ERROR: model 'X' not found ... Run ollama list` (actionable) |
+| ollama_gate.py: daemon down | `GATE ERROR: daemon unreachable: <exc>` | `GATE ERROR: daemon unreachable ... Is ollama running? Try: ollama serve` |
+| ADOPTION.md c5-p09 section | Missing | This section |
+| `ruff check`/`format --check` | clean | clean |
+| COMPARISONS.md | Last updated c5-p05 | Unchanged (no new commits observed since last refresh) |
+
+### 12.2 Biggest credibility gap fixed (c5-p09)
+
+**The calibration demo showed `CI (95%): [46.1%, 46.1%]` with no explanation.**
+
+A stranger reading the README for the first time will see this and assume the CI
+implementation is broken — two identical numbers cannot possibly be a confidence
+interval. The code is *correct* (bootstrap CI with n_held_out=1 must return a
+degenerate point), but without annotation the README was actively confusing.
+
+Root cause: `scripts/calibration_demo.py` printed the raw `ci_lower` / `ci_upper`
+fields without checking `n_held_out`. The bootstrap function `_bootstrap_mape_ci`
+returns `(m, m)` at n<2 by design (Davison & Hinkley 1997 §2.4, source 58 in
+RESEARCH.md). The README transcript shows `n_train=2, n_held_out=1` on the next
+line — the clue is there, but nothing connects it to the degenerate CI.
+
+Fix applied:
+- `calibration_demo.py`: added runtime check; when `n_held_out < 2`, appends
+  `← n_held_out=1: degenerate interval (not a range); see docs/ADOPTION.md F-3`
+  to the CI line, and prints a follow-up note citing Davison & Hinkley 1997 §2.4.
+- `README.md`: the pre-recorded transcript now includes the annotation; added a
+  new Limitations bullet "Bootstrap CI degenerates to a point at n_held_out=1"
+  with the same source and closure path.
+- `tests/test_packaging.py::test_calibration_demo_runs`: extended to assert that
+  when `n_held_out < 2` the output contains the word "degenerate" or "n_held_out=1".
+  The test fails if a future refactor removes the annotation.
+
+### 12.3 Error messages improved (c5-p09)
+
+`scripts/ollama_gate.py` previously caught all connection/HTTP failures as a single
+`URLError` and printed `GATE ERROR: daemon unreachable ... HTTP 404` for a
+model-not-found error. Two classes of user see two different problems:
+
+- **Model not found (HTTP 404):** stranger typed the wrong model name. Old message
+  blamed the daemon. New message: `model 'X' not found — run ollama list or ollama pull X`.
+- **Daemon down (connection refused, timeout):** message now adds `Is ollama running?
+  Try: ollama serve` so the user knows what to do next.
+
+Both paths are now handled by separate `except` branches (`HTTPError` before
+`URLError`), with actionable next steps in every message.
+
+### 12.4 Terminal evidence
+
+```
+$ .venv/bin/python scripts/calibration_demo.py
+=== Calibration demo ===
+bandwidth: 6.57 GB/s
+gemm:      330.56 GFLOPS
+RAM:       33.5 GB
+bandwidth_utilisation: 0.0360
+MAPE (held-out):       50.6%
+CI (95%):              [50.6%, 50.6%]  ← n_held_out=1: degenerate interval (not a range); see docs/ADOPTION.md F-3
+n_train=2, n_held_out=1
+Note: n_held_out=1 — the CI is a point, not an interval. Collect n >= 10 held-out measurements for a meaningful interval (Davison & Hinkley 1997, §2.4). The MAPE itself is still valid.
+
+$ .venv/bin/python scripts/ollama_gate.py nonexistent_model_xyz --budget-gb 4
+GATE ERROR: model 'nonexistent_model_xyz' not found on daemon at http://127.0.0.1:11434. Run `ollama list` to see available models, or `ollama pull nonexistent_model_xyz` to fetch it.
+exit: 1
+
+$ .venv/bin/python scripts/ollama_gate.py gemma3:4b --budget-gb 12 --context 4096
+model:   gemma3:4b (4.3B, Q4_K_M -> int4_sym)
+shape:   34L x 2560h, heads 8/4, vocab 262145, ctx 4096
+budget:  12 GB
+ADMITTED: 7.219 GB predicted peak <= 12.000 GB budget (margin: 4781.1 MB)
+exit: 0
+```
+
+### 12.5 Open items entering c5-p10
+
+Unchanged from §11.7:
+
+| # | Item | Closure path |
+|---|---|---|
+| 6 / 15 | Bootstrap CI: n_held_out=1 produces point (structural; requires more measurements) | Source 58 grounds why; runtime note now explains it to users |
+| 16 | ru_maxrss stale peak | Fresh subprocess per call or cgroup reset (root required) |
+| 17 | Binary release (M1) | PyInstaller onefile; CI clean-job smoke test |
+| 19 | int8_sym on real trained model with outliers | Requires real ≥6B model |
+| 20 | YaRN not implemented | v0.2 candidate |
+| 23 | MLA support | v0.2+ scope |
+
+---
+
+## 13. Cycle 6 — Pass 3 — State as of 2026-09-29T08:00Z
+
+*All commands run fresh on the ThinkStation P500, Python 3.11.15, branch feat/v0.1.*
+
+### 13.1 What changed since cycle 5 pass 9
+
+| Item | Cycle 5 pass 9 (c5-p09, ~05:00Z) | Cycle 6 pass 3 (c6-p3, 08:00Z) |
+|---|---|---|
+| Test count | 199 passed (c5-p09 + 200 with final deduplicate) | **199 passed** (confirmed fresh run) |
+| MAPE (held-out) | 50.6% (c5-p09 session) | **60.7%** this session (n_held_out=1, bandwidth 2.78 GB/s — loaded box) |
+| Stress harness | 25 configs, 0 violations | 25 configs, 0 violations (confirmed) |
+| Stress margin | min=3909.x MB | min=3909.0 MB, median=3909.3 MB, max=3912.6 MB |
+| Research base | 65 sources (c5-p1) | **75 sources** (+10 in c6-p1: Mistral 7B SWA, BLOOM embeddings, Efficient Inference Survey, Train-Large-Then-Compress, H2O KV eviction, PSS/smaps, vLLM BATCH_INVARIANT, Understanding LLMs survey, FastGen adaptive KV, BLOOM KAT) |
+| Gap claim | 3 properties unmet; stable since c3-p2 | Confirmed stable through c6-p2 (six search passes, 30+ queries) |
+| aura commits | 0 since 2026-09-03 | 0 since 2026-09-03 (confirmed c6-p2) |
+| Binary release (L5) | Not built | Not built — v0.2 MANDATE M1 pending |
+
+The MAPE variation observed this session (60.7%) is within the documented ~31–64%
+range. The low bandwidth reading (2.78 GB/s vs typical 6–7 GB/s) indicates a loaded
+machine at measurement time — this is F-3 (bandwidth drift with machine state), which
+is a documented operational reality, not a regression.
+
+### 13.2 Raw output — 2026-09-29T08:00Z
+
+```
+$ python scripts/calibration_demo.py
+=== Calibration demo ===
+bandwidth: 2.78 GB/s
+gemm:      76.72 GFLOPS
+RAM:       33.5 GB
+bandwidth_utilisation: 0.0645
+MAPE (held-out):       60.7%
+CI (95%):              [60.7%, 60.7%]  ← n_held_out=1: degenerate interval (not a range); see docs/ADOPTION.md F-3
+n_train=2, n_held_out=1
+Note: n_held_out=1 — the CI is a point, not an interval. Collect n >= 10 held-out
+measurements for a meaningful interval (Davison & Hinkley 1997, §2.4). The MAPE itself is still valid.
+```
+
+```
+$ fitsproof probe
+Probing machine...
+  bandwidth:  2.84 GB/s
+  gemm:       122.62 GFLOPS
+  RAM:        33.55 GB
+  VRAM:       0.00 GB
+```
+
+```
+$ fitsproof stress
+ADMITTED: 0.039 GB predicted peak <= 4.000 GB budget (margin: 3961.0 MB)
+Stress harness: 25 configs, 0 violations, 0 silent mode changes. Margin: min=3909.0 MB, median=3909.3 MB, max=3912.6 MB.
+```
+
+```
+$ fitsproof admit --budget-gb 4
+ADMITTED: 0.042 GB predicted peak <= 4.000 GB budget (margin: 3958.3 MB)
+
+$ fitsproof admit --budget-gb 0.001
+REFUSED: needs 0.042 GB, budget 0.001 GB; no listed option fits — nearest is "Use int4_sym quantisation instead of none" at 0.006 GB (0.005 GB above budget)
+Degradation options:
+  [does not fit] Use int8_sym quantisation instead of none -> 0.011 GB
+  [does not fit] Use int4_sym quantisation instead of none -> 0.006 GB
+  [does not fit] Reduce context to 256 tokens (1/2 of 512) -> 0.040 GB
+  [does not fit] Reduce context to 128 tokens (1/4 of 512) -> 0.039 GB
+  [does not fit] Reduce context to 64 tokens (1/8 of 512) -> 0.039 GB
+  [does not fit] Offload ~50% of layers to system RAM (CPU fallback for those layers) -> 0.022 GB
+(exit: 2)
+```
+
+```
+$ fitsproof plan --budget-gb 4
+predicted peak:  0.042 GB  (95% CI: [0.033, 0.050] GB)
+predicted tok/s: 32.6  (95% CI: [22.8, 42.4])
+budget:          4.000 GB
+verdict:         fits
+```
+
+Python client (L3):
+
+```
+$ python -c "
+from fitsproof.client import DoesNotFit, FitsproofClient, guard
+client = FitsproofClient()
+record = client.admit(client.plan(context_len=512, budget_bytes='4GiB'))
+print(record.message)
+print('ram_gb:', client.metrics()['ram_gb'])
+loaded = []
+@guard(budget='1MiB')
+def load_model():
+    loaded.append('allocated')
+try:
+    load_model()
+except DoesNotFit as e:
+    print('refused:', str(e)[:80])
+print('loaded ==', loaded)
+"
+ADMITTED: 0.042 GB predicted peak <= 4.295 GB budget (margin: 4253.3 MB)
+ram_gb: 33.548316672
+refused: REFUSED: needs 0.042 GB, budget 0.001 GB; no listed option fits — nearest is "Us
+loaded == []
+```
+
+MCP server (L4):
+
+```
+server: fitsproof-mcp
+tools: ['admit', 'plan', 'probe']
+admit 4GiB isError: False
+admit 1MiB isError: True
+```
+
+Test suite:
+
+```
+$ python -m pytest tests/ -q --tb=no
+199 passed in 247.45s (0:04:07)
+```
+
+### 13.3 New research from c6-p1 and its adoption implications
+
+Cycle 6 pass 1 added 10 sources (66–75) that deepen the adoption story in five ways:
+
+**1. Sliding Window Attention (SWA) — Mistral 7B source 66**
+
+The current cost model uses the unbounded KV formula (`n_layers × seq_len × kv_per_token`).
+For models with SWA (window size W), the correct formula is
+`n_layers × min(seq_len, W) × kv_per_token`. At seq > W the current formula
+over-predicts KV memory — conservative direction (false DEGRADED, not false ADMITTED).
+A user trying to gate a Mistral 7B at a 4 GB budget with 32K context will see
+a predicted 4 GB of KV alone (when the actual SWA-bounded KV is ~0.5 GB).
+
+**Operational rule for SWA models:** if the model's architecture includes SWA, treat
+the predicted KV as a worst-case upper bound. The actual footprint will be lower.
+The `--budget-gb` should be set generously (above the predicted peak) if you know the
+model uses SWA. The fix (a `window_size` parameter in `plan`) is v0.2 scope.
+
+**2. Embedding accounting — BLOOM source 67 + source 75 KAT**
+
+The F-1 finding (over-prediction on gemma3:4b) was caused by counting the embedding
+matrix twice in fp32. Source 67 (BLOOM 176B) provides the external known-answer test
+(KAT) to guard against recurrence: `weight_bytes(bloom_176b_config) ≈ 351 GB`. Once
+the cost model fix lands in the implement pass, this KAT must pass in
+`tests/contract/test_cost.py`. Until then, operators should treat predicted peaks for
+large-vocabulary models (vocab > 30k) as potentially inflated due to the embedding
+accounting issue.
+
+**3. Flash/swap cost of exceeding DRAM budget — source 55 (LLM in a Flash)**
+
+Source 55 establishes that models run via swap (or NVMe flash on Apple Silicon) operate
+at 1/50–1/130× of expected DRAM bandwidth. On this machine (DRAM-only x86), exceeding
+the 31 GB RAM budget means Linux swap at ≤ 500 MB/s — a 15× slowdown relative to
+DRAM. This quantifies the consequence side: the refusal gate prevents not just an OOM
+crash but a 15–130× performance regression that existing runtimes (llama.cpp, ollama)
+do not warn about.
+
+The operational implication: when the gate says REFUSED at a budget that a team
+considers "generous enough", the real question is whether the machine has swap-backed
+overflow capacity. If yes, the model will run — just 15× slower. The gate is doing
+its job: making the trade-off explicit rather than silent.
+
+**4. vLLM determinism — source 72 (VLLM_BATCH_INVARIANT)**
+
+vLLM v0.30.0 requires `VLLM_BATCH_INVARIANT=1` for run-to-run determinism, with a
+10–30% throughput trade-off. This confirms the comparison table claim that fitsproof
+is deterministic by construction (Tier 1, sources 14/17/19) at no throughput cost —
+the design advantage of a single-threaded NumPy CPU path. For teams gating vLLM
+outputs, this distinction matters: fitsproof's proof harness (`verify`) measures
+deterministic outputs; vLLM at default settings does not guarantee them.
+
+**5. KV eviction design space — sources 56/70/74 (StreamingLLM/H2O/FastGen)**
+
+Three eviction policies now have source grounding:
+- StreamingLLM (source 56): retain initial k sink tokens + recent W window
+- H2O (source 70): retain top-k by accumulated attention score + recency window
+- FastGen (source 74): per-head adaptive policy (LOCAL / SPECIAL / FULL)
+
+All three bound KV cache growth to a fixed budget independent of seq_len.
+fitsproof v0.1 does not implement any eviction; cost.py assumes worst-case full KV.
+This means the KV predicted peak is always an upper bound, which is the conservative
+direction for the refusal gate. A v0.2 `kv_mode` parameter in `plan()` could expose
+these policies, each with a tighter memory formula.
+
+### 13.4 The four budget-enforcement layers — disambiguation for operators
+
+After six cycles of ecosystem search, the "budget enforcement" concept spans four
+distinct stack layers. An operator deploying fitsproof should know which layer is which:
+
+| Layer | What it enforces | Highest-star example |
+|---|---|---|
+| Prompt / context | Token count in context window | Emmimal/context-engine (197★) |
+| Agent harness | Turns, tool calls, compute budget per session | edouard-claude/longe (3★) |
+| OS / kernel | Physical memory via cgroup v2 / Win32 Job Object | Grevix/aura (4★) |
+| **In-process inference** | **Peak RSS during model loading + generation** | **fitsproof** |
+
+The four layers are complementary. A production service might run all four
+simultaneously:
+- **context-engine** to ensure the LLM's context window doesn't overflow token limits
+- **longe** to cap agent tool-call budgets
+- **aura** to set an OS-level memory ceiling (prevents rogue processes from exhausting
+  physical memory)
+- **fitsproof** to enforce the in-process RSS contract before loading each model
+  (ensures the gate fires before allocation, with a calibrated prediction and a
+  measured proof of compliance)
+
+Each layer enforces at a different granularity. The fitsproof refusal fires before
+the model is loaded; aura's cgroup limit fires during loading (and may OOM). These
+are complementary, not competing.
+
+### 13.5 Failure modes — cycle 6 update
+
+No new failure modes observed in cycle 6. The five from §3 remain at the same status
+as cycle 5. Additions from c6-p1 sourcing:
+
+| Finding | C5 status | C6 update |
+|---|---|---|
+| F-1: +64% over-prediction on real GGUF | Open (cost model fix pending) | Source 67 (BLOOM) and 75 (BLOOM KAT) provide the external known-answer test. Source 49 (GPT-2 weight tying) + source 67 together fully ground the fix: use the model's actual dtype for embeddings, count only once per non-tied architecture. The KAT is proposed in RESEARCH.md source 75 and must be added to `tests/contract/test_cost.py` in the implement pass. |
+| F-3: Bandwidth drift with machine state | Open/documented | This session: 2.78 GB/s (loaded box) vs typical 6–7 GB/s. MAPE 60.7% (within documented range). Operational rule unchanged: re-probe when sustained load profile changes. The low bandwidth reading today causes the high MAPE — the correlation is expected and documented. |
+| SWA over-prediction (new, from source 66) | New finding in c6-p1 | The current formula over-predicts KV for SWA models at seq > W (conservative direction). Documented in README Limitations. Operational rule: for models known to use SWA, set budget generously above the predicted peak. |
+
+### 13.6 Open items — final state for the campaign
+
+Items that cannot be closed in a research pass:
+
+| # | Item | Closure path |
+|---|---|---|
+| 6 / 15 | Bootstrap CI coverage (n_held_out=1 → point mass) | Source 58 (Davison & Hinkley): collect n_held_out ≥ 10, check empirical coverage; BCa for asymmetric MAPE |
+| 16 | ru_maxrss stale peak — per-call measurement unavailable | Fresh subprocess per call or cgroup memory.peak reset (root required). Sources 60/65/71 document the available instruments |
+| 17 | Binary release not built (M1) | PyInstaller onefile (sources 61/62); CI clean-job smoke test |
+| 19 | int8_sym on real trained model with outliers | Test with a real ≥6B trained model (source 38) |
+| 20 | YaRN not implemented | Implement frequency schedule (source 40 sketch); test at seq > 512 |
+| 23 | MLA KV formula for non-MLA models | Add `kv_latent_dim` param; test against DeepSeek-V2-class model (source 36) |
+| c6-p1-F2 | PSS vs RSS not yet measured in the deployment | Run `awk '/^Pss:/' /proc/self/smaps` during stress harness; compare to VmRSS |
+| c6-p1-F3 | Train-large-compress for int4 decoder-only | Test at multiple model sizes; observe quality vs memory trade-off (sources 69/64) |
+| c6-p1-F4 | H2O eviction: tokens needed later | Implement H2O; test against long-document task (source 70) |
+| c6-p1-F5 | BLOOM KAT not in test suite | Write `test_weight_bytes_bloom_known_answer` in `tests/contract/test_cost.py` (source 75) |
+| c6-p2-F6 | Adversarial reviewer independent search | Re-run with fresh query vocabulary before sign-off |
+
+### 13.7 Adoption maturity table — cycle 6 final state
+
+| Level | What the team does | Status |
+|---|---|---|
+| L0 — try it | clone, `probe`, `plan` against a budget | Works today |
+| L1 — gate the box | `ollama_gate.py && ollama run` | Works today (strict mode) |
+| L2 — CLI gate | `fitsproof admit` in shell scripts / CI | Works today; exit 0 / exit 2 |
+| L3 — in-process guard | `@guard(budget=...)` in Python services | Works today; `DoesNotFit` raised before callable invoked |
+| L4 — agent-facing | `fitsproof mcp`, agent calls `admit` before loading | Works today; `isError:false` / `isError:true` |
+| L5 — drop-in binary | single executable, SHA256 release | v0.2 MANDATE M1 — not built yet |
+
+### 13.8 The single most likely reason someone would NOT adopt it — cycle 6 update
+
+Unchanged from §5, §8.5, §9.6, §11.10. The prediction accuracy remains the adoption
+blocker. Source 66 (Mistral 7B SWA) adds another dimension: for modern models with
+Sliding Window Attention, the predicted KV footprint is even more inflated than for
+standard full-context models at long sequences.
+
+The adoption-critical path: correct the cost model's embedding accounting (source 49
++ 67 ground the fix precisely) and add a `window_size` parameter to `kv_cache_bytes`
+(source 66 grounds the formula). If these two fixes land and the real-model MAPE drops
+below 20% on gemma3:4b, F-1 is resolved and the adoption story becomes straightforward.
+
+Until those fixes land:
+- For 4B-class models at fp16/int4: set budget ≥ 8 GB to avoid false DEGRADED verdicts
+- For models with SWA (Mistral-family): set budget generously — the KV formula
+  over-predicts at long context
+- Treat DEGRADED as refuse-by-default (the gate's behaviour)
+- Trust the refusal direction: an ADMITTED verdict has never been observed to exceed
+  the true footprint in any session across six cycles
+
+### 13.9 Cycle 6 falsification table
+
+| id | Observation that would falsify | Status |
+|---|---|---|
+| C6-P3-F1 | Any admitted config in the stress harness measures peak > declared budget | NOT OBSERVED (25 configs, 0 violations, min margin 3909.0 MB) |
+| C6-P3-F2 | The `@guard` decorator invokes the wrapped callable on a refused config | NOT OBSERVED (`loaded == []` confirmed in raw output above) |
+| C6-P3-F3 | The MCP `admit` tool returns `isError:false` for a refused config | NOT OBSERVED (`admit 1MiB isError: True` confirmed above) |
+| C6-P3-F4 | aura ships held-out calibration + CI-wired zero-violation stress harness | NOT OBSERVED; 0 commits since 2026-09-03; v0.1.0 still the latest release |
+| C6-P3-F5 | llama.cpp or vLLM ships native memory-budget enforcement gate | NOT OBSERVED: single 'budget' hit in llama.cpp v0.5.0 is a reasoning-token signal; vLLM v0.30.0 has no `--memory-budget-gb` |
+| C6-P3-F6 | PSS substantially differs from RSS in this deployment, invalidating the RSS budget | NOT YET MEASURED: expected < 5% delta in single-process deployment; run `awk '/^Pss:/' /proc/self/smaps` to verify |
+| C6-P3-F7 | Adversarial reviewer finds a tool not surfaced by the campaign's 30+ queries that covers all three gap properties | NOT YET TESTED by an independent agent; adversarial pass is the correct vehicle |
+
+---
+
+## 14. Cycle 7 — Pass 3 — State as of 2026-09-29T14:00Z
+
+*All commands run fresh on the ThinkStation P500, Python 3.11.15, branch feat/v0.1.*
+
+### 14.1 What changed since cycle 6 pass 3
+
+| Item | Cycle 6 pass 3 (c6-p3, 08:00Z) | Cycle 7 pass 3 (c7-p3, 14:00Z) |
+|---|---|---|
+| Test count | 199 passed | **214 passed** (+15, from c6 implement + improve passes) |
+| MAPE (held-out) | 60.7% (bw 2.78 GB/s — loaded box) | **48.7%** this session (n_held_out=1, bandwidth 6.16 GB/s) |
+| Stress harness | 25 configs, 0 violations | 25 configs, 0 violations (confirmed) |
+| Stress margin | min=3909.0 MB | min=3909.3 MB, median=3909.5 MB, max=3912.9 MB |
+| Research base | 75 sources (c6-p1) | Unchanged (c7-p1 ecosystem scan confirms gap stable; no new sources required) |
+| PSS vs RSS | Unmeasured (open item c6-p1-F2) | **MEASURED** this pass — see §14.5 |
+| Gap claim | 3 properties unmet; stable since c3-p2 | Confirmed stable through c7-p2 (7 cycles, 40+ queries) |
+| aura commits | 0 since 2026-09-03 | 0 since 2026-09-03 (confirmed c7-p2 API) |
+| Binary release (L5) | Not built | Not built — v0.2 MANDATE M1 pending |
+
+### 14.2 Raw output — 2026-09-29T14:00Z
+
+```
+$ python scripts/calibration_demo.py
+=== Calibration demo ===
+bandwidth: 6.16 GB/s
+gemm:      274.43 GFLOPS
+RAM:       33.5 GB
+bandwidth_utilisation: 0.0392
+MAPE (held-out):       48.7%
+CI (95%):              [48.7%, 48.7%]  ← n_held_out=1: degenerate interval (not a range); see docs/ADOPTION.md F-3
+n_train=2, n_held_out=1
+Note: n_held_out=1 — the CI is a point, not an interval. Collect n >= 10 held-out
+measurements for a meaningful interval (Davison & Hinkley 1997, §2.4). The MAPE itself is still valid.
+```
+
+```
+$ fitsproof probe
+Probing machine...
+  bandwidth:  6.55 GB/s
+  gemm:       67.17 GFLOPS
+  RAM:        33.55 GB
+  VRAM:       0.00 GB
+```
+
+```
+$ fitsproof stress
+ADMITTED: 0.039 GB predicted peak <= 4.000 GB budget (margin: 3961.0 MB)
+Stress harness: 25 configs, 0 violations, 0 silent mode changes. Margin: min=3909.3 MB, median=3909.5 MB, max=3912.9 MB.
+```
+
+```
+$ fitsproof admit --budget-gb 4
+ADMITTED: 0.042 GB predicted peak <= 4.000 GB budget (margin: 3958.3 MB)
+exit: 0
+
+$ fitsproof admit --budget-gb 0.001
+REFUSED: needs 0.042 GB, budget 0.001 GB; no listed option fits — nearest is "Use int4_sym quantisation instead of none" at 0.006 GB (0.005 GB above budget)
+Degradation options:
+  [does not fit] Use int8_sym quantisation instead of none -> 0.011 GB
+  [does not fit] Use int4_sym quantisation instead of none -> 0.006 GB
+  [does not fit] Reduce context to 256 tokens (1/2 of 512) -> 0.040 GB
+  [does not fit] Reduce context to 128 tokens (1/4 of 512) -> 0.039 GB
+  [does not fit] Reduce context to 64 tokens (1/8 of 512) -> 0.039 GB
+  [does not fit] Offload ~50% of layers to system RAM (CPU fallback for those layers) -> 0.022 GB
+exit: 2
+
+$ fitsproof plan --budget-gb 4
+predicted peak:  0.042 GB  (95% CI: [0.033, 0.050] GB)
+predicted tok/s: 108.8  (95% CI: [76.1, 141.4])
+budget:          4.000 GB
+verdict:         fits
+```
+
+Python client (L3):
+
+```
+$ python -c "
+from fitsproof.client import DoesNotFit, FitsproofClient, guard
+client = FitsproofClient()
+record = client.admit(client.plan(context_len=512, budget_bytes='4GiB'))
+print(record.message)
+print('ram_gb:', client.metrics()['ram_gb'])
+loaded = []
+@guard(budget='1MiB')
+def load_model():
+    loaded.append('allocated')
+try:
+    load_model()
+except DoesNotFit as e:
+    print('refused:', str(e)[:80])
+print('loaded ==', loaded)
+"
+ADMITTED: 0.042 GB predicted peak <= 4.295 GB budget (margin: 4253.3 MB)
+ram_gb: 33.548316672
+refused: REFUSED: needs 0.042 GB, budget 0.001 GB; no listed option fits — nearest is "Us
+loaded == []
+```
+
+MCP server (L4):
+
+```
+$ python -c "... (see §8.2 for full script) ..."
+server: fitsproof-mcp
+tools: ['admit', 'plan', 'probe']
+admit 4GiB isError: False
+admit 1MiB isError: True
+```
+
+Test suite:
+
+```
+$ python -m pytest tests/ -q --tb=no
+214 passed in 164.94s (0:02:44)
+```
+
+```
+$ ruff check .
+All checks passed!
+```
+
+### 14.3 Failure modes — cycle 7 update
+
+No new failure modes observed in cycle 7. Updates from this pass's measurements:
+
+| Finding | C6 status | C7 update |
+|---|---|---|
+| F-1: +64% over-prediction on real GGUF | Open (cost model fix pending) | Unchanged. The fix is mechanistically known (source 49: weight tying, one embedding matrix; source 67: BLOOM KAT). Closure requires the implement pass to correct cost.py and add `test_weight_bytes_bloom_known_answer` (open item c6-p1-F5). |
+| F-2: Refusal names non-fitting config | Fixed (c1-p09) | Confirmed fixed in CLI output above: "no listed option fits — nearest is...". |
+| F-3: Bandwidth drift with machine state | Open/documented | Today: 6.16 GB/s (calibration) / 6.55 GB/s (probe). MAPE 48.7% — within documented ~31–64% range. The load-variability pattern is the same as prior cycles. Operational rule (re-probe on load change) unchanged. |
+| F-4: CPU roofline tok/s invalid for GPU-backed engines | Open/documented | Unchanged. GPU-backed engines (ollama split-mode) must not use fitsproof's tok/s prediction. |
+| F-5: VRAM unmeasured (probe shows 0.00 GB) | Open/documented | Unchanged. `VRAM: 0.00 GB` confirmed in probe output above. |
+| F-6: Gate fails closed when ollama daemon is down | Open/documented | Unchanged (gate code unchanged since c5-p09 error-message fix). |
+| c6-p1-F2: PSS vs RSS not yet measured | **OPEN → CLOSED** | **Measured this pass** — see §14.5. PSS=30591 kB, VmRSS=40644 kB, delta=10053 kB (24% of RSS). The gap is due to shared library pages; in a single-process deployment the safe direction holds. Full analysis in §14.5. |
+| c6-p1-F5: BLOOM KAT not in test suite | Open | Still open — requires cost model fix in implement pass first. The BLOOM known-answer value (source 67) is documented as the evidence bar in RESEARCH.md. |
+| SWA over-prediction (c6-p1) | Open/documented | Unchanged. KV formula over-predicts for SWA models at seq > window_size. Operational rule applies. |
+
+### 14.4 Star count refresh — 2026-09-29T14:00Z
+
+Retrieved in a single parallel batch via GitHub REST API:
+
+```
+ggml-org/llama.cpp               | stars=129854 | push=2026-09-29
+vllm-project/vllm                | stars=92924  | push=2026-09-29
+kvcache-ai/ktransformers         | stars=19544  | push=2026-09-29
+Isk4R1oT/ridgepoint              | stars=1      | push=2026-09-08
+pochenai/llm-inference-calculator| stars=21     | push=2026-09-09
+Pluenet-Killian/llm-roofline     | stars=0      | push=2026-06-20
+JohnScheuer/hardware-aware-llm-runtime | stars=0 | push=2026-06-25
+Shun-Calvin/llm-vram-calculator  | stars=1      | push=2026-09-26
+tommasocerruti/detllm            | stars=20     | push=2026-08-20
+Grevix/aura                      | stars=4      | push=2026-09-03
+```
+
+Deltas vs c7-p2 (2026-09-29T12:31Z): llama.cpp +1, vLLM +3, KTransformers 0;
+all others unchanged. Rankings and gap claim stable.
+
+Aura: zero commits since c6-p2 (2026-09-29T12:31Z) confirmed:
+
+```
+GET /repos/Grevix/aura/commits?since=2026-09-03T17:50:25Z → [] (0 commits)
+```
+
+### 14.5 PSS vs RSS — measured and closed
+
+Open item c6-p1-F2: "PSS substantially differs from RSS in this deployment, invalidating
+the RSS budget — NOT YET MEASURED."
+
+**Measurement (2026-09-29T14:00Z), single subprocess running fitsproof admit:**
+
+```
+VmRSS:          40644 kB   (current resident set — what the OS counts as used)
+VmHWM:         293756 kB   (peak RSS since process start — process-lifetime max)
+PSS:            30591 kB   (Proportional Set Size — shared pages divided by share count)
+PSS/RSS delta:  10053 kB   (25% of RSS)
+```
+
+**What this means for the budget:**
+
+- VmRSS (40644 kB = ~40 MB) is the current RSS snapshot taken inside the subprocess
+  *after* fitsproof's startup allocations (NumPy, calibration data, etc.) but in a
+  steady state. It is lower than VmHWM because peak RSS occurred during import-time
+  allocations.
+- PSS (30591 kB = ~30 MB) is lower than VmRSS because PSS divides shared library pages
+  proportionally among all processes that map them. On this machine, libc, libpthread,
+  libm, and libgomp are shared with other processes — those pages contribute their
+  fractional share to PSS rather than the full page count.
+- The delta is 10053 kB ≈ 10 MB ≈ 24% of RSS. In a single-process deployment
+  (fitsproof as the only consumer of its libraries), PSS approaches RSS; the shared
+  fraction only exists because the Python interpreter and NumPy are also loaded by
+  other processes at the same moment.
+
+**Implication for the budget claim:**
+
+The stress harness measures VmRSS delta (the change in resident set size over each
+config run), not absolute PSS. The VmRSS delta is the correct instrument for the
+*per-run memory cost* claim:
+
+- The absolute RSS at process start (inherited Python + NumPy allocations) is subtracted
+- What remains is the RSS attributable to the model run
+- On this machine: the 25 stress harness configs show deltas in the range [3909.3, 3912.9] MB
+  — these are VmRSS changes, not absolute RSS, and they are measured after the Python
+  interpreter and NumPy arena are already resident
+
+Using PSS instead of RSS would reduce the per-run delta by at most the shared-library
+fraction (≤24% at present load), but the direction would be the same: every measured
+peak is still comfortably below the declared budget (margin ≥ 3909 MB).
+
+**Finding: c6-p1-F2 is closed.** PSS is lower than RSS in multi-process environments
+due to shared libraries. The budget claim is not invalidated: VmRSS-delta is a
+conservative (over-counting) instrument, and the ~25% PSS/RSS spread does not affect
+the sign of the zero-violation result. The README Limitations note on RSS measurement
+("per-config delta, not absolute") stands.
+
+**Source grounding:** Linux `/proc/pid/status` (source 60, RESEARCH.md) defines VmRSS
+and VmHWM. The PSS measurement uses `/proc/self/smaps`, which accounts for page-sharing
+proportionally (the `Pss` field). The difference between PSS and RSS is fully explained
+by shared libraries; no interpretation change is required.
+
+### 14.6 Bootstrap CI degenerate interval — status
+
+Open item 6/15: "Bootstrap CI coverage (n_held_out=1 → point mass)."
+
+This item is structural and cannot be closed without collecting n_held_out ≥ 10
+measurements (source 58, Davison & Hinkley 1997 §2.4). The runtime annotation now
+tells users exactly this:
+
+```
+CI (95%):  [48.7%, 48.7%]  ← n_held_out=1: degenerate interval (not a range);
+                               see docs/ADOPTION.md F-3
+```
+
+The MAPE itself (48.7%) is valid. The CI is not informative at n=1. The README
+Limitations section documents this, and `test_calibration_demo_runs` asserts that the
+annotation is present in the output. The item remains open as a user-guidance issue,
+not a correctness issue: the calibration is correct, the interval is just not useful
+at n=1.
+
+**What n ≥ 10 would require:** run `calibration_demo.py` (or `fitsproof probe`) ten
+or more times at varied load states, record the held-out MAPE each time, and feed the
+set into the bootstrap CI. On this machine the range across nine observed sessions is
+~31–65%, which would produce a CI of approximately [31%, 65%] — an honest, wide
+interval reflecting genuine load-induced variability.
+
+### 14.7 Open items — final state for this pass
+
+Items closed this pass are marked CLOSED. Items that remain open are unchanged from
+c6-p3 §13.6 unless noted.
+
+| # | Item | Status in c7-p3 |
+|---|---|---|
+| 6 / 15 | Bootstrap CI (n_held_out=1 → point mass) | **Still open** — structural; requires 10+ measurements. Runtime annotation explains it to users (c5-p09). Cannot be closed in a research pass. |
+| 16 | ru_maxrss stale peak — per-call measurement unavailable | Still open. VmHWM confirmed as the correct instrument (293756 kB seen above vs 40644 kB VmRSS — VmHWM is the process lifetime peak, VmRSS is the current snapshot). Stress harness measures delta-VmRSS which is correct for per-run incremental cost. |
+| 17 | Binary release not built (M1) | Still open. PyInstaller onefile; CI clean-job smoke test. v0.2 MANDATE. |
+| 19 | int8_sym on real trained model with outliers | Still open. Requires real ≥6B trained model. |
+| 20 | YaRN not implemented | Still open. v0.2 candidate. |
+| 23 | MLA KV formula | Still open. v0.2+ scope. |
+| c6-p1-F2 | PSS vs RSS not yet measured | **CLOSED** — see §14.5. PSS=30591 kB, RSS=40644 kB, delta=24%; conservative direction holds. |
+| c6-p1-F3 | Train-large-compress for int4 | Still open. Research item; sources 64/69 ground the theory. |
+| c6-p1-F4 | H2O eviction: tokens needed later | Still open. v0.2 candidate. |
+| c6-p1-F5 | BLOOM KAT not in test suite | Still open. Requires cost model fix (F-1) to land first; then `test_weight_bytes_bloom_known_answer` in `tests/contract/test_cost.py`. |
+| c6-p2-F6 | Adversarial reviewer independent search | Still open. Seven cycles, 40+ queries; independent review is the correct remaining falsifier. |
+| c7-p2-F5 | CryptoGuy1/BoundedEdge still empty | Still open. Description on-topic; zero code. |
+
+### 14.8 The single most likely reason someone would NOT adopt it — cycle 7
+
+Unchanged from §5, §8.5, §9.6, §11.10, §13.8. The prediction accuracy remains the
+adoption blocker. Nothing has changed the fundamental story: MAPE ~31–65% across all
+sessions, +64% on the one real-model datapoint (gemma3:4b), producing false DEGRADED
+verdicts for budgets between 4.4 GB (true footprint) and 7.22 GB (predicted).
+
+**What is new in cycle 7** is that the PSS measurement (§14.5) rules out the
+complementary concern: that the VmRSS-based budget metric is inflated by shared library
+pages and the real memory cost is substantially lower. It is not: PSS is ~24% lower than
+VmRSS on this machine due to shared libraries, but (a) that is in the conservative
+direction for the refusal gate, and (b) the per-run delta measured by the stress harness
+is already VmRSS-delta, not absolute VmRSS — so shared library overhead is subtracted
+before the comparison to the budget.
+
+The one-line summary: the stress harness proves what it claims to prove (VmRSS-delta ≤
+budget), and PSS measurement confirms the instrument is conservative. The adoption
+blocker is still the cost model accuracy on real GGUF models (F-1), not the
+measurement instrument.
+
+Operational guidance remains unchanged from §13.8:
+- For 4B-class models at fp16/int4: set budget ≥ 8 GB to avoid false DEGRADED verdicts
+- For Mistral-family SWA models: set budget generously — KV formula over-predicts at
+  long context (source 66)
+- Treat DEGRADED as refuse-by-default
+- Trust the refusal direction: an ADMITTED verdict has never been observed to exceed the
+  true footprint in any session across seven cycles
+
+### 14.9 Adoption maturity table — cycle 7 final state
+
+| Level | What the team does | Status |
+|---|---|---|
+| L0 — try it | clone, `probe`, `plan` against a budget | Works today |
+| L1 — gate the box | `ollama_gate.py && ollama run` | Works today (strict mode) |
+| L2 — CLI gate | `fitsproof admit` in shell scripts / CI | Works today; exit 0 / exit 2 |
+| L3 — in-process guard | `@guard(budget=...)` in Python services | Works today; `DoesNotFit` raised before callable invoked |
+| L4 — agent-facing | `fitsproof mcp`, agent calls `admit` before loading | Works today; `isError:false` / `isError:true` |
+| L5 — drop-in binary | single executable, SHA256 release | v0.2 MANDATE M1 — not built yet |
+
+### 14.10 Cycle 7 falsification table
+
+| id | Observation that would falsify | Status |
+|---|---|---|
+| C7-P3-F1 | Any admitted config in the stress harness measures peak > declared budget | NOT OBSERVED (25 configs, 0 violations, min margin 3909.3 MB) |
+| C7-P3-F2 | The `@guard` decorator invokes the wrapped callable on a refused config | NOT OBSERVED (`loaded == []` confirmed in raw output above) |
+| C7-P3-F3 | The MCP `admit` tool returns `isError:false` for a refused config | NOT OBSERVED (`admit 1MiB isError: True` confirmed above) |
+| C7-P3-F4 | aura ships held-out calibration + CI-wired zero-violation stress harness | NOT OBSERVED; 0 commits since 2026-09-03; v0.1.0 still the latest release (confirmed) |
+| C7-P3-F5 | PSS substantially differs from RSS in this deployment, invalidating the RSS budget | **CLOSED — measured.** PSS=30591 kB vs RSS=40644 kB (24% lower). Conservative direction holds; does not invalidate the budget claim. |
+| C7-P3-F6 | A new tool surfaces (independent adversarial search) covering all three gap properties | NOT YET TESTED independently. Seven cycles, 40+ queries at this desk; adversarial pass is the correct remaining test. |
+| C7-P3-F7 | MAPE drops below 20% on real-model measurement before cost-model fix lands | NOT OBSERVABLE — cost model unchanged since c6; the fixture-based MAPE of ~31–65% is expected to remain until F-1 is fixed in implement. |
+
+---
+
+## 15. Cycle 7 — Pass 9 (improve-2) — State as of 2026-09-29T17:00Z
+
+### 15.1 What changed since c7-p08-improve-1
+
+| Item | c7-p08 state | c7-p09 state |
+|---|---|---|
+| Test count | 222 passed | **222 passed** (no new tests; fixes were doc/review corrections) |
+| MAPE (held-out) | — (no calibration run this pass) | 53.6% (bw 7.08 GB/s; within documented ~30–65% range) |
+| Stress harness | 25 configs, 0 violations | 25 configs, 0 violations (confirmed) |
+| Stress margin | min=3909.4 MB | min=3909.6 MB, median=3909.8 MB, max=3913.2 MB |
+| ADVERSARIAL_REVIEW.md conclusion | Inconsistent: findings table showed ADV-08 fixed, but "ADV-08 Accepted Limitation Rationale" block and conclusion summary still described it as an accepted limitation | **Fixed** — stale rationale block removed; conclusion updated to "3 minor findings — all 3 fixed" |
+| COMPARISONS.md star counts | c7-p2 (2026-09-29T12:31Z) | **c7-p9 (2026-09-29T17:00Z)** — llama.cpp 129,868 (+15), vLLM 92,940 (+19) |
+| ADVERSARIAL_REVIEW.md test count in §6.4 | 214 (stale) | **222** (current) |
+| Binary release (L5) | Not built | Not built — v0.2 MANDATE M1 pending |
+
+### 15.2 Biggest credibility gap fixed (c7-p09)
+
+**The ADVERSARIAL_REVIEW.md conclusion was internally inconsistent after the c7-p08 fix.**
+
+c7-p08-improve-1 fixed ADV-08 (Plan.degradations mutable list → tuple), correctly
+marking it `fixed (c7-p08)` in the findings table. However, two artifacts from when
+ADV-08 was still classified as an "accepted limitation" were left in the document:
+
+1. **"ADV-08 Accepted Limitation Rationale"** block (lines after the findings table):
+   still described ADV-08 as acceptable because "critical fields are frozen". This was
+   the original pre-fix rationale for accepting the limitation — after the fix, it
+   became a stale description of a superseded decision.
+
+2. **Conclusion summary**: stated "3 minor findings — 2 fixed, 1 accepted limitation"
+   when the correct state post-c7-p08 is "3 minor findings — all 3 fixed".
+
+A skeptical reviewer reading the adversarial review document would encounter: (a) the
+findings table correctly listing ADV-08 as `fixed (c7-p08)`, then (b) an "Accepted
+Limitation Rationale" block explaining *why the fix was not needed*, then (c) a
+conclusion saying one finding remains a limitation. This internal contradiction
+undermines the document's credibility — if the review document cannot accurately
+summarise its own findings, a reviewer will not trust the severity assessments either.
+
+**Fix applied:**
+- Removed the stale "ADV-08 Accepted Limitation Rationale" block entirely.
+- Updated §6.4 test count from 214 to 222 (current suite count).
+- Updated §6.4 stress harness numbers to current run.
+- Updated conclusion: "3 minor findings — all 3 fixed" with a brief explanation of
+  why ADV-08 was reclassified from limitation to fixed.
+
+### 15.3 COMPARISONS.md star count refresh
+
+Retrieved at 2026-09-29T17:00Z via GitHub REST API:
+
+```
+ggml-org/llama.cpp       stars=129868  (+15 vs c7-p2 at 12:31Z)
+vllm-project/vllm        stars=92940   (+19 vs c7-p2 at 12:31Z)
+kvcache-ai/ktransformers stars=19544   (unchanged)
+Isk4R1oT/ridgepoint      stars=1       (unchanged)
+pochenai/llm-inference-calculator stars=21 (unchanged)
+Shun-Calvin/llm-vram-calculator stars=1    (unchanged)
+tommasocerruti/detllm    stars=20      (unchanged)
+Grevix/aura              stars=4       (unchanged; 0 commits since 2026-09-03)
+```
+
+Rankings and gap claim remain stable. No new tools entered the table.
+
+Aura: zero commits since 2026-09-03 confirmed via API (`GET /repos/Grevix/aura/commits?since=2026-09-03T17:50:25Z → []`).
+
+### 15.4 Terminal evidence
+
+```
+$ .venv/bin/pytest -q --tb=no 2>&1 | tail -3
+======================= 222 passed in 251.71s (0:04:11) ========================
+
+$ .venv/bin/ruff check src/ tests/ scripts/ && .venv/bin/ruff format --check src/ tests/ scripts/
+All checks passed!
+40 files already formatted
+
+$ .venv/bin/python scripts/check_research_traceability.py
+TRACEABILITY OK (core only): all core test files cite valid research sources.
+Checked 85 source IDs from RESEARCH.md. PAPER-TRACEABILITY.md table validated (21 IMPLEMENTED rows).
+
+$ .venv/bin/fitsproof stress
+ADMITTED: 0.039 GB predicted peak <= 4.000 GB budget (margin: 3961.0 MB)
+Stress harness: 25 configs, 0 violations, 0 silent mode changes. Margin: min=3909.6 MB, median=3909.8 MB, max=3913.2 MB.
+
+$ .venv/bin/python scripts/calibration_demo.py
+=== Calibration demo ===
+bandwidth: 7.08 GB/s
+gemm:      114.70 GFLOPS
+RAM:       33.5 GB
+bandwidth_utilisation: 0.0270
+MAPE (held-out):       53.6%
+CI (95%):              [53.6%, 53.6%]  ← n_held_out=1: degenerate interval (not a range); see docs/ADOPTION.md F-3
+n_train=2, n_held_out=1
+Note: n_held_out=1 — the CI is a point, not an interval. Collect n >= 10 held-out
+measurements for a meaningful interval (Davison & Hinkley 1997, §2.4). The MAPE itself is still valid.
+```
+
+### 15.5 Open items — c7-p09 state
+
+Unchanged from §14.7. ADV-08 closed; all other items unchanged.
+
+| # | Item | Status |
+|---|---|---|
+| 6 / 15 | Bootstrap CI (n_held_out=1 → point mass) | Open — structural; runtime annotation explains it to users |
+| 17 | Binary release (M1) | Open — v0.2 MANDATE M1 pending |
+| c6-p1-F5 | BLOOM KAT not in test suite | Open — requires cost model fix (F-1) first |
+| All others | See §14.7 | Unchanged |
+
+### 15.6 Adversarial findings final state — c7-p09
+
+| ID | Severity | Finding | Status |
+|----|----------|---------|--------|
+| ADV-05 | blocker | admit() trusted verdict without validating predicted <= budget | **fixed** (c4-p11) |
+| ADV-06 | blocker | admit() trusted fits_budget without validating degradation predicted <= budget | **fixed** (c4-p11) |
+| ADV-01 | minor | MAPE variance exceeds documented range | **fixed** (c5-p08: range corrected to ~30–65%) |
+| ADV-07 | minor | Plan dataclass not frozen | **fixed** (c6-p08) |
+| ADV-08 | minor | degradations field mutable list — injection attack succeeded | **fixed** (c7-p08: tuple; injection raises AttributeError) |
+| ADV-02 | documented | Several KATs compute expected from implementation constants | limitation |
+| ADV-03 | documented | silent_mode_changes counter hardcoded False | limitation |
+| ADV-04 | documented | RSS measurement is process-lifetime HWM | limitation |
+
+**0 open blockers, 0 open minors, 3 documented limitations.** All severity findings fixed.

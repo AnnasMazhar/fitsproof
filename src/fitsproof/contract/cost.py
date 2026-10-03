@@ -75,14 +75,31 @@ def weight_bytes(cfg: ModelConfig, quant: str = "none") -> int:
 
     Counts all weight matrices (embeddings + per-layer attention + FFN + norms).
     Norm weights are float32 regardless of quant (standard practice).
+    Embedding and unembed tables use the model's stored dtype (cfg.dtype) when
+    quant="none", preventing over-prediction for fp16 models.
 
     Formula: sum over each weight matrix of (elements * bits/8).
 
-    Fault detected: forgetting the embedding table doubles the error for
-    models with large vocabularies; tested with a known-config reference.
+    Sources:
+      [67] BigScience Workshop 2023 (BLOOM): embedding dtype must match model
+           precision — non-tied lm_head at the model's stored dtype; fp32
+           hardcoding causes over-prediction for fp16 models.
+      [75] BLOOM KAT: weight_bytes(bloom_176b_fp16) ≈ 351 GB (fp16); using
+           fp32 for embeddings would over-predict embed contribution by 2×.
+
+    Fault detected: hardcoding fp32 for embeddings causes 2× over-prediction
+    for fp16 models (F-1 finding). Tested with BLOOM-176B known-answer test.
     """
-    bits = BITS_PER_QUANT.get(quant, 32.0)
-    bytes_per_element = bits / 8.0
+    # For quant="none", use the model's stored dtype for weight matrices.
+    # For explicit quantisation, use the quant bits (overrides model dtype).
+    if quant == "none":
+        dtype_bits = 32.0 if cfg.dtype == "float32" else 16.0
+    else:
+        dtype_bits = BITS_PER_QUANT.get(quant, 32.0)
+    bytes_per_element = dtype_bits / 8.0
+
+    # Embedding dtype: always follow model dtype (not quant, which applies to weights only).
+    embed_dtype_bytes = 4 if cfg.dtype == "float32" else 2
 
     d = cfg.hidden_size
     h = cfg.num_heads
@@ -92,8 +109,8 @@ def weight_bytes(cfg: ModelConfig, quant: str = "none") -> int:
     V = cfg.vocab_size
     L = cfg.num_layers
 
-    # Embedding table (float32)
-    embed_bytes = V * d * 4
+    # Embedding table — use model's stored dtype (fixes F-1 over-prediction for fp16 models).
+    embed_b = V * d * embed_dtype_bytes
 
     # Per-layer attention projections (Q, K, V, O)
     attn_bytes_per_layer = (
@@ -109,11 +126,11 @@ def weight_bytes(cfg: ModelConfig, quant: str = "none") -> int:
     # Per-layer norms (float32, small)
     norm_bytes_per_layer = 2 * d * 4  # attn_norm + ffn_norm
 
-    # Final norm + unembed
-    final_bytes = d * 4 + V * d * 4  # float32
+    # Final norm (float32) + unembed (model dtype, same as embedding)
+    final_bytes = d * 4 + V * d * embed_dtype_bytes
 
     total = int(
-        embed_bytes
+        embed_b
         + L * (attn_bytes_per_layer + ffn_bytes_per_layer + norm_bytes_per_layer)
         + final_bytes
     )
@@ -169,8 +186,11 @@ def decode_tok_s(
     bandwidth_utilisation: empirical fraction of peak bandwidth achievable
     (0.6 is a conservative default; calibrate.py fits this from measurements).
 
-    Source: Sheng et al. 2023 (FlexGen), Sec 3.1 — decode throughput is
-    proportional to effective memory bandwidth divided by model size.
+    Source: Williams et al. 2009 (Roofline model, source 1) — the decode step is
+    memory-bandwidth-bound, so tok/s = effective_bandwidth / bytes_per_token.
+    Confirmed in the LLM domain by FlexGen (Sheng et al. 2023, arXiv:2303.06865,
+    §4.3 offloading cost model), which measures bandwidth as the bottleneck.
+    Note: §3.1 of arXiv:2303.06865 is background context, not the derivation.
 
     Fault detected: using raw peak bandwidth (utilisation=1.0) over-predicts
     by ~40-67% vs measured; calibrate.py tests this on held-out configs.

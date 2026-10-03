@@ -34,10 +34,14 @@ class Verdict(str, Enum):
 QUANT_ORDER = ["none", "int8_sym", "int4_sym"]  # increasingly aggressive
 
 
-@dataclass
+@dataclass(frozen=True)
 class DegradationStep:
     """
     One concrete degradation option with its predicted resource impact.
+
+    frozen=True: prevents mutation after construction — a caller cannot
+    flip fits_budget=False→True to smuggle a non-fitting step past admit().
+    This is the root-cause fix for ADV-07 (c6-p08).
 
     Fault detected: if a degradation step is listed but actually exceeds
     the budget, admit.py would accept a plan that violates the contract.
@@ -51,15 +55,27 @@ class DegradationStep:
     fits_budget: bool
 
 
-@dataclass
+@dataclass(frozen=True)
 class Plan:
     """
     Full resource plan for a given configuration.
 
+    frozen=True: prevents mutation after construction — a caller cannot
+    change verdict, predicted_peak_bytes, or budget_bytes between plan()
+    and admit().  ADV-05/06 re-validate these fields, but a mutation of
+    predicted_peak_bytes simultaneously with verdict could still bypass
+    them (Attack 12, c5-p11).  Freezing is the correct root-cause fix
+    for ADV-07 (c6-p08).
+
+    degradations is typed as tuple[DegradationStep, ...] (immutable) because
+    frozen=True only blocks direct attribute reassignment; a mutable list
+    attribute can still be mutated via append/pop after construction, allowing
+    injection of degradation steps.  ADV-08 (c7-p08): fixed by using tuple.
+
     predicted_peak_bytes: best estimate of peak memory usage.
     predicted_peak_ci: (lower, upper) 95% confidence interval (filled by calibrate).
     verdict: fits | fits_with_degradation | does_not_fit.
-    degradations: ordered list of alternatives if the base config doesn't fit.
+    degradations: immutable ordered tuple of alternatives if the base config doesn't fit.
     binding_constraint: human-readable string naming what would be violated.
     """
 
@@ -71,8 +87,37 @@ class Plan:
     budget_bytes: int
     quant: str
     context_len: int
-    degradations: list[DegradationStep] = field(default_factory=list)
+    degradations: tuple[DegradationStep, ...] = field(default_factory=tuple)
     binding_constraint: str = ""
+
+
+def no_fit_reason(
+    predicted_peak: int, budget_bytes: int, degradations: tuple[DegradationStep, ...]
+) -> str:
+    """
+    Refusal wording for the DOES_NOT_FIT verdict.
+
+    On this path no degradation fits the budget (that is what DOES_NOT_FIT
+    means), so the message must never claim a "nearest *fitting* config".
+    It names the option with the smallest predicted peak and states how far
+    above the budget it still is, so the user knows what to change next.
+
+    Fault detected (docs/ADOPTION.md F-2): the old message appended
+    degradations[-1] unconditionally — it named a config that did not fit
+    and was not even the nearest (an offload at 0.022 GB while int4_sym at
+    0.006 GB was nearer), directly contradicting the [does not fit] tags the
+    CLI prints underneath.
+    """
+    head = f"needs {predicted_peak / 1e9:.3f} GB, budget {budget_bytes / 1e9:.3f} GB; "
+    if not degradations:
+        return head + "no degradation options available"
+    nearest = min(degradations, key=lambda d: d.predicted_peak_bytes)
+    gap_gb = (nearest.predicted_peak_bytes - budget_bytes) / 1e9
+    return (
+        head
+        + f'no listed option fits — nearest is "{nearest.description}" at '
+        + f"{nearest.predicted_peak_bytes / 1e9:.3f} GB ({gap_gb:.3f} GB above budget)"
+    )
 
 
 def plan(
@@ -195,20 +240,7 @@ def plan(
         binding = ""
     else:
         verdict = Verdict.DOES_NOT_FIT
-        # Find the degradation closest to fitting (smallest predicted_peak_bytes).
-        # Do NOT call it "nearest fitting" if it also does not fit.
-        if degradations:
-            closest = min(degradations, key=lambda d: d.predicted_peak_bytes)
-            binding = (
-                f"needs {predicted_peak / 1e9:.2f} GB, budget {budget_bytes / 1e9:.2f} GB; "
-                f"best available option is {closest.description!r} "
-                f"({closest.predicted_peak_bytes / 1e9:.2f} GB) — still does not fit"
-            )
-        else:
-            binding = (
-                f"needs {predicted_peak / 1e9:.2f} GB, budget {budget_bytes / 1e9:.2f} GB; "
-                "no degradation options available"
-            )
+        binding = no_fit_reason(predicted_peak, budget_bytes, degradations)
 
     return Plan(
         verdict=verdict,
@@ -219,6 +251,6 @@ def plan(
         budget_bytes=budget_bytes,
         quant=quant,
         context_len=context_len,
-        degradations=degradations,
+        degradations=tuple(degradations),
         binding_constraint=binding,
     )

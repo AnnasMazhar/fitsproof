@@ -203,3 +203,65 @@ def test_invalid_json_returns_400(server_and_port) -> None:
         "not valid json",
     )
     assert status == 400, f"Expected 400 for bad JSON, got {status}"
+
+
+def test_max_tokens_exceeds_max_seq_len_does_not_crash(server_and_port) -> None:
+    """
+    ADV-16: server must not crash when max_tokens > max_seq_len - len(prompt_ids).
+
+    Fault detected: without clamping max_tokens to (max_seq_len - len(prompt_ids)),
+    Transformer.generate() indexes the precomputed RoPE frequency array beyond its
+    bounds.  This raises a broadcasting ValueError that crashes the request handler
+    thread, causing the server to drop the connection mid-response (RemoteDisconnected
+    or BrokenPipeError on the client side).
+
+    The fix clamps max_tokens = min(raw, max_seq_len - len(prompt_ids), _CAP) before
+    calling generate().  Evidence that the clamp fired: the returned
+    usage.completion_tokens must be <= cfg.max_seq_len (RoPE table size), regardless
+    of the absurd raw value (9999) the client sent.
+
+    Fault injection proof: removing the clamping line from server.py and running
+    this test raises urllib.error.URLError (RemoteDisconnected) — the connection drops
+    before a response is returned.  With the fix, HTTP 200 is returned and
+    usage.completion_tokens <= max_seq_len.
+    """
+    import urllib.error
+
+    port = server_and_port
+    payload = {
+        "messages": [{"role": "user", "content": "hi"}],
+        "max_tokens": 9999,
+        "temperature": 0.0,
+        "stream": False,
+    }
+    # Catch URLError/RemoteDisconnected so a regression (server crash) produces a
+    # clear failure message rather than an unrelated exception traceback.
+    try:
+        status, body = _post(f"http://127.0.0.1:{port}/v1/chat/completions", payload)
+    except urllib.error.URLError as exc:
+        raise AssertionError(
+            f"ADV-16 regression: server crashed on max_tokens=9999, "
+            f"dropping the connection instead of returning a response. "
+            f"Underlying error: {exc}"
+        ) from exc
+
+    assert status == 200, (
+        f"Server must return 200 when max_tokens is clamped to fit; got {status}: {body}"
+    )
+    choices = body.get("choices", [])
+    assert len(choices) >= 1, "Response must have at least one choice"
+    assert isinstance(choices[0].get("message", {}).get("content"), str), (
+        "choices[0].message.content must be a string"
+    )
+    usage = body.get("usage", {})
+    completion_tokens = usage.get("completion_tokens", None)
+    assert completion_tokens is not None, "usage.completion_tokens must be present"
+    # The reference model has max_seq_len=128 (from get_reference_bundle).
+    # completion_tokens must be <= max_seq_len regardless of the raw 9999 the client sent.
+    # This is the falsifiable assertion: if clamping is removed, the server crashes
+    # before returning any response (caught above), so this line is only reached when
+    # the fix is active.
+    assert completion_tokens <= 128, (
+        f"completion_tokens={completion_tokens} exceeds max_seq_len=128; "
+        f"clamping did not work or max_seq_len changed"
+    )

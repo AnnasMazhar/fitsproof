@@ -72,10 +72,34 @@ def admit(plan: Plan) -> AdmitRecord:
       - FITS_WITH_DEGRADATION:  → AdmitRecord(DEGRADED, cheapest fitting degradation)
       - DOES_NOT_FIT:           → AdmitRecord(REFUSED, binding_constraint)
 
+    Security: admit() does NOT trust plan.verdict blindly. It re-validates
+    that predicted_peak_bytes <= budget_bytes before admitting. A Plan
+    constructed outside plan() with a lying verdict will be refused.
+
     Fault detected: the DOES_NOT_FIT branch must emit REFUSED, not DEGRADED;
     a bug that emits DEGRADED with None degradation would pass the config
     silently and allow an OOM.
     """
+    # SECURITY: Re-validate regardless of verdict — do not trust external Plans
+    if plan.predicted_peak_bytes > plan.budget_bytes:
+        # The plan claims FITS but the numbers don't add up — refuse
+        if plan.verdict == Verdict.FITS:
+            return AdmitRecord(
+                status=AdmitStatus.REFUSED,
+                plan=plan,
+                applied_degradation=None,
+                refusal_reason=(
+                    f"Plan inconsistency: verdict=FITS but predicted "
+                    f"({plan.predicted_peak_bytes / 1e9:.3f} GB) > budget "
+                    f"({plan.budget_bytes / 1e9:.3f} GB). Refusing for safety."
+                ),
+                message=(
+                    f"REFUSED (inconsistent plan): predicted "
+                    f"{plan.predicted_peak_bytes / 1e9:.3f} GB > budget "
+                    f"{plan.budget_bytes / 1e9:.3f} GB"
+                ),
+            )
+
     if plan.verdict == Verdict.FITS:
         margin = plan.budget_bytes - plan.predicted_peak_bytes
         if margin < SAFETY_MARGIN_BYTES:
@@ -105,18 +129,26 @@ def admit(plan: Plan) -> AdmitRecord:
             ),
         )
 
-    elif plan.verdict == Verdict.FITS_WITH_DEGRADATION:
-        # Find the cheapest degradation that fits
-        fitting = next((d for d in plan.degradations if d.fits_budget), None)
+    elif plan.verdict is Verdict.FITS_WITH_DEGRADATION:
+        # Find the cheapest degradation that actually fits (re-validate fits_budget)
+        # SECURITY: Do not trust fits_budget flag — verify predicted <= budget
+        fitting = next(
+            (
+                d
+                for d in plan.degradations
+                if d.fits_budget and d.predicted_peak_bytes <= plan.budget_bytes
+            ),
+            None,
+        )
         if fitting is None:
-            # Defensive: verdict says degradation exists but none fit — refuse
+            # Either no degradation exists, or all marked fits_budget are lying
             return AdmitRecord(
                 status=AdmitStatus.REFUSED,
                 plan=plan,
                 applied_degradation=None,
                 refusal_reason=(
                     "Internal inconsistency: verdict=FITS_WITH_DEGRADATION but no "
-                    "degradation fits the budget. Refusing for safety."
+                    "degradation actually fits the budget. Refusing for safety."
                 ),
                 message=(
                     f"REFUSED (internal inconsistency): "
