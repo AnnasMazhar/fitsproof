@@ -1,5 +1,7 @@
 # fitsproof
 
+[![CI](https://github.com/AnnasMazhar/fitsproof/actions/workflows/ci.yml/badge.svg)](https://github.com/AnnasMazhar/fitsproof/actions/workflows/ci.yml)
+
 **Prove your local LLM fits in memory — or get a loud refusal instead of a silent OOM.**
 
 fitsproof is for people running LLMs on consumer hardware (4–8 GB VRAM / 16–32 GB RAM): a class
@@ -19,8 +21,8 @@ fitsproof admit --budget-gb 4
 fitsproof admit --budget-gb 0.001   # REFUSED — names the binding constraint, exit code 2
 ```
 
-Python 3.11+. Everything runs offline after install. Once the first tagged release is published
-the install is `pip install fitsproof`.
+Python 3.11+. Everything runs offline after install. Once the PyPI release is published
+(pending — `pip install fitsproof` is not yet available), use the Git-URL form above.
 
 **Stress harness result** — 25 configs, zero budget violations, zero silent mode changes:
 
@@ -325,6 +327,13 @@ These are honest. A repo with no stated limitations is not credible.
   the delta. It cannot attribute RSS held across calls (e.g. NumPy arena memory)
   to any single configuration, so the margin figures are conservative rather than
   exact. The per-config peak is the maximum of pre- and post-call samples.
+
+- **Boundary safety margin.** `admit` returns NEAR_BOUNDARY (exit 1) when the
+  predicted peak is within 50 MiB (52 MB) of the declared budget. This covers a ~25%
+  prediction overrun on a small model (~70 MB weights × 1.25 = ~17 MB overrun, well under
+  the margin). Configurations flagged as NEAR_BOUNDARY should be validated with
+  `fitsproof verify` before use. Admission at a tight budget does not guarantee the proof
+  harness will pass.
 
 - **Speculative decoding equality only holds at temperature=0.** Probabilistic
   acceptance (temperature > 0) requires rejection sampling (Algorithm 1 of

@@ -7,7 +7,7 @@ Provides:
   - guard(budget, ...): decorator that enforces the contract before the
     wrapped callable allocates.
 
-Integration pattern (M2 from v0.2 MANDATE):
+Integration pattern:
   from fitsproof.client import FitsproofClient, guard, DoesNotFit
 
   client = FitsproofClient()

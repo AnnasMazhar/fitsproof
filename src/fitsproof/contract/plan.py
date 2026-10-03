@@ -159,7 +159,7 @@ def plan(
         raise ValueError(f"budget_bytes must be a positive finite number, got {budget_bytes!r}")
 
     cost = estimate(cfg, machine, context_len, quant, bandwidth_utilisation)
-    predicted_peak = cost.total_peak_bytes
+    predicted_peak = cost.total_peak_bytes + machine.process_baseline_bytes
     predicted_tok_s = cost.predicted_tok_s
 
     # Simple CI: ±20% of predicted (replaced by fitted CI when calibrate is used)

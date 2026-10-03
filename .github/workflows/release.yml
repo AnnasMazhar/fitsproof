@@ -1,4 +1,4 @@
-# Tag-driven release (v0.2 MANDATE M1): wheel + sdist + a standalone Linux
+# Tag-driven release: wheel + sdist + a standalone Linux
 # binary (PyInstaller one-file) with SHA256SUMS, clean-job smoke tests of both
 # the binary and the wheel, a GitHub Release attaching everything, and a PyPI
 # publish via trusted publishing (OIDC — no long-lived token in the repo).
@@ -17,8 +17,24 @@ permissions:
   contents: read
 
 jobs:
+  # A tag that does not match the package version silently produces a release whose artifact is
+  # named for a different version (v0.1.1 shipped a `fitsproof-0.1.0-*.whl`). Fail before building.
+  version-check:
+    name: Tag matches package version
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Assert the tag matches the package version
+        run: |
+          set -eu
+          tag="${GITHUB_REF_NAME#v}"
+          pkg=$(python3 -c "import tomllib;print(tomllib.load(open('pyproject.toml','rb'))['project']['version'])")
+          echo "tag=v$tag package=$pkg"
+          test "$tag" = "$pkg" || { echo "::error::tag v$tag does not match package version $pkg — bump pyproject.toml before tagging"; exit 1; }
+
   build:
     name: Build wheel, sdist, standalone binary
+    needs: version-check
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -35,13 +51,14 @@ jobs:
       - name: Build standalone binary (PyInstaller one-file)
         run: |
           pip install pyinstaller==6.11.1 .
-          pyinstaller --onefile --name fitsproof \
+          pkg=$(python3 -c "import tomllib;print(tomllib.load(open('pyproject.toml','rb'))['project']['version'])")
+          pyinstaller --onefile --name "fitsproof-${pkg}-x86_64-unknown-linux-musl" \
             "$(python -c 'import fitsproof.cli as c; print(c.__file__)')"
 
       - name: Checksums
         run: |
           cd dist
-          sha256sum fitsproof *.whl *.tar.gz > SHA256SUMS
+          sha256sum fitsproof-* *.whl *.tar.gz > SHA256SUMS
           cat SHA256SUMS
 
       - uses: actions/upload-artifact@v4
@@ -50,7 +67,7 @@ jobs:
           path: |
             dist/*.whl
             dist/*.tar.gz
-            dist/fitsproof
+            dist/fitsproof-*-x86_64-unknown-linux-musl
             dist/SHA256SUMS
 
   smoke-binary:
@@ -70,16 +87,20 @@ jobs:
 
       - name: fitsproof probe
         run: |
-          chmod +x artifacts/fitsproof
-          ./artifacts/fitsproof probe
+          binary=$(ls artifacts/fitsproof-*-x86_64-unknown-linux-musl)
+          chmod +x "$binary"
+          "$binary" probe
 
       - name: fitsproof plan
-        run: ./artifacts/fitsproof plan --budget-gb 4
+        run: |
+          binary=$(ls artifacts/fitsproof-*-x86_64-unknown-linux-musl)
+          "$binary" plan --budget-gb 4
 
       - name: fitsproof admit refusal exits 2
         run: |
+          binary=$(ls artifacts/fitsproof-*-x86_64-unknown-linux-musl)
           set +e
-          ./artifacts/fitsproof admit --budget-gb 0.000001
+          "$binary" admit --budget-gb 0.000001
           rc=$?
           set -e
           test "$rc" -eq 2
@@ -125,8 +146,16 @@ jobs:
           gh release create "$GITHUB_REF_NAME" artifacts/* \
             --title "$GITHUB_REF_NAME" --generate-notes
 
+  # Publishing to PyPI is OPT-IN. It stays skipped until a trusted publisher exists for this repo on
+  # PyPI (PyPI → project → Publishing → add publisher: repository=AnnasMazhar/fitsproof,
+  # workflow=release.yml, environment=pypi). Until that exists the job fails with
+  # `invalid-publisher`, which turns every tag red for a pure configuration reason.
+  # Enable it by setting the repository variable PYPI_PUBLISH=true (Settings → Secrets and
+  # variables → Actions → Variables). The wheel and sdist are still attached to the GitHub Release
+  # either way, so a release is installable without PyPI.
   publish-pypi:
     name: Publish to PyPI (trusted publishing — OIDC)
+    if: vars.PYPI_PUBLISH == 'true'
     needs: [build, smoke-binary, smoke-wheel]
     runs-on: ubuntu-latest
     environment: pypi

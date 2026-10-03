@@ -93,7 +93,7 @@ def main() -> int:
     stress_p.add_argument("--context", type=int, default=64)
     stress_p.add_argument("--quant", default="none")
 
-    # server (alias: serve — the v0.2 MANDATE binary surface name)
+    # server (alias: serve — binary surface name)
     srv_p = sub.add_parser("server", aliases=["serve"], help="Start OpenAI-compatible HTTP server")
     srv_p.add_argument("--host", default="127.0.0.1")
     srv_p.add_argument("--port", type=int, default=8080)
@@ -198,9 +198,11 @@ def main() -> int:
             for d in p.degradations:
                 fits = "fits" if d.fits_budget else "does not fit"
                 print(f"  [{fits}] {d.description} -> {d.predicted_peak_bytes / 1e9:.3f} GB")
-        # Non-zero exit on refusal
+        # Non-zero exit on refusal or near-boundary warning
         if record.status.value == "refused":
             return 2
+        if record.status.value == "near_boundary":
+            return 1
 
     elif args.command == "verify":
         from fitsproof.contract.admit import admit as _admit
@@ -243,6 +245,12 @@ def main() -> int:
             config_label="cli_verify",
         )
         print(f"  measured_peak:    {vresult.measured_peak_bytes / 1e6:.1f} MB")
+        print(
+            f"  measurement:      {vresult.measurement_source} (sampled peak live RSS of this run)"
+        )
+        print(
+            f"  process VmHWM:    {vresult.hwm_bytes / 1e6:.1f} MB (separate column, not the measurement)"
+        )
         print(f"  budget:           {budget / 1e6:.1f} MB")
         print(f"  budget_respected: {vresult.budget_respected}")
         print(f"  margin:           {vresult.margin_bytes / 1e6:.1f} MB")
@@ -278,6 +286,8 @@ def main() -> int:
         print(record.message)
         if record.status.value == "refused":
             return 2
+        if record.status.value == "near_boundary":
+            return 1
 
         cfg, weights = get_reference_bundle()
         transformer = Transformer(cfg, weights)
@@ -343,8 +353,8 @@ def main() -> int:
         for row in table:
             print(
                 f"{row.quant:<12} {row.context_len:>6} "
-                f"{row.measured_peak_mb:>9.1f} {row.tok_s:>8.2f} "
-                f"{row.top1_agreement:>6.3f} {row.predicted_peak_mb:>8.1f} "
+                f"{row.measured_peak_bytes / 1e6:>9.1f} {row.measured_tok_s:>8.2f} "
+                f"{row.top1_agreement:>6.3f} {row.predicted_peak_bytes / 1e6:>8.1f} "
                 f"{'yes' if row.dominated else 'no':>10}"
             )
         non_dom = sum(1 for r in table if not r.dominated)

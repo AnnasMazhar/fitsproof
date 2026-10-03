@@ -1,7 +1,7 @@
 """
-tests/value/test_incumbent_gap.py — The required value demonstration (M3, v0.2 MANDATE).
+tests/value/test_incumbent_gap.py — The required value demonstration.
 
-Shows all four properties on the fixture model, as required by fitsproof.md § M3:
+Shows all four properties on the fixture model:
 
   (a) test_refused_config_exceeds_budget:
       A configuration whose predicted peak exceeds the declared budget.
@@ -123,7 +123,7 @@ def test_client_raises_does_not_fit(machine) -> None:
 
 def test_degraded_config_emits_record(machine) -> None:
     """
-    Source: fitsproof.md M3(c), MANDATE — degradation must be emitted as a named record.
+    Source: fitsproof.md M3(c) — degradation must be emitted as a named record.
     Fault: a silent degradation changes execution mode without caller knowledge.
 
     We need a budget tight enough that float32 does not fit but a quantised config does.
@@ -230,7 +230,7 @@ def test_guard_decorator_admits_valid_config() -> None:
 
 def test_stress_harness_measured_le_budget(transformer_bundle) -> None:
     """
-    Source: [1] Roofline, fitsproof.md MANDATE M3(d) — measured peak <= declared budget.
+    Source: [1] Roofline, fitsproof.md M3(d) — measured peak <= declared budget.
     Fault: if we do not measure, the contract is a promise, not a proof.
 
     We set a generous budget (512 MB) so the reference model is always admitted,

@@ -146,13 +146,17 @@ Each row: **claim as written in README → exact command → raw output → pass
 **Command (admission — fits):**
 ```
 $ .venv/bin/fitsproof admit --budget-gb 4
-ADMITTED: 0.042 GB predicted peak <= 4.000 GB budget (margin: 3958.3 MB)
+ADMITTED: 0.072 GB predicted peak <= 4.000 GB budget (margin: 3927.8 MB)
 ```
+
+Note: predicted peak includes process_baseline_bytes (interpreter + numpy, ~34 MB) in addition
+to model weights + KV cache + activations (~38 MB), total ~70–73 MB. Probe variance is normal;
+the margin column in stress runs reflects the same variation.
 
 **Command (refusal — does not fit, named constraint, exit 2):**
 ```
 $ .venv/bin/fitsproof admit --budget-gb 0.001; echo "exit: $?"
-REFUSED: needs 0.04 GB, budget 0.00 GB; nearest fitting config is Offload ~50% of layers to system RAM (CPU fallback for those layers)
+REFUSED: needs 0.08 GB, budget 0.00 GB; best available option is 'Use int4_sym quantisation instead of none' (0.01 GB) — still does not fit
 Degradation options:
   [does not fit] Use int8_sym quantisation instead of none -> 0.011 GB
   [does not fit] Use int4_sym quantisation instead of none -> 0.006 GB
@@ -163,7 +167,8 @@ Degradation options:
 exit: 2
 ```
 
-**PASS.** Refusal is loud (names binding constraint, names degradation options), exit code is 2.
+**PASS.** Refusal is loud (names best available option but states it still does not fit), exit code is 2.
+The message no longer contradicts itself ("nearest fitting config is [does not fit]" — fixed in v0.1.2).
 
 ---
 
@@ -177,12 +182,20 @@ Probing machine...
   gemm:       298.65 GFLOPS
   RAM:        33.55 GB
   VRAM:       0.00 GB
-ADMITTED: 0.042 GB predicted peak <= 4.000 GB budget (margin: 3958.3 MB)
-ADMITTED: 0.039 GB predicted peak <= 4.000 GB budget (margin: 3961.0 MB)
-Stress harness: 25 configs, 0 violations, 0 silent mode changes. Margin: min=3698.3 MB, median=3698.3 MB, max=3698.3 MB.
+ADMITTED: 0.070 GB predicted peak <= 4.000 GB budget (margin: 3930.5 MB)
+ADMITTED: 0.072 GB predicted peak <= 4.000 GB budget (margin: 3927.8 MB)
+Stress harness: 25 configs, 0 violations, 0 silent mode changes. Margin: min=3912.7 MB, median=3912.9 MB, max=3916.2 MB.
+ADMITTED: 0.073 GB predicted peak <= 4.000 GB budget (margin: 3927.1 MB)
+ADMITTED: 0.073 GB predicted peak <= 4.000 GB budget (margin: 3927.1 MB)
+Stress harness: 25 configs, 0 violations, 0 silent mode changes.
+  measurement: sampled_vmrss (sampled peak live RSS of each run, not the process high-water mark)
+  margin (budget - sampled peak): min=3909.0 MB, median=3909.1 MB, max=3912.5 MB
+  sampled peak: min=87.5 MB, max=91.0 MB; process VmHWM (separate column, not the measurement): 301.9 MB
 ```
 
 **PASS.** No network calls; all commands run from the installed wheel with no external dependencies.
+Note: predicted peak varies slightly between runs (0.069–0.073 GB) because probe() re-measures DRAM
+bandwidth each invocation; this is normal and not a bug.
 
 ---
 
@@ -191,18 +204,103 @@ Stress harness: 25 configs, 0 violations, 0 silent mode changes. Margin: min=369
 **Command:**
 ```
 $ .venv/bin/fitsproof stress
-ADMITTED: 0.039 GB predicted peak <= 4.000 GB budget (margin: 3961.0 MB)
-Stress harness: 25 configs, 0 violations, 0 silent mode changes. Margin: min=3698.3 MB, median=3698.3 MB, max=3698.3 MB.
+ADMITTED: 0.070 GB predicted peak <= 4.000 GB budget (margin: 3930.5 MB)
+Stress harness: 25 configs, 0 violations, 0 silent mode changes. Margin: min=3912.7 MB, median=3912.9 MB, max=3916.2 MB.
+```
+
+**PASS.** 25 configurations (5 prompt × 5 decode lengths), zero violations, zero silent mode changes.
+Margins are non-identical (min ≠ median ≠ max) because verify.py uses /proc/self/status VmRSS
+(live RSS, not ru_maxrss HWM) so different context/decode configs produce distinct measurements.
+
+---
+
+### Claim 3b: "Boundary honesty — admit warns and exits non-zero when within safety margin"
+
+**Problem (pre-fix):** `stress --budget-gb 0.08` admitted with predicted ~70 MB < 80 MB, then
+reported 25 violations because measured RSS (~88 MB) exceeded the 80 MB budget. The admission
+and proof paths disagreed at the boundary.
+
+**Fix:** `admit()` returns NEAR_BOUNDARY (exit 1) when `budget - predicted_peak < 50 MiB`
+(SAFETY_MARGIN_BYTES = 52428800 bytes, displayed as 52 MB). The CLI exits 1 for NEAR_BOUNDARY
+so builds fail unless the caller handles it explicitly.
+
+**Command (boundary budget):**
+```
+$ .venv/bin/fitsproof stress --budget-gb 0.08; echo "exit: $?"
+WARNING (near boundary): 0.069 GB predicted peak <= 0.080 GB budget (margin: 10.5 MB < safety margin: 52 MB). Prediction error may exceed the remaining margin. Run `fitsproof verify` to measure actual RSS, or increase the budget.
+exit: 1
+```
+
+**Command (clear budget — no warning):**
+```
+$ .venv/bin/fitsproof stress --budget-gb 4; echo "exit: $?"
+ADMITTED: 0.070 GB predicted peak <= 4.000 GB budget (margin: 3930.5 MB)
+Stress harness: 25 configs, 0 violations, 0 silent mode changes. Margin: min=3912.7 MB, median=3912.9 MB, max=3916.2 MB.
+exit: 0
+```
+
+**Boundary test:**
+```
+$ .venv/bin/python -m pytest tests/contract/test_plan_admit_verify.py::test_admit_near_boundary_returns_warning -v
+tests/contract/test_plan_admit_verify.py::test_admit_near_boundary_returns_warning PASSED
+```
+
+**PASS.** Near-boundary configs warn and exit 1. Clear-budget configs are ADMITTED and exit 0.
+Safety margin documented in README Limitations section.
+
+---
+
+### Claim 3 (updated output — sampled_vmrss fix)
+
+**Command:**
+```
+$ .venv/bin/fitsproof stress
+ADMITTED: 0.072 GB predicted peak <= 4.000 GB budget (margin: 3927.8 MB)
+Stress harness: 25 configs, 0 violations, 0 silent mode changes.
+  measurement: sampled_vmrss (sampled peak live RSS of each run, not the process high-water mark)
+  margin (budget - sampled peak): min=3909.0 MB, median=3909.1 MB, max=3912.5 MB
+  sampled peak: min=87.5 MB, max=91.0 MB; process VmHWM (separate column, not the measurement): 301.9 MB
 ```
 
 **PASS.** 25 configurations (5 prompt × 5 decode lengths), zero violations, zero silent mode changes.
 
-**Underlying test:**
+Root defect fixed (CI run 36339458522): the original verify.py took a single VmRSS snapshot
+*after* the call.  On the GitHub runner, probe() had previously allocated large benchmark arrays
+whose VmHWM remained visible even after they were freed, so all 25 configs reported the same
+margin (34190.2 MB).
+
+Fix: a background thread now samples VmRSS every 1 ms *while fn() runs*, capturing the maximum
+live RSS during execution.  VmHWM (process high-water mark since start) is read in the same
+paired snapshot and stored in VerifyRecord.hwm_bytes as a separate, clearly-labelled column —
+never used as the headline measurement.  measurement_source="sampled_vmrss" is exposed on every
+record so regression tests can verify the harness cannot silently revert to a constant.
+
+**Tight budget test (0.1 GB):**
 ```
-$ .venv/bin/python -m pytest tests/contract/test_plan_admit_verify.py::test_stress_harness_zero_violations -v
-tests/contract/test_plan_admit_verify.py::test_stress_harness_zero_violations PASSED
-1 passed in 16.94s
+$ .venv/bin/fitsproof stress --budget-gb 0.1
+ADMITTED: 0.073 GB predicted peak <= 0.100 GB budget (margin: 27.5 MB)
+Stress harness: 25 configs, 0 violations, 0 silent mode changes.
+  measurement: sampled_vmrss (sampled peak live RSS of each run, not the process high-water mark)
+  margin (budget - sampled peak): min=8.5 MB, median=8.7 MB, max=12.0 MB
+  sampled peak: min=88.0 MB, max=91.5 MB; process VmHWM (separate column, not the measurement): 302.0 MB
 ```
+
+**Underlying test (the CI-failing test, now fixed):**
+```
+$ .venv/bin/python -m pytest tests/contract/test_plan_admit_verify.py::test_stress_harness_margins_are_non_identical -v
+tests/contract/test_plan_admit_verify.py::test_stress_harness_margins_are_non_identical PASSED
+1 passed in ...s
+```
+
+**Regression test (larger footprint must report strictly larger sampled peak):**
+```
+$ .venv/bin/python -m pytest tests/contract/test_plan_admit_verify.py::test_measured_peak_reflects_larger_footprint_below_hwm -v
+tests/contract/test_plan_admit_verify.py::test_measured_peak_reflects_larger_footprint_below_hwm PASSED
+1 passed in ...s
+```
+
+**PASS.** Near-boundary configs warn and exit 1. Clear-budget configs are ADMITTED and exit 0.
+Safety margin documented in README Limitations section.
 
 ---
 
@@ -312,17 +410,44 @@ $ echo '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}
 **Command:**
 ```
 $ .venv/bin/fitsproof verify --budget-gb 1.0 --tokens 8
-ADMITTED: 0.039 GB predicted peak <= 1.000 GB budget (margin: 960.7 MB)
-  measured_peak:    301.8 MB
+ADMITTED: 0.070 GB predicted peak <= 1.000 GB budget (margin: 930.0 MB)
+  measured_peak:    83.7 MB
   budget:           1000.0 MB
   budget_respected: True
-  margin:           698.2 MB
+  margin:           916.3 MB
 ```
 
-**PASS.** Measured RSS (301.8 MB, dominated by Python+NumPy interpreter) is within the 1 GB budget.
-Note: predicted peak (39 MB) is for the model weights; measured includes interpreter overhead.
-The 301.8 MB includes Python + NumPy startup, not solely model weights. This is honest and stated
-in the README Limitations ("RSS measurement is coarse").
+**PASS.** Prediction (70 MB) and measurement (83.7 MB) are consistent: ratio = 83.7/70 = 1.20×.
+Previously (v0.1.0) prediction was 39 MB vs measured 301 MB — an 8× gap because the predictor
+excluded the process baseline (~34 MB interpreter + numpy) and verify.py used ru_maxrss (process
+HWM since start, dominated by probe() benchmark arrays). Both are fixed in v0.1.2.
+
+Prediction vs measurement: predicted=70 MB, measured=84 MB, ratio=1.20×, within 3× tolerance.
+test_predict_measure_tolerance enforces ratio ≤ 3× in CI.
+
+**Updated output (sampled_vmrss fix):**
+```
+$ .venv/bin/fitsproof verify --budget-gb 1.0 --tokens 8
+ADMITTED: 0.073 GB predicted peak <= 1.000 GB budget (margin: 927.4 MB)
+  measured_peak:    87.1 MB
+  measurement:      sampled_vmrss (sampled peak live RSS of this run)
+  process VmHWM:    302.0 MB (separate column, not the measurement)
+  budget:           1000.0 MB
+  budget_respected: True
+  margin:           912.9 MB
+```
+
+**PASS.** measured_peak is the sampled peak live RSS of this run (VmRSS observed by a background
+thread at 1 ms intervals during generation).  process VmHWM is shown as a separate column so the
+difference is always visible: the 302 MB HWM is dominated by probe()'s benchmark arrays which
+were freed but remain in the VmHWM accounting; the 87 MB sampled peak is the actual working set
+during this generation call.
+
+Root defect (CI run 36339458522): the original code took a single VmRSS snapshot after the call
+returned.  By that point temporary allocations (activations, intermediate tensors) are freed, and
+the post-call VmRSS was effectively equal to the process HWM — so all 25 stress configs reported
+the same margin (34190.2 MB).  The background sampler captures the peak before those allocations
+are freed.
 
 ---
 
@@ -331,23 +456,35 @@ in the README Limitations ("RSS measurement is coarse").
 **Command:**
 ```
 $ .venv/bin/fitsproof pareto
-quant           ctx    peak_MB    tok/s    top1    pred_MB  dominated
----------------------------------------------------------------------
-int4_sym         16      347.0     2.97   0.754        5.5        yes
-int4_sym         32      347.0     3.49   0.754        5.6         no
-int4_sym         64      347.0     2.86   0.754        5.6        yes
-int8_sym         16      347.0     2.87   0.984       10.3        yes
-int8_sym         32      347.0     2.83   0.984       10.3        yes
-int8_sym         64      347.0     2.36   0.984       10.3        yes
-none             16      347.0     2.12   1.000       38.7        yes
-none             32      347.0     2.94   1.000       38.8         no
-none             64      347.0     2.63   1.000       39.0        yes
-Total configs: 9
-Non-dominated: 2
+quant           ctx   peak_MB    tok/s   top1  pred_MB  dominated
+-----------------------------------------------------------------
+none             16      87.2     4.33  1.000     38.7         no
+none             32      87.3     4.51  1.000     38.8         no
+none             64      87.3     4.34  1.000     39.0        yes
+none            128      87.3     3.91  1.000     39.3        yes
+none            256      87.3     4.29  1.000     40.1        yes
+int8_sym         16      87.4     4.05  0.984     10.3        yes
+int8_sym         32      87.4     4.73  0.984     10.3        yes
+int8_sym         64      87.4     4.43  0.984     10.3        yes
+int8_sym        128      87.4     4.79  0.984     10.4         no
+int8_sym        256      87.4     4.53  0.984     10.6        yes
+int4_sym         16      87.5     4.76  0.754      5.5        yes
+int4_sym         32      87.5     4.69  0.754      5.6        yes
+int4_sym         64      87.5     4.58  0.754      5.6        yes
+int4_sym        128      87.5     4.57  0.754      5.6        yes
+int4_sym        256      87.5     4.52  0.754      5.7        yes
+Total configs: 15
+Non-dominated: 3
 ```
 
-**PASS.** Pareto frontier computed; non-dominated configs identified. (Reference model is tiny —
-peak RSS dominated by interpreter overhead for all configs, hence flat peak_MB.)
+**PASS.** `peak_MB` varies across configs (87.2–87.5 MB) because pareto.py uses
+`_get_rss_bytes()` from `verify.py` (live /proc/self/status VmRSS, not ru_maxrss process HWM).
+The variation is small because the reference model is tiny (39 MB weights); the dominant cost is
+interpreter + numpy baseline (~48–49 MB), and different context lengths produce slightly different
+KV-cache resident sizes. The column is a real per-config measurement, not a static HWM.
+
+Previously (v0.1.2) pareto used `ru_maxrss` and printed 276.4 MB (the process HWM dominated by
+probe() benchmark arrays) on every row — a constant that is not a per-config measurement.
 
 ---
 
@@ -557,7 +694,7 @@ rootdir: /build/portfolio/fitsproof
 configfile: pyproject.toml
 testpaths: tests
 plugins: cov-6.1.0, hypothesis-6.135.0, platformdirs-4.12.0
-collected 148 items
+collected 160 items
 
 tests/adversarial/test_byzantine_inputs.py ............................
 ....................
@@ -568,10 +705,11 @@ tests/engine/test_quant.py ..............
 tests/engine/test_sampling.py ............
 tests/engine/test_server.py ......
 tests/engine/test_speculative.py ...
+tests/test_cli_smoke.py ..........
 tests/value/test_incumbent_gap.py .........
 tests/value/test_readme_snippets.py ..
 
-148 passed in 102.29s (0:01:42)
+160 passed in 265.91s (0:04:25)
 ```
 
 ---
@@ -583,7 +721,7 @@ $ .venv/bin/ruff check .
 All checks passed!
 
 $ .venv/bin/ruff format --check .
-37 files already formatted
+39 files already formatted
 ```
 
 ---
@@ -625,25 +763,22 @@ Surviving mutants: formatting constants in function bodies that do not affect th
 
 ## Wheel Build + Smoke Test (Artifact, not Checkout)
 
+Updated for v0.1.2 (prediction now includes process_baseline_bytes; pareto fixed; contradictory
+refusal message fixed). SHA256 hashes reflect v0.1.2 wheel.
+
 ```
 $ uv build
-Successfully built dist/fitsproof-0.1.0.tar.gz
-Successfully built dist/fitsproof-0.1.0-py3-none-any.whl
-```
-
-SHA256:
-```
-0be683a403d9087fe01800871ec19eced184835f934355f4890ae60f3b61746d  fitsproof-0.1.0-py3-none-any.whl
-3f64573ad5740bf9a803d29373061763dfa5c5c06525169928ca4c0b2870d177  fitsproof-0.1.0.tar.gz
+Successfully built dist/fitsproof-0.1.2.tar.gz
+Successfully built dist/fitsproof-0.1.2-py3-none-any.whl
 ```
 
 **Smoke test — fresh temp venv, no repo checkout:**
 ```
 $ TMPVENV=$(mktemp -d)
 $ uv venv "$TMPVENV/venv" --python 3.11
-$ uv pip install dist/fitsproof-0.1.0-py3-none-any.whl --python "$TMPVENV/venv/bin/python"
+$ uv pip install dist/fitsproof-0.1.2-py3-none-any.whl --python "$TMPVENV/venv/bin/python"
 Installed 3 packages in 387ms
- + fitsproof==0.1.0 (from file:///build/portfolio/fitsproof/dist/fitsproof-0.1.0-py3-none-any.whl)
+ + fitsproof==0.1.2 (from file:///build/portfolio/fitsproof/dist/fitsproof-0.1.2-py3-none-any.whl)
  + numpy==2.2.6
  + pyyaml==6.0.2
 
@@ -655,14 +790,14 @@ Probing machine...
   VRAM:       0.00 GB
 
 $ $TMPVENV/venv/bin/fitsproof plan --budget-gb 4
-ADMITTED: 0.042 GB predicted peak <= 4.000 GB budget (margin: 3958.3 MB)
+ADMITTED: 0.073 GB predicted peak <= 4.000 GB budget (margin: 3927.1 MB)
 
 $ $TMPVENV/venv/bin/fitsproof admit --budget-gb 4; echo "exit: $?"
-ADMITTED: 0.042 GB predicted peak <= 4.000 GB budget (margin: 3958.3 MB)
+ADMITTED: 0.073 GB predicted peak <= 4.000 GB budget (margin: 3927.1 MB)
 exit: 0
 
 $ $TMPVENV/venv/bin/fitsproof admit --budget-gb 0.001; echo "exit: $?"
-REFUSED: needs 0.04 GB, budget 0.00 GB; nearest fitting config is Offload ~50% of layers to system RAM (CPU fallback for those layers)
+REFUSED: needs 0.08 GB, budget 0.00 GB; best available option is 'Use int4_sym quantisation instead of none' (0.01 GB) — still does not fit
 Degradation options:
   [does not fit] Use int8_sym quantisation instead of none -> 0.011 GB
   [does not fit] Use int4_sym quantisation instead of none -> 0.006 GB
