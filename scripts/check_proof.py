@@ -57,7 +57,7 @@ def check_tests_pass() -> list[str]:
     """Run pytest and verify all tests pass with at least MIN_TEST_COUNT tests."""
     if not _VENV_PYTEST.exists():
         return ["SKIP: pytest not installed (venv missing)"]
-    
+
     result = subprocess.run(
         [str(_VENV_PYTEST), "-q", "--tb=no"],
         capture_output=True,
@@ -65,12 +65,12 @@ def check_tests_pass() -> list[str]:
         cwd=_REPO_ROOT,
         timeout=600,  # 10 min timeout for the full suite
     )
-    
+
     if result.returncode != 0:
         lines = (result.stdout + result.stderr).strip().splitlines()
-        summary = [l for l in lines if "passed" in l.lower() or "failed" in l.lower()]
+        summary = [ln for ln in lines if "passed" in ln.lower() or "failed" in ln.lower()]
         return [f"TESTS FAILED: pytest exited {result.returncode}"] + summary[-3:]
-    
+
     # Parse test count from output (e.g., "235 passed in 371.93s")
     output = result.stdout + result.stderr
     match = re.search(r"(\d+)\s+passed", output)
@@ -78,7 +78,7 @@ def check_tests_pass() -> list[str]:
         count = int(match.group(1))
         if count < MIN_TEST_COUNT:
             return [f"INSUFFICIENT TESTS: {count} < {MIN_TEST_COUNT} required"]
-    
+
     return []
 
 
@@ -86,7 +86,7 @@ def check_stress_harness() -> list[str]:
     """Run the stress harness and verify 0 violations, 0 silent mode changes."""
     if not _VENV_FITSPROOF.exists():
         return ["SKIP: fitsproof not installed (venv missing)"]
-    
+
     result = subprocess.run(
         [str(_VENV_FITSPROOF), "stress"],
         capture_output=True,
@@ -94,23 +94,23 @@ def check_stress_harness() -> list[str]:
         cwd=_REPO_ROOT,
         timeout=300,  # 5 min timeout
     )
-    
+
     output = result.stdout + result.stderr
-    
+
     if result.returncode != 0:
         lines = output.strip().splitlines()
         return [f"STRESS FAILED: fitsproof stress exited {result.returncode}"] + lines[-5:]
-    
+
     # Parse the output for violations and mode changes
     # Expected: "Stress harness: 25 configs, 0 violations, 0 silent mode changes."
     match = re.search(r"(\d+)\s+configs,\s+(\d+)\s+violations?,\s+(\d+)\s+silent", output)
     if not match:
         return ["STRESS PARSE ERROR: could not find config/violation counts in output"]
-    
+
     configs = int(match.group(1))
     violations = int(match.group(2))
     silent_changes = int(match.group(3))
-    
+
     fails = []
     if configs < MIN_STRESS_CONFIGS:
         fails.append(f"INSUFFICIENT STRESS CONFIGS: {configs} < {MIN_STRESS_CONFIGS} required")
@@ -118,7 +118,7 @@ def check_stress_harness() -> list[str]:
         fails.append(f"STRESS VIOLATIONS: {violations} budget violations detected")
     if silent_changes > 0:
         fails.append(f"SILENT MODE CHANGES: {silent_changes} silent mode changes detected")
-    
+
     return fails
 
 
@@ -126,7 +126,7 @@ def check_admit_refuses() -> list[str]:
     """Verify that admit can refuse a configuration that exceeds budget."""
     if not _VENV_FITSPROOF.exists():
         return ["SKIP: fitsproof not installed (venv missing)"]
-    
+
     # Try to admit with a very small budget that should be refused
     result = subprocess.run(
         [str(_VENV_FITSPROOF), "admit", "--budget-gb", "0.001"],
@@ -134,55 +134,55 @@ def check_admit_refuses() -> list[str]:
         text=True,
         cwd=_REPO_ROOT,
     )
-    
+
     # Should exit 2 (refused) or 1 (error), not 0 (admitted)
     output = result.stdout + result.stderr
     if result.returncode == 0:
         return ["ADMIT SHOULD REFUSE: admit with 0.001 GB budget should not succeed"]
-    
+
     # Check that it says REFUSED, not just errored out
     if "REFUSED" not in output.upper() and result.returncode != 2:
         # Might be an error, not a refusal
         if result.returncode == 1 and "budget" not in output.lower():
             return [f"ADMIT UNCLEAR: exited {result.returncode} but no refusal message"]
-    
+
     return []
 
 
 def main() -> int:
     all_failures: list[str] = []
-    
+
     print("check_proof: validating fitsproof proof...")
-    
+
     # Quick checks first
     print("  [1/5] Checking docs/EVIDENCE.md exists...")
     all_failures.extend(check_evidence_exists())
-    
+
     print("  [2/5] Checking venv exists...")
     all_failures.extend(check_venv_exists())
-    
+
     # If venv is missing, skip the rest
     if any("venv missing" in f or "uv venv" in f for f in all_failures):
         print("check_proof: FAIL (venv not set up)")
         for f in all_failures:
             print(f"  {f}")
         return 1
-    
+
     print("  [3/5] Running pytest (this may take several minutes)...")
     all_failures.extend(check_tests_pass())
-    
+
     print("  [4/5] Running stress harness...")
     all_failures.extend(check_stress_harness())
-    
+
     print("  [5/5] Verifying admit can refuse over-budget configs...")
     all_failures.extend(check_admit_refuses())
-    
+
     if all_failures:
         print("check_proof: FAIL")
         for f in all_failures:
             print(f"  {f}")
         return 1
-    
+
     print("check_proof: all checks passed.")
     print("PROOF_COMPLETE")
     return 0
