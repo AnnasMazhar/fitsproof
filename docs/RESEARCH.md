@@ -7775,3 +7775,393 @@ across cycles 1–7.
 
 5. **The stress harness found a budget violation.**
    NOT OBSERVED: 25 configs, 0 violations, minimum margin 3909.3 MB, this session.
+
+---
+
+## Cycle 8 — Pass 1 — GROUND TRUTH: what the checker does not prove, shipped admit/budget behaviour, the adoption gap
+
+*Pass 1 of cycle 8 (2026-10-12). Reopened 2026-10-12: `status=finished` was a
+hand-run of `scripts/check_proof.py` on 2026-10-04, not a loop completion. This
+cycle runs three research passes before any implementation: (1) what the checker
+does not prove, (2) which shipped tools already cover the same admit/budget
+behaviour, (3) the one adoption gap worth building. This pass is (1) with the
+ground-truth base for (2) and the hypothesis for (3). Sources 86–96 are new.
+Four (86, 87, 88, 89) get the full QUALITY-CONTRACT §3 treatment: exact method,
+equations with notation explained, assumptions, documented failure modes.*
+
+*Measured baseline for this cycle (authoritative: `reports/mutation-c7.json`):
+1023/1140 mutants killed = 89.7%. Gate: 70%.*
+
+*Anatomy of the checker (`scripts/check_proof.py`, read this pass): five checks —
+[1] `docs/EVIDENCE.md` exists and is ≥1000 bytes; [2] venv with pytest +
+fitsproof binaries exists; [3] `pytest -q` exits 0 with ≥150 tests counted from
+the `N passed` line; [4] `fitsproof stress` prints `N configs, 0 violations,
+0 silent` with N ≥ 20; [5] `fitsproof admit --budget-gb 0.001` does not exit 0
+(refusal). Anything outside these five checks is, by construction, unproven —
+§A below names each hole with its literature.*
+
+### 86. Admission-test theory: sufficient, not necessary — DEEP [grounds admit.py and checker hole §A.4]
+
+**Liu, C. L., Layland, J. W. (1973).** Scheduling Algorithms for
+Multiprogramming in a Hard-Real-Time Environment. *J. ACM*, 20(1), 46–61.
+DOI: 10.1145/321738.321743.
+Canonical record verified via DBLP (200): https://dblp.org/rec/journals/jacm/LiuL73
+(ACM DOI hostname is bot-blocked to curl, 403 — same pattern as the Roofline
+DOI in c2-p1; the DBLP record confirms title, venue, pages.)
+
+**Claim it supports:** `admit.py` is a schedulability-style admission gate, and
+the correct correctness direction for such a gate is *conservative refusal*
+(never admit what does not fit) rather than *exact boundary classification*.
+The checker's single refusal probe (§A.4) tests only that refusal is possible,
+not that the boundary is right.
+
+**Exact method (utilisation-bound admission test, Theorem 1):**
+```
+For n periodic tasks with worst-case execution C_i and period T_i,
+rate-monotonic scheduling meets all deadlines if:
+
+    U = SUM_{i=1..n} (C_i / T_i)  <=  n * (2^{1/n} - 1)
+
+  U       = processor utilisation demanded by the task set
+  C_i     = worst-case execution time of task i
+  T_i     = period (= deadline D_i, by assumption)
+  n*(2^{1/n}-1) = the bound: n=1 -> 1.00, n=2 -> 0.828, n -> inf -> ln 2 ~= 0.693
+```
+
+**Assumptions the method requires:** periodic tasks with D_i = T_i; tasks
+independent (no shared resources / blocking); fixed-priority rate-monotonic
+order; worst-case C_i known. Under these, the test is *sufficient*:
+a set passing it is guaranteed schedulable.
+
+**Documented failure modes (per the literature):**
+- The bound is sufficient but NOT necessary: a set with U above the bound may
+  still be schedulable (exact test needed — response-time analysis, Audsley et
+  al. 1993). A gate built only on this test *refuses feasible sets* — the exact
+  analog of fitsproof's conservative over-prediction (gemma3:4b predicted 7.219
+  GB vs 4.4 GB observed, c1-p3 F-1). The literature accepts this direction:
+  a false refusal wastes capacity; a false admission misses a deadline (here:
+  OOMs). fitsproof's `admit` is documented to err the same way, and the
+  refusal message must name the nearest fitting config so the refusal is
+  actionable rather than dead (F-2 fix).
+- Worst-case C_i must actually bound reality. If the cost model under-predicts
+  (MAPE is ±30–65%, c7-p3 OQ-6), the admission test inherits the error. This is
+  why the stress harness (measured ≤ budget) is the second, independent leg —
+  one leg predicts, the other measures. Either leg alone is the failure mode.
+
+### 87. Mutants vs real faults: what 89.7% does and does not mean — DEEP [grounds checker hole §A.1]
+
+**Just, R., Jalali, D., Inozemtseva, L., Ernst, M. D., Holmes, R., Fraser, G.
+(2014).** Are Mutants a Valid Substitute for Real Faults in Software Testing?
+*Proc. FSE 2014*, 654–665. ACM SIGSOFT Distinguished Paper Award.
+DOI: 10.1145/2635868.2635929 (ACM hostname bot-blocked, 403 — same as source
+86). Full text verified (200):
+https://homes.cs.washington.edu/~rjust/publ/mutants_real_faults_fse_2014.pdf
+
+**Claim it supports:** the cycle-7 baseline (1023/1140 = 89.7%, gate 70%) is
+evidence of fault-detection ability, but §A.1's hole is quantified, not open:
+mutant detection correlates with real-fault detection *with known blind spots*.
+
+**Exact method (transcribed):** 357 real faults across 5 open-source programs
+(321,000 LOC); ~230,000 mutants from commonly used operators; developer-written
+*and* generated suites; coverage controlled as a confounder
+(chi-square χ²(1) = 78.13, N = 480, p < 0.001 for coverage association).
+```
+RQ1 (coupling): is each real fault coupled to ≥1 mutant — i.e., does a test
+  killing all coupled mutants also detect the real fault?
+RQ3 (correlation): is the suite's mutant-detection rate correlated with its
+  real-fault detection rate, with coverage controlled?
+```
+
+**Results that bind this repo:**
+- Coupling holds for **73%** of real faults; the per-fault coupled-mutant count
+  is small (45% of triggering tests kill only 1–3 extra mutants at fixed
+  coverage). Conditional-operator replacement, relational-operator replacement,
+  and statement deletion couple most often.
+- **27% of real faults are not coupled to any generated mutant; 17% are not
+  coupled to any mutant at all** — a fundamental limitation, not an operator
+  weakness. Applied to our baseline: 89.7% killed still leaves an expected
+  ~1-in-6 real faults *invisible to the mutation gate by construction*.
+- Mutant detection correlates with real-fault detection independently of
+  coverage, and more strongly than coverage does. So the gate is the best
+  available proxy — but a proxy. The checker's `N passed` count (§A.1) does not
+  even measure *this*; it measures test count, one step further removed.
+
+**Assumptions:** Java subject programs (operator coupling rates are
+language/ecosystem-specific; Python mutmut operators are not the paper's set);
+real faults = fixed bugs in version control (survivorship toward found bugs).
+
+**Documented failure modes:** equivalent mutants depress any score (source 34);
+operator-set gaps (the paper recommends strengthening/adding operators);
+minimisation against mutants alone can *reduce* real-fault detection even at
+constant score — directly relevant to any future "reduce the suite but keep
+89.7%" proposal: forbidden without re-running the full suite.
+
+### 88. vLLM memory admission: the shipped utilisation-cap + profiling gate — DEEP [pass-2 base: shipped admit behaviour]
+
+**vLLM documentation, Engine Arguments (stable).**
+https://docs.vllm.ai/en/stable/configuration/engine_args/ (200, verified this
+pass; key sentences transcribed verbatim below.)
+
+**Claim it supports:** the closest shipped analog of `admit` in a production
+engine — a declared fraction, a measurement step, and an automatic context
+fit — and precisely what it does *not* do (no refusal record, no binding
+constraint named, GPU-only).
+
+**Exact method (transcribed from the docs):**
+```
+--gpu-memory-utilization  "The fraction of GPU memory to be used for the model
+  executor, which can range from 0 to 1 ... If unspecified, will use the
+  default value of 0.92. This is a per-instance limit."
+
+--max-model-len  "'auto' -> Automatically choose the maximum model length that
+  fits in GPU memory ... otherwise it will find the largest length that can be
+  accommodated."
+
+Pipeline: profile the model weights + one forward pass under the utilisation
+cap -> num_gpu_blocks (KV block count) -> block manager admits/prompts within
+capacity. --num-gpu-blocks-override ignores profiling ("Used for testing
+preemption"). --kv-cache-memory-bytes (when set) ignores gpu_memory_utilization.
+```
+
+**Assumptions:** NVIDIA GPU with a known total; profiling measurement
+represents steady state; one instance's fraction is meaningful (docs warn it is
+per-instance — two instances at 0.5 each is the operator's problem, not the
+engine's).
+
+**Documented failure modes (per the docs' own text):** the cap is a *fraction
+of one instance's view*, not a system budget — co-tenants can jointly exceed
+physical memory with every instance individually "within budget" (our
+ru_maxrss staleness finding P1-F3 is the single-process version of the same
+unit-of-account problem). Oversize requests fail at profiling/scheduling with
+engine errors, not with a structured `REFUSED + binding constraint + nearest
+fit` record. No CPU-tier, no 4–8 GB VRAM class, no held-out MAPE.
+
+### 89. Kubernetes requests/limits + scheduler admission + OOMKill — DEEP [pass-2 base: shipped budget enforcement at orchestration layer]
+
+**Kubernetes documentation: Resource Management for Pods and Containers.**
+https://kubernetes.io/docs/concepts/configuration/manage-resources-containers/
+(200); QoS classes:
+https://kubernetes.io/docs/concepts/workloads/pods/pod-qos/ (cited, same
+verified domain).
+
+**Claim it supports:** the only widely-deployed system that does *both* halves
+of the contract — admission-time refusal (scheduler) and enforcement
+(kernel) — and the two documented ways its guarantee is weaker than
+fitsproof's claim, which is why it does not close the gap.
+
+**Exact method (transcribed rules):**
+```
+Admission (scheduler): SUM(container requests) < node capacity, else the Pod is
+  refused placement. "The scheduler still refuses to place a Pod on a node if
+  the capacity check fails. This protects against a resource shortage ... when
+  resource usage later increases."
+
+Enforcement (kubelet -> runtime -> cgroup):
+  cpu limit    = hard ceiling via throttling (CFS quota per interval).
+  memory limit = reactive: "enforced by the kernel with out of memory (OOM)
+  kills ... terminations only happen when the kernel detects memory pressure.
+  Thus, a container that over allocates memory may not be immediately killed."
+
+QoS classification (exact predicates):
+  Guaranteed = every container has cpu+memory request == limit (> 0).
+  Burstable  = at least one request or limit set, not Guaranteed.
+  BestEffort = no requests or limits at all. Eviction order under node
+  pressure: BestEffort -> Burstable -> Guaranteed.
+```
+
+**Assumptions:** requests are honest (the scheduler trusts declared numbers —
+garbage requests admit garbage); kernel memory pressure coincides with limit
+breach promptly; cgroup accounting is the unit both sides mean.
+
+**Documented failure modes (per the docs' own words):**
+- Memory enforcement is *reactive*, not preventive: "A container may use more
+  memory than its memory limit, but if it does, it may get killed." There is a
+  window between breach and kill — the orchestration-layer version of our
+  RSS-sampling hole (P1-F3). fitsproof's claim (refuse *before* allocating) is
+  strictly stronger at the single-machine layer, and K8s does not predict peak
+  from measurement at all (no probe/calibrate/MAPE equivalent).
+- No degradation path: the outcomes are admit / kill / evict. There is no
+  "fits_with_degradation + declared record" verdict (our `Plan` middle state).
+  QoS eviction order is a priority scheme, not a per-workload degradation.
+
+### 90. HuggingFace Accelerate: device_map="auto" sharding + offload (shipped degradation path, no budget)
+
+**HuggingFace Accelerate docs, Big Modeling guide.**
+https://huggingface.co/docs/accelerate/main/en/usage_guides/big_modeling
+(200; page is JS-rendered — `device_map="auto"` occurrences confirmed in
+fetched bytes this pass.)
+
+**What it does:** `infer_auto_device_map` shards a model across GPU/CPU/disk
+with `device_map="auto"`; offload moves cold shards to CPU RAM or disk. This
+is the shipped version of our "offload layers" degradation — automatic,
+one-line, widely adopted.
+**Gap it leaves:** no declared budget (it fills whatever exists), no refusal
+(an undersized machine swaps to disk and crawls — the *silent degradation*
+class this repo exists to eliminate), no predicted-vs-measured accounting.
+Enters the pass-2 table on the degradation row as "ships the mechanism,
+inverts the guarantee."
+
+### 91. Ollama: queue-not-refuse under memory pressure (shipped behaviour in our hardware class)
+
+**Ollama FAQ.** https://docs.ollama.com/faq (200; the old
+`github.com/ollama/ollama/blob/main/docs/faq.md` path now 503s — docs moved to
+the site; cite the site URL. Memory/queue strings confirmed in fetched bytes
+this pass.)
+
+**What it does:** when VRAM/RAM cannot fit a new model request alongside loaded
+models, Ollama *queues* the request until memory frees ("all new requests will
+be queued until the new [model fits]"); `OLLAMA_KEEP_ALIVE` unloads idle
+models; parallel slots scale with memory. This is the real-model backend our
+ADOPTION.md gates (gemma3:4b on CPU) — and its admission policy is
+wait-indefinitely, never refuse-with-reason.
+**Gap it leaves:** no predicted peak, no binding-constraint message, no
+degradation record; a queued request behind a stuck model waits forever. The
+`scripts/ollama_gate.py` refuse-by-default design (c1-p3) is the complement:
+fitsproof decides *before* Ollama queues.
+
+### 92. Reward hacking: the checker's gaming surface, named (checker hole §A.2)
+
+**Amodei, D., Olah, C., Steinhardt, J., et al. (2016).** Concrete Problems in
+AI Safety. arXiv:1606.06565. https://arxiv.org/abs/1606.06565 (200.)
+
+**Claim it supports:** §A.2 — the stress harness reports its *own*
+measurements against budgets its own planner set, and the checker trusts both.
+§4 (Avoiding Reward Hacking): "the objective function ... admits of some
+clever 'easy' solution that formally maximizes it but perverts the spirit of
+the designer's intent ... a generalization of the wireheading problem."
+Concrete gaming paths for `check_proof.py`, each buildable in <5 lines and
+each passing all five checks today: (a) inflate every declared budget 10× —
+violations stay 0 while the contract becomes vacuous; (b) shrink the stress
+config list to the 20 cheapest fixtures — still ≥20 configs, still 0
+violations; (c) make `admit --budget-gb 0.001` print REFUSED from a hardcoded
+branch while the real path admits everything. None is present (stated for the
+record — the adversarial pass is invited to try); the point is the checker
+cannot distinguish any of them from the real property. Mitigations that exist
+today: the margin distribution in EVIDENCE.md (inflated budgets show absurd
+margins — the dog that doesn't bark is visible), and mutation testing of
+`contract/` (a hardcoded REFUSED branch is a surviving-mutant-shaped anomaly
+only if a test pins the boundary — currently no test asserts refusal *at* the
+boundary, only at 0.001 GB).
+
+### 93. Goodhart taxonomy: which collapse mode each checker hole is (checker hole §A.2–A.3)
+
+**Manheim, D., Garrabrant, S. (2019).** Categorizing Variants of Goodhart's
+Law. arXiv:1803.04585. https://arxiv.org/abs/1803.04585 (200.)
+
+**Claim it supports:** classifying the checker holes so fixes target the right
+mechanism. Four categories (transcribed): (1) Regressive — selecting on a
+proxy selects for noise too ("tails come apart"); (2) Extremal — optimisation
+pushes the distribution where old relationships break; (3) Causal — the
+regulator's intervention changes the relationship; (4) Adversarial — an agent
+with different goals games the metric. Mapping: test-count ≥150 (§A.1) is
+*regressive* (count proxies fault detection with noise); self-measured stress
+(§A.2) is *adversarial-shaped* even with an honest builder (the measured
+system computes its own score — Amodei's wireheading is the extreme form);
+EVIDENCE.md size ≥1000 bytes (§A.3) is *extremal* (any 1000-byte file passes —
+the relationship between "evidence exists" and "claim holds" collapses at the
+boundary the checker itself defines). The paper's prescription relevant here:
+use the metric for *improvement* (track margins, MAPE, kill rate across
+cycles — which this campaign does) and distrust it as a *target* (PROOF_COMPLETE
+as a finish line — which the reopening explicitly rejects).
+
+### 94. MCP Python SDK: the adoption vehicle for the agent surface (adoption-gap base)
+
+**Model Context Protocol, Python SDK.**
+https://github.com/modelcontextprotocol/python-sdk (200.)
+Protocol semantics (tools/list, tools/call, isError) are source 23 (the
+2025-03-26 spec); this entry grounds only the *adoption* claim: an agent
+developer consumes MCP tools through this SDK's `ClientSession`, not by
+hand-rolling stdio JSON-RPC. Therefore the M2.4 surface is adoptable iff a
+`ClientSession` round-trip against `fitsproof mcp` works with stock SDK code —
+a pass-3 observable (independent-client test, already listed as c2-p1
+falsifier 1, still the right test).
+
+### 95. llama.cpp server: OpenAI-compatible routes are table stakes (shipped M2.1 analog)
+
+**llama.cpp server README (`tools/server`).**
+https://github.com/ggml-org/llama.cpp/tree/master/tools/server (200.)
+Verbatim from the README (fetched this pass):
+`* [OpenAI API](https://github.com/openai/openai-openapi) compatible chat
+completions, responses, and embeddings routes` — plus Anthropic-compatible
+routes, and (notably) `--mcp-servers-config` *client-side* MCP consumption.
+**What it means:** the M2.1 "swap base_url" surface ships in the incumbent the
+repo refuses to out-claim on speed. OpenAI-compat is therefore not
+differentiation — it is the entry ticket, and the repo must not present it as
+a gap. The differentiation stays the admission record in the response
+(plan/admission attached to the completion), which no incumbent attaches.
+
+### 96. vLLM OpenAI-compatible server: same conclusion from the GPU tier
+
+**vLLM docs, OpenAI Compatible Server.**
+https://docs.vllm.ai/en/latest/serving/openai_compatible_server.html (200.)
+Ships the full OpenAI surface (chat, completions, embeddings, streaming) over
+the engine in source 88. Combined with source 95: *both* incumbent tiers serve
+OpenAI-compat today. Any adoption story predicated on "we speak the protocol"
+is dead on arrival; the story must be "we attach the contract verdict to the
+protocol you already speak."
+
+### Alternatives considered — additions for this pass
+
+| Approach | Why rejected (with citation) |
+|---|---|
+| Extending the checker to close §A holes by assertion (e.g. margin bounds, config-diversity rules) | Arms race against §92–93: each new assertion is a new proxy to game (Goodhart extremal). The durable fix is independent measurement (fresh-process RSS, external budget setter), not a longer checklist — implement-pass work, not assertion work. |
+| Claiming the mutation gate as proof of real-fault absence | Source 87 quantifies the blind spot (17% fundamentally uncoupled). 89.7% is the best proxy available, not a proof. EVIDENCE.md must keep quoting the raw pair 1023/1140, never just the rate. |
+| Matching K8s admission (scheduler-style refuse) as the whole product | K8s refusal needs a cluster scheduler and honest requests (§89); the target class is a single laptop with no scheduler. The in-process pre-allocation gate is the layer K8s leaves empty. |
+| Matching vLLM utilisation-cap as the whole product | Fraction-of-GPU with profiling (§88) assumes a GPU worth profiling and an operator who sizes fractions; our class (4 GB M2000 / CPU-only / 16–32 GB RAM) needs bytes-on-this-machine, not fractions-of-A100. |
+| Leading adoption on OpenAI-compat or MCP-compat alone | Both ship in incumbents (§95, §96, §23). Compatibility is the carrier, not the payload. |
+
+### Falsification — Cycle 8 Pass 1
+
+What observation would prove this pass's ground truth wrong:
+
+1. **A checker-gaming path in §A is demonstrated live and check_proof still
+   prints PROOF_COMPLETE.** EXPECTED TO BE POSSIBLE — §A.2 lists three paths
+   believed buildable in <5 lines each. If the adversarial pass builds one and
+   the checker passes, that *confirms* (not refutes) this pass: the checker is
+   a tripwire, not a proof. Refutation would be a gaming path that is
+   *impossible* without breaking a check — none is claimed.
+2. **A shipped tool is found that refuses pre-allocation with a named binding
+   constraint + nearest fitting config on CPU-first consumer hardware.**
+   Would collapse the adoption-gap hypothesis (§C). Candidates checked this
+   pass and found wanting: vLLM (fraction-cap, GPU-only, §88), K8s (reactive
+   kill, needs a cluster, §89), Accelerate (silent offload, §90), Ollama
+   (queue-forever, §91), llama.cpp (no --budget flag as of v0.5.0, recheck at
+   publication). The pass-2 ecosystem sweep must re-run these exact five.
+3. **Just-2014-class evidence appears that Python mutmut scores do NOT
+   correlate with real-fault detection** (the paper's subjects are Java).
+   Would demote the 89.7% baseline from "best proxy" to "unvalidated ritual."
+   Search this pass found no such study; the assumption is flagged, not hidden.
+4. **The Liu–Layland conservative-direction analogy is wrong for memory:**
+   i.e., evidence that false *admissions* (under-prediction) are cheaper than
+   false *refusals* in the target class. Currently every measurement says the
+   opposite (OOM kills the process; a refusal prints a message). A workload
+   where swap makes over-admission free would refute the design direction.
+5. **An independent MCP SDK client completes tools/call against `fitsproof
+   mcp` and the admission verdict is consumable without reading our source.**
+   This *confirms* the adoption hypothesis rather than refuting it — listed
+   here so pass 3 knows its success criterion in advance.
+
+### Link verification — raw output (2026-10-12, curl over every NEW URL in this pass)
+
+```
+200 https://homes.cs.washington.edu/~rjust/publ/mutants_real_faults_fse_2014.pdf
+200 https://docs.vllm.ai/en/stable/configuration/engine_args/
+200 https://kubernetes.io/docs/concepts/configuration/manage-resources-containers/
+200 https://huggingface.co/docs/accelerate/main/en/usage_guides/big_modeling
+200 https://arxiv.org/abs/1606.06565
+200 https://arxiv.org/abs/1803.04585
+200 https://github.com/modelcontextprotocol/python-sdk
+200 https://github.com/ggml-org/llama.cpp/tree/master/tools/server
+200 https://docs.vllm.ai/en/latest/serving/openai_compatible_server.html
+200 https://dblp.org/rec/journals/jacm/LiuL73
+200 https://docs.ollama.com/faq
+403 https://doi.org/10.1145/321738.321743 (bot-blocked; canonical record via dblp 200 above)
+403 https://dl.acm.org/doi/10.1145/2635868.2635929 (bot-blocked; full text via uw.edu PDF 200 above)
+503 https://github.com/ollama/ollama/blob/main/docs/faq.md (docs moved; use docs.ollama.com/faq 200)
+000 https://ntrs.nasa.gov/citations/19730036159 (TLS fail from this host; dblp covers the record)
+404 https://raw.githubusercontent.com/ollama/ollama/main/docs/faq.md (path removed upstream)
+```
+
+*Pre-existing sources 1–85 were verified in their own passes; this pass
+re-verifies nothing old and weakens nothing. Star-count refresh and the
+full comparison-table deepening are pass 2's job per ITERATION-PROTOCOL.*
