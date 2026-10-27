@@ -8165,3 +8165,302 @@ What observation would prove this pass's ground truth wrong:
 *Pre-existing sources 1–85 were verified in their own passes; this pass
 re-verifies nothing old and weakens nothing. Star-count refresh and the
 full comparison-table deepening are pass 2's job per ITERATION-PROTOCOL.*
+
+
+---
+
+## Cycle 8 — Pass 2 — ECOSYSTEM AND COMPETITION DEEPENING (c8-p2)
+
+*Dispatched 2026-10-27T20:08Z. Star counts retrieved via GitHub REST API at
+2026-10-27T20:08Z (raw batch output below). This pass: (1) refreshes all named
+tools to the session timestamp with new release versions since c7-p2, (2) evaluates
+one significant new tool — RAMLLM — that entered the `llm+memory+budget+enforcement`
+search results and is the most substantive new entrant since aura, (3) confirms
+llama.cpp v0.7.0 and vLLM v0.32.0 release notes contain no budget/enforce terms,
+and (4) states the gap-claim status.*
+
+---
+
+### Raw star-count refresh (2026-10-27T20:08Z)
+
+All calls in one parallel batch via `curl -s https://api.github.com/repos/<owner>/<repo>`:
+
+```
+ggml-org/llama.cpp               | stars=132,551 | push=2026-10-27T18:42:04Z | license=MIT
+vllm-project/vllm                | stars=95,701  | push=2026-10-27T20:07:07Z | license=Apache-2.0
+kvcache-ai/ktransformers         | stars=19,641  | push=2026-10-20T08:47:10Z | license=Apache-2.0
+Isk4R1oT/ridgepoint              | stars=2       | push=2026-09-08T18:40:09Z | license=MIT
+pochenai/llm-inference-calculator| stars=21      | push=2026-10-06T02:36:22Z | license=None
+Pluenet-Killian/llm-roofline     | stars=0       | push=2026-06-20T19:26:33Z | license=MIT
+JohnScheuer/hardware-aware-llm-runtime | stars=0 | push=2026-06-25T09:50:23Z | license=MIT
+Shun-Calvin/llm-vram-calculator  | stars=3       | push=2026-09-26T06:38:02Z | license=MIT
+tommasocerruti/detllm            | stars=22      | push=2026-08-20T21:07:45Z | license=Apache-2.0
+Grevix/aura                      | stars=4       | push=2026-09-03T17:50:25Z | license=Apache-2.0
+```
+
+Latest releases confirmed (GitHub REST `/releases/latest`):
+
+```
+ggml-org/llama.cpp       | tag=v0.7.0  | published=2026-10-15T17:13:19Z  ← NEW (was v0.5.0 at c7-p2)
+vllm-project/vllm        | tag=v0.32.0 | published=2026-10-18T06:50:48Z  ← NEW (was v0.30.0 at c7-p2)
+kvcache-ai/ktransformers | tag=v0.7.2  | published=2026-10-15T07:09:13Z  ← NEW (was v0.7.1 at c7-p2)
+Grevix/aura              | tag=v0.1.0  | published=2026-08-23T18:36:19Z  (unchanged)
+ridgepoint (PyPI)        | version=0.1.2 | uploaded=2026-09-08T18:42:30  (unchanged)
+```
+
+Deltas vs the c7-p2 snapshot (2026-09-29T17:00Z): llama.cpp +2,683 (v0.5.0→v0.7.0),
+vLLM +2,761 (v0.30.0→v0.32.0), KTransformers +97 (v0.7.1→v0.7.2), ridgepoint +1,
+llm-vram-calculator +2, detllm +2; aura unchanged (0 commits since 2026-09-03,
+confirmed by `GET /repos/Grevix/aura/commits?since=2026-09-03T17:51:00Z` → `[]`).
+
+---
+
+### Release note checks — new versions since c7-p2
+
+**llama.cpp v0.7.0 (2026-10-15):**
+
+```
+grep -i "budget|enforce|admit|contract|degradation|refuse" in v0.7.0 release body:
+  not found: budget
+  not found: enforce
+  not found: admit
+  not found: contract
+  not found: degradation
+  not found: refuse
+```
+
+No budget-enforcement feature shipped. The watch item from c1-p2 (item 10 in
+the c2-p3 closure table) remains CLOSED-NOT-OBSERVED: no `--budget` flag, no
+degradation record. llama.cpp v0.7.0 adds improved quantisation and model
+support; the contract layer is still absent. Re-check at publication time.
+
+**vLLM v0.32.0 (2026-10-18):** GPU serving; consumer-RAM target (4–8 GB VRAM
+class) unchanged; `VLLM_BATCH_INVARIANT=1` flag still not default.
+
+**KTransformers v0.7.2 (2026-10-15):** AMX/MoE hybrid; still requires 128 GB RAM
++ CUDA/ROCm; no resource contract layer.
+
+---
+
+### New tool: RAMLLM (Mayank3613/RAMLLM)
+
+This is the most substantive new entrant since aura.
+
+- **Repo:** https://github.com/Mayank3613/RAMLLM
+- **PyPI:** https://pypi.org/project/ramllm/ (version 0.2.1, pushed 2026-10-18)
+- **Stars:** 0 (2026-10-27)
+- **Last push:** 2026-10-18T06:47:41Z
+- **License:** Apache-2.0 (other, per API; README confirms Apache-2.0)
+- **Language:** Python
+- **Fork:** false
+
+**What RAMLLM does:**
+
+RAMLLM is a hardware-planner, cost modeller, and OS memory supervisor that sits above
+llama.cpp as its inference backend. Its own description: "Take a model, a memory budget,
+and the user's tolerance for slowness, then pick and enforce the best strategy for running
+that model on the machine."
+
+Key features from README:
+- `ramllm plan <model>`: forward-models memory bandwidth and compute latency before
+  download; warns when plans violate slowness thresholds.
+- `ramllm bench <model>`: empirically measures prompt-eval and decode speed on the user's
+  specific silicon, computing a "persistent per-machine calibration factor applied to all
+  future plan forecasts."
+- Multi-tier stratified empirical benchmark calibration — explicitly claimed in its own
+  comparison table as the differentiator vs llama.cpp, Ollama, and LM Studio.
+- OpenAI-compatible API server (`/v1/chat/completions`, streaming SSE, `/ramllm/metrics`,
+  `/ramllm/replan`).
+- Live memory governor: supervises memory during generation with automatic KV-cache
+  quantisation (`q8_0`/`q4_0`) when budget is tight.
+- Platform: macOS, Linux, Windows. Backend: official llama.cpp supervised by RAMLLM.
+
+**Benchmark table (from README, `aura_measured` equivalent):**
+
+| Machine | Model | Predicted Decode | Measured Decode | Accuracy | Peak Memory |
+|---|---|---|---|---|---|
+| Apple Mac Studio, M4 Pro, 24 GB (150 GB/s) | Qwen2.5-Coder-14B (Q4_K_M) | 15.2–19.8 tok/s | 17.4 tok/s | +2.1% | 11.4 GB |
+| Apple MacBook Pro, M2, 16 GB (100 GB/s) | Qwen2.5-7B-Instruct (Q4_K_M) | 30.5–36.2 tok/s | 33.1 tok/s | +3.8% | 5.1 GB |
+| Desktop, AMD 5800X + RTX 3060 12GB | Llama-3.1-8B (Q4_K_M) | 48.0–58.0 tok/s | 52.6 tok/s | −1.2% | 6.2 GB VRAM |
+| Laptop, i7-12700H + RTX 3050 6GB | Mistral-7B (Q4_K_M) | 35.3–51.7 tok/s | 41.2 tok/s | +3.5% | 4.8 GB VRAM |
+
+**What RAMLLM does well:** empirical per-machine calibration of tok/s; hardwares-aware
+planning before download; live governor that auto-quantises KV cache; OpenAI-compatible
+server; cross-platform; correct consumer-hardware targeting (4–16 GB VRAM/RAM class).
+
+**What RAMLLM does not do (gap analysis):**
+
+1. **No held-out train/test split with published MAPE.** The benchmark table above
+   reports predicted vs. measured tok/s accuracy (+2.1%, +3.8%, etc.) but these are
+   *in-distribution* measurements, not held-out evaluations. The `ramllm bench` command
+   calibrates a "persistent per-machine calibration factor" — this is a single scalar
+   fitted to in-sample data. There is no mention of a held-out set, no MAPE reported
+   on unseen configurations, and no confidence interval on the calibration. The
+   calibration is multi-tier-stratified (profiled at multiple hardware states) but not
+   evaluated on configurations not used for fitting. The README does not contain the
+   words "held-out", "MAPE", "mean absolute percentage error", "bootstrap", or
+   "prediction interval".
+
+2. **No proof harness asserting `measured_peak ≤ declared_budget`.** The live memory
+   governor enforces budgets dynamically (throttles generation, quantises KV cache) but
+   RAMLLM's README provides no test that runs ≥20 configurations and asserts zero budget
+   violations. There is no equivalent of `fitsproof stress`. The "Peak Memory" column in
+   the benchmark table reports measured resident memory but never compares it to a declared
+   budget limit; there is no violation flag or failing assertion.
+
+3. **No embeddable `plan`/`admit` API returning a `Plan` object.** RAMLLM provides a CLI
+   (`ramllm plan`) and an OpenAI-compatible HTTP server but no in-process Python API
+   (`from ramllm import plan, admit`). A Python service cannot call RAMLLM to check fit
+   before allocating. The server endpoint `/ramllm/metrics` and `/ramllm/replan` are
+   runtime, not pre-admission gates for caller code.
+
+4. **Backend dependency: requires llama.cpp.** RAMLLM is a supervisor layer; it does not
+   implement inference itself. A system that cannot install llama.cpp (embedded device,
+   CI without native builds) cannot use RAMLLM. fitsproof's NumPy engine runs with no
+   native binary dependency.
+
+**Updated comparison:** RAMLLM is the closest new entrant to fitsproof's prediction layer
+and is more accurate on tok/s for real models on real hardware (±2–4% vs fitsproof's
+46–65% MAPE). It closes the *speed-accuracy* gap but does not close the *three-property
+gap* fitsproof claims: no held-out MAPE, no zero-violation stress harness as a repo test,
+no embeddable `plan`/`admit` API.
+
+---
+
+### Other new search results — evaluated and excluded
+
+```
+# Search 1: llm+memory+budget+enforcement (sort=updated, 2026-10-27T20:08Z)
+total_count=12
+Mayank3613/RAMLLM       | stars=0  | push=2026-10-18 | ← evaluated above
+ashcakeancient7671/aura | stars=1  | push=2026-10-13 | consumer Windows wrapper (README update only)
+mrshelll/baton          | stars=0  | push=2026-10-25 | context handoff tool (token budget, not RSS)
+edouard-claude/longe    | stars=4  | push=2026-10-01 | agent-loop budget (context/turn, not RSS)
+
+# Search 2: llm+inference+resource+contract  — total_count=1
+CryptoGuy1/BoundedEdge  | stars=0  | push=2026-09-24 | empty repo (no code, confirmed)
+
+# Search 3: peak+RAM+llm+admit+refuse+budget — total_count=0
+# Search 4: llm+vram+predict+enforce+consumer+hardware — total_count=0
+```
+
+**ashcakeancient7671/aura** (1 star, Rust, pushed 2026-10-13): README update only;
+consumer Windows wrapper, no calibration, no CI, no proof harness. Confirmed non-competitor.
+
+**All others**: previously evaluated across c2-p2 through c7-p2; no new features.
+
+---
+
+### Updated comparison table — all tools, counts as of 2026-10-27T20:08Z
+
+| Tool | Stars | Latest release / Last push | Approach | What it does well | Gap it leaves | What fitsproof does differently |
+|---|---|---|---|---|---|---|
+| **llama.cpp** (ggml-org/llama.cpp) | 132,551 | v0.7.0 (2026-10-15) | CPU/GPU inference, GGUF, k-quants, layer offload | Mature (3+ yr), broadest model + quant support, fast CPU kernels, GPU offload, runs everywhere | Silent OOM; silent CPU fallback at 0.3 tok/s; no user-declared budget; no calibrated prediction; no RSS proof harness | Explicit budget; structured degradation record; zero-violation stress harness as repo test; embeddable admit API |
+| **vLLM** (vllm-project/vllm) | 95,701 | v0.32.0 (2026-10-18) | GPU serving, PagedAttention, continuous batching | Highest GPU throughput, production serving, 100+ models, full OpenAI API | Targets A100/H100 class; no 4–8 GB VRAM path; non-deterministic by default | CPU-first; 4–8 GB VRAM class; per-machine calibration; deterministic by construction |
+| **KTransformers** (kvcache-ai/ktransformers) | 19,641 | v0.7.2 (2026-10-15) | CPU/GPU hybrid MoE, Intel AMX kernels, SOSP 2025 | Runs DeepSeek-671B on ~14 GB VRAM + 128 GB RAM; 1.25–4.09× over llama.cpp | Requires 128 GB RAM + AMX + CUDA/ROCm; does not serve 16–32 GB RAM class; no resource contract layer | Targets the 16–32 GB RAM class KTransformers excludes; predict→enforce→prove pipeline |
+| **ridgepoint** (Isk4R1oT/ridgepoint, PyPI v0.1.2) | 2 | 2026-09-08 | Calibrated VRAM + roofline for A100/H100; GQA/MLA-correct; per-field `calibrated` flag | ~1% MAPE vs real vLLM on A100/H100; MLA support; intervals not point estimates; per-field provenance | Calibration offline, A100/H100 only; `quadro-m2000` unrepresentable; prediction only — no enforcement; no RSS harness | On-device calibration with held-out MAPE; enforcement gate; measured RSS proof |
+| **RAMLLM** (Mayank3613/RAMLLM, PyPI v0.2.1) | 0 | 2026-10-18 | Per-machine empirical calibration + budget-aware planning + live memory governor; llama.cpp backend | ±2–4% tok/s prediction accuracy on real hardware; live KV-cache quantisation governor; OpenAI-compatible server | No held-out train/test split with published MAPE; no proof harness asserting `measured ≤ budget` over ≥20 configs; no embeddable in-process `plan`/`admit` API; requires llama.cpp backend | Held-out MAPE published even when bad (~46–65%); zero-violation stress harness as repo test; in-process Python `plan()`/`admit()` API; NumPy-only, no native binary dependency |
+| **llm-inference-calculator** (pochenai) | 21 | 2026-10-06 | Two-phase roofline (prefill compute-bound TTFT + decode bandwidth-bound TPOT); MoE sparsity | Rigorous two-phase model (source 44 / Sarathi); MoE expert coverage | No calibration; no enforcement; no consumer-hardware target; static model only | On-device calibration; single-machine consumer target; enforcement gate |
+| **llm-roofline** (Pluenet-Killian) | 0 | 2026-06-20 (inactive 4+ mo) | Decode throughput floor = bytes/bandwidth per GPU | Simple clean derivation; readable chart | Throughput floor only; no memory prediction; no enforcement; inactive | Memory contract + enforcement + RSS proof |
+| **hardware-aware-llm-runtime** (JohnScheuer) | 0 | 2026-06-25 (inactive 4+ mo) | Hardware-calibrated roofline; empirical optimal batch size | Empirical constant fitting; finds compute/bandwidth crossover | Throughput focus; no enforcement; no stress harness; inactive | Memory-safety focus; enforcement after calibration |
+| **llm-vram-calculator** (Shun-Calvin) | 3 | 2026-09-26 | Formula-based VRAM/TTFT/tok/s for 100+ models × 70+ GPUs | Widest model×GPU coverage; public API | Formula-based, not calibrated; GPU-only; no enforcement | On-device calibration; enforcement; RSS proof harness |
+| **aura** (Grevix/aura, Rust, Apache-2.0, v0.1.0) | 4 | v0.1.0 (2026-08-23); last push 2026-09-03 | Kernel-level budget enforcement (cgroup v2 / Win32 Job Object); context-ladder degradation; ollama model discovery; NVMe/GPU/SIMD diagnostics | More aggressive enforcement (OS-level) than fitsproof; four-tier memory hierarchy; consumer-hardware focus | **BENCHMARK.md (c2-p2 verified, confirmed through c8-p2; 0 commits since 2026-09-03):** `qwen3:8b` with 4.00 GB Job Object budget reports `Peak Working Set: 4.92 GB` — 23% over — with no violation flag; no held-out calibration; no MAPE; no embeddable API; no OpenAI/MCP plugin surfaces | Held-out MAPE published even when bad; zero-violation stress harness as repo test; embeddable Python client + MCP + OpenAI server surfaces |
+| **detllm** (tommasocerruti) | 22 | 2026-08-20 | Capability-gated determinism tier reporting (Tier 0/1/2); repro packs | Honest tier framing — reports the tier actually achieved, never claims higher | Determinism checking only; no memory prediction or enforcement | Adopts detllm tier model for verify layer (source 14); adds contract enforcement |
+
+---
+
+### Gap claim — state as of 2026-10-27T20:08Z
+
+RAMLLM is the most credible entrant in the prediction/enforcement space since aura.
+It closes the consumer-hardware prediction accuracy gap (±2–4% vs fitsproof's ~50%
+MAPE) but still leaves the three-property gap intact:
+
+**Three properties, no single tool has all three as of 2026-10-27T20:08Z:**
+
+1. **Calibrate prediction constants from measurements on the user's own hardware with
+   a held-out train/test split and a published MAPE** — honest even when bad. RAMLLM
+   calibrates per-machine but does not evaluate on held-out configurations with a
+   published error bound. ridgepoint calibrates against A100/H100 offline.
+
+2. **Enforce a declared budget with a structured degradation record naming exactly
+   what changed** (quant mode, context length, offload fraction). RAMLLM enforces
+   dynamically via a governor; aura enforces at the OS level. Neither emits a
+   structured record at admission time that names the specific degradation applied
+   and its predicted cost.
+
+3. **Prove compliance: a test-suite-wired stress harness that asserts
+   `measured_peak ≤ declared_budget` across ≥20 configurations and exits non-zero
+   on any violation.** No tool in the table ships this as a repository test.
+
+**The RAMLLM note on property 3:** RAMLLM's README publishes a benchmark table with
+a "Peak Memory" column and a "Verdict" column (`COMFORTABLE` / `CONSTRAINED`) but
+never compares peak memory to a declared budget across a fixed set of configurations
+in a pass/fail harness. The governor may prevent violations at runtime, but there is
+no commit-gated test asserting zero violations — a requirement for a CI gate.
+
+**How a user notices the three-property gap:**
+
+- With RAMLLM: `ramllm plan <model>` gives a ±2–4% tok/s prediction but no
+  confidence interval on held-out configs, and no binary pass/fail on `measured ≤ budget`.
+- With fitsproof: `fitsproof stress` runs 25 configurations, compares measured RSS to
+  declared budget for each, exits non-zero on any violation, and prints margin percentiles.
+  The calibration (47% MAPE) is honest and published.
+
+**Watch items:**
+
+1. **RAMLLM.** Active repo (0 stars, 0.2.1 on PyPI, pushed 2026-10-18). If a future
+   release adds (a) a held-out calibration split with published MAPE and (b) a
+   `ramllm stress` command that asserts zero violations as a CI-wired test, two of
+   the three properties close. Check before fitsproof publication.
+
+2. **aura.** 0 commits since 2026-09-03 (confirmed this pass). The c2-p2 BENCHMARK.md
+   finding (4.92 GB peak against 4.00 GB budget) stands. Gap unchanged.
+
+3. **llama.cpp `--budget` flag.** Confirmed absent in v0.7.0 release notes (this pass).
+   Re-check before publication.
+
+---
+
+### Falsification for Cycle 8 — Pass 2
+
+Observations that would prove this pass's findings wrong:
+
+1. **RAMLLM publishes a held-out evaluation protocol with MAPE before fitsproof's
+   release.** NOT OBSERVED as of 2026-10-27T20:08Z.
+
+2. **RAMLLM's proof harness (if shipped) shows `measured_peak > declared_budget` is
+   possible under its governor.** If RAMLLM's governor is leak-proof (every admitted
+   config always stays under budget), then its enforcement claim would be stronger than
+   fitsproof's in-process gate. Not yet evidenced — the governor is a dynamic controller,
+   not a static pre-admission contract.
+
+3. **A new tool appeared in this pass's searches that does all three properties.**
+   NOT OBSERVED: four search queries evaluated; RAMLLM is the only significant new
+   entrant and it leaves two of the three properties unaddressed.
+
+4. **llama.cpp v0.7.0 ships a budget enforcement flag not visible in the release notes
+   body.** Grep confirmed absent in the API-returned release body. Could miss changelog
+   entries in linked docs. Re-check the full CHANGELOG at publication time.
+
+5. **The gap claim is invalidated by a tool outside the GitHub REST search index**
+   (e.g., a private or enterprise tool). Not verifiable by this search; the adversarial
+   reviewer should run the same searches from a different host to confirm the index state.
+
+---
+
+### Link verification — raw output (2026-10-27T20:08Z, curl over new URLs this pass)
+
+```
+# c8-p2 new source: RAMLLM
+200 https://github.com/Mayank3613/RAMLLM
+200 https://pypi.org/project/ramllm/
+# Previously verified; spot-checked this pass (sample):
+200 https://arxiv.org/abs/2303.06865   [2: FlexGen]
+200 https://arxiv.org/abs/2309.06180   [15: PagedAttention]
+200 https://github.com/ggml-org/llama.cpp
+200 https://github.com/vllm-project/vllm
+200 https://github.com/kvcache-ai/ktransformers
+200 https://github.com/Grevix/aura
+# Pre-existing 403 (bot-blocked, not dead) — unchanged:
+403 https://dl.acm.org/doi/10.1145/1498765.1498785   [1: Roofline Williams 2009]
+```
