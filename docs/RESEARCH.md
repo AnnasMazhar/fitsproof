@@ -8464,3 +8464,135 @@ Observations that would prove this pass's findings wrong:
 # Pre-existing 403 (bot-blocked, not dead) — unchanged:
 403 https://dl.acm.org/doi/10.1145/1498765.1498785   [1: Roofline Williams 2009]
 ```
+
+
+---
+
+## Cycle 8 — Pass 3 — REAL-WORLD APPLICABILITY (c8-p3)
+
+*Dispatched 2026-10-27T21:00Z. This is the pass-3 mandate for cycle 8: close every
+open question carried from passes 1–2 of this cycle; run the independent MCP SDK
+client test (c8-p1 falsifier 5); document the RAMLLM adoption context; extend
+ADOPTION.md §16. All raw output captured on 2026-10-27T21:00Z on the ThinkStation
+P500 (Python 3.11.15). EVIDENCE.md baseline: 1023/1140 = 89.7% (reports/mutation-c7.json).*
+
+---
+
+### Open-question closure table — cycle 8 pass 3
+
+Status: CLOSED (answered), OBSERVED (falsifier fired; published),
+OPEN (cannot close without more data or implementation).
+
+| # | Question (source) | Status | Evidence / closure note |
+|---|---|---|---|
+| c8-p1-F5 | Independent MCP SDK client completes tools/call against `fitsproof mcp` | **CLOSED — confirmed** | Official Python MCP SDK (`mcp>=1.0.0`, `ClientSession`) round-trip succeeded: `server_info.name='fitsproof-mcp'`, `protocol_version='2025-03-26'`, tools `['admit','plan','probe']`, `admit 4GiB is_error: False` with ADMITTED verdict in content, `admit 1MiB is_error: True` with REFUSED verdict. The SDK uses snake_case `is_error` (Python binding); the JSON wire uses `isError` per the 2025-03-26 spec (source 23) — both are correct. Raw output in ADOPTION §16.3. |
+| c8-p1-F2 | A shipped tool refuses pre-allocation with named binding constraint + nearest fitting config on CPU-first consumer hardware | **CLOSED (not observed)** | c8-p2 re-ran the five candidates from c8-p1: vLLM (fraction-cap, GPU-only, source 88), K8s (reactive kill, needs cluster, source 89), Accelerate (silent offload, source 90), Ollama (queue-forever, source 91), llama.cpp v0.7.0 (no `--budget` flag, confirmed c8-p2 release note grep). RAMLLM (new entrant, §16.4) adds per-machine calibration and live governor but does not emit a structured refusal record naming the nearest fitting config. No tool closes this. |
+| c8-p2-F1 | RAMLLM publishes held-out MAPE + zero-violation stress harness before fitsproof release | **OPEN — watch item** | RAMLLM v0.2.1 (2026-10-18) documented in c8-p2: no held-out split, no MAPE, no `ramllm stress` command. Check before publication. |
+| 6 / 15 | Bootstrap CI coverage (n_held_out=1 → point mass) | **OPEN — unchanged** | c8-p3 session: CI `[67.1%, 67.1%]` — degenerate point, correctly annotated. Source 58 (Davison & Hinkley) grounds why n ≥ 10 is needed. Cannot close without more measurements. |
+| 16 | ru_maxrss stale peak (per-call measurement) | **OPEN — partly addressed** | Stress harness now uses `sampled_vmrss` (per-run live RSS, not process VmHWM). Per-call measurement gap reduced but not eliminated; structural instrument limitation documented. |
+| 17 | Binary release not built (M1) | **OPEN — implement pass** | No change. PyInstaller onefile; CI clean-job smoke test is the evidence bar. |
+| c6-p1-F5 | BLOOM KAT absent from test_cost.py | **OPEN — requires F-1 cost model fix** | The fix lands in the implement pass first; the KAT (weight_bytes for BLOOM 176B at fp16 ≈ 359.7 GB, source 77) is fully grounded and ready to write as a test once the cost model is corrected. |
+| c6-p2-F6 | Adversarial reviewer independent search | **OPEN — adversarial pass scope** | Eight cycles, 40+ queries. An independent search from a fresh host is the correct remaining validation before publication. |
+
+---
+
+### Raw output summary — 2026-10-27T21:00Z
+
+Test suite:
+```
+235 passed in 409.69s (0:06:49)
+```
+
+Stress harness:
+```
+Stress harness: 25 configs, 0 violations, 0 silent mode changes.
+  measurement: sampled_vmrss (sampled peak live RSS of each run, not the process high-water mark)
+  margin (budget - sampled peak): min=3909.2 MB, median=3912.4 MB, max=3912.8 MB
+  sampled peak: min=87.2 MB, max=90.8 MB; process VmHWM (separate column, not the measurement): 302.2 MB
+```
+
+MAPE:
+```
+bandwidth: 2.25 GB/s (loaded box)
+MAPE (held-out): 67.1%
+```
+
+The 67.1% MAPE is within the updated ~30–70% range (the range was ~30–65% before this
+session; see ADOPTION §16.7 for the full session history and correction). The loaded-box
+bandwidth (2.25 GB/s vs typical 6–7 GB/s) is the proximate cause; the correlation
+between bandwidth measurement and MAPE is documented as F-3 in ADOPTION §3.
+
+---
+
+### Ecosystem update — RAMLLM
+
+RAMLLM (Mayank3613/RAMLLM, v0.2.1, 2026-10-18, 0 stars) is the most significant new
+entrant since aura and the closest to fitsproof's prediction layer. Full analysis in
+ADOPTION §16.4 and the c8-p2 comparison table. Summary for RESEARCH.md:
+
+**What RAMLLM adds that fitsproof lacks:** ±2–4% tok/s accuracy on real hardware (vs
+fitsproof's ~30–70% MAPE). RAMLLM's per-machine benchmarking is more accurate.
+
+**What RAMLLM lacks that fitsproof provides:**
+1. No held-out train/test split with published MAPE.
+2. No proof harness: no `ramllm stress` asserting `measured_peak ≤ budget` over ≥20
+   configs as a CI-wired test.
+3. No embeddable in-process `plan()`/`admit()` API (CLI + HTTP only).
+
+The three-property gap claim (RESEARCH.md c3-p2 onwards) remains intact as of c8-p3:
+no single tool does all three of (1) held-out calibration with published MAPE,
+(2) structured degradation record naming exactly what changed, and (3) test-suite-wired
+zero-violation stress harness.
+
+---
+
+### MAPE range correction
+
+The documented MAPE range is corrected from **~30–65%** to **~30–70%** based on this
+session's 67.1% observation. Updated in:
+- ADOPTION.md §3 ("Documented range: **~30–70%**")
+- ADOPTION.md §16.7 (full session history)
+- README.md (two occurrences in the calibration section and Limitations section)
+
+---
+
+### Falsification — Cycle 8 Pass 3
+
+What observation would prove this pass's closure decisions wrong:
+
+1. **RAMLLM ships held-out calibration + zero-violation stress harness before
+   fitsproof's release commit.** NOT OBSERVED as of 2026-10-27. If it ships, the
+   three-property gap narrows from 3 to 1 (only embeddable API remains unclosed).
+
+2. **The independent MCP SDK `ClientSession` round-trip fails on a different host
+   (different OS, different SDK version).** NOT TESTED on a second host. The adversarial
+   pass should re-run on any available independent machine. If it fails, M2.4 is broken.
+
+3. **sampled_vmrss differs from the true per-run peak by more than 5 MB.** The sampling
+   interval could miss a brief allocation spike. For the reference model at 38 MB weights,
+   a 5 MB miss is 13% of the model size — observable if a stress config shows a violation
+   on a different instrument (e.g., cgroup memory.peak). Not observed.
+
+4. **llama.cpp v0.7.0 ships a `--budget` flag in a minor release before publication.**
+   Confirmed absent in v0.7.0 release notes (c8-p2). Re-check at the release commit.
+
+5. **aura ships held-out calibration + CI-wired zero-violation stress harness.** NOT
+   OBSERVED; 0 commits since 2026-09-03. aura v0.1.0 is still the latest.
+
+---
+
+### Link verification — raw output (2026-10-27, new URLs this pass)
+
+No new source URLs in c8-p3. The MCP Python SDK URL (source 94) was already in the
+list from c8-p1. Spot-check of key existing sources:
+
+```
+# Spot-check (2026-10-27T21:00Z)
+200 https://github.com/modelcontextprotocol/python-sdk   [94: MCP Python SDK]
+200 https://github.com/Mayank3613/RAMLLM                  [c8-p2 RAMLLM]
+200 https://pypi.org/project/ramllm/                      [c8-p2 RAMLLM PyPI]
+200 https://arxiv.org/abs/2309.06180                      [15: PagedAttention]
+200 https://modelcontextprotocol.io/specification/2025-03-26/  [23: MCP spec]
+# Pre-existing 403 (bot-blocked, not dead) — unchanged:
+403 https://dl.acm.org/doi/10.1145/1498765.1498785        [1: Roofline Williams 2009]
+```
