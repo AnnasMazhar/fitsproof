@@ -2300,7 +2300,7 @@ No new failure modes observed in cycle 8. Updates from this pass's measurements:
 
 | Finding | C7 status | C8 update |
 |---|---|---|
-| F-1: +64% over-prediction on real GGUF | Open (cost model fix pending) | Unchanged. MAPE 67.1% on fixture this session (loaded box, bw 2.25 GB/s). The high MAPE is expected at low bandwidth (F-3 correlation). The cost model fix path remains: correct head_dim to use `attention.key_length`, fix embedding double-count for untied architectures (sources 49, 67). |
+| F-1: +64% over-prediction on real GGUF | Fixed (mechanism); real-model re-measurement pending | Cost-model fix landed (key_length + tie_word_embeddings, second dispatch); gate plumbing landed (this dispatch: `model_config_from_arch_info` reads `attention.key_length` — live gemma3:4b plan now 7.158 GB with head_dim 256). Opt-in ollama predicted-vs-measured re-run remains evaluate/improve scope. |
 | F-2: Refusal names non-fitting config | Fixed (c1-p09) | Confirmed: "no listed option fits — nearest is..." correctly attributed in CLI output. |
 | F-3: Bandwidth drift with machine state | Open/documented | Today: 2.25 GB/s (loaded box). MAPE 67.1% — slightly above the upper end of the ~30–65% documented range. The range should be updated to ~30–70% based on this observation. See §16.7. |
 | F-4: CPU roofline tok/s invalid for GPU-backed engines | Open/documented | Unchanged. |
@@ -2356,7 +2356,7 @@ Range: 31.3% – 67.1%. Updated documented range: **~30–70%**.
 | L2 — CLI gate | `fitsproof admit` in shell scripts / CI | Works today; exit 0 / exit 2 |
 | L3 — in-process guard | `@guard(budget=...)` in Python services | Works today; `DoesNotFit` raised before callable invoked |
 | L4 — agent-facing | `fitsproof mcp`, agent calls `admit` before loading | Works today; official SDK `ClientSession` round-trip confirmed (§16.3) |
-| L5 — drop-in binary | single executable, SHA256 release | v0.2 MANDATE M1 — not built yet |
+| L5 — drop-in binary | single executable, SHA256 release | v0.2 MANDATE M1 — binary built locally (SHA256 in EVIDENCE.md); tagged-release CI workflow present; release not yet published (repo not public) |
 
 ### 16.10 The single most likely reason someone would NOT adopt it — cycle 8 update
 
@@ -2370,7 +2370,10 @@ for *proven budget enforcement*. RAMLLM's live governor enforces budgets dynamic
 has no CI-gated test asserting zero violations across a config set. fitsproof's `stress`
 command does. These are complementary, not competing.
 
-Until the cost model fix lands (F-1), the operational guidance from §5 applies:
+The cost-model fix (F-1) and the gate's key_length plumbing have landed; the
+opt-in ollama gemma3:4b predicted-vs-measured re-run is the remaining closure
+step (evaluate/improve scope). Until that re-measurement exists, the
+operational guidance from §5 applies:
 - For 4B-class models: set budget ≥ 8 GB to avoid false DEGRADED verdicts
 - Treat DEGRADED as refuse-by-default (the gate's design)
 - Trust the refusal direction: an ADMITTED verdict has never been observed to exceed

@@ -14,3 +14,6 @@ mutants/
 .hypothesis/
 uv.lock
 src/fitsproof/engine/_reference_model/
+dist_binary/
+build/
+*.spec

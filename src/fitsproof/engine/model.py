@@ -91,6 +91,71 @@ class ModelConfig:
         return cls(**d)
 
 
+def model_config_from_arch_info(
+    family: str,
+    info: dict[str, Any],
+    *,
+    vocab_size: int,
+    context: int,
+    dtype: str = "float32",
+) -> ModelConfig:
+    """
+    Build a ModelConfig from an external engine's architecture metadata.
+
+    *info* is a mapping of qualified architecture keys (the ollama
+    /api/show `model_info` shape, e.g. "gemma3.attention.key_length"),
+    *family* the architecture prefix, *vocab_size* the tokenizer length
+    (read from the GGUF blob, not model_info), *context* the requested
+    context cap (max_seq_len = min(model max, context)).
+
+    Reads <family>.attention.key_length / value_length when present
+    (external spec: gemma3 config.json declares key_length=256 while
+    hidden_size // num_heads = 320 — F-1). Absent key_length keeps the
+    derived head_dim. Fails closed: key_length and value_length must both
+    be present or both absent, and must be equal — one head_dim cannot
+    represent asymmetric K/V heads, and guessing would mis-size the
+    contract.
+
+    Sources: [4] GQA (kv projection shapes), [6] scaling-laws parameter
+    counting (weight-matrix sizing); the metadata schema is the external
+    specification (gemma3 model_info via the local ollama daemon,
+    2026-10-29: head_count=8, head_count_kv=4, key_length=256,
+    value_length=256, block_count=34, embedding_length=2560).
+
+    Fault detected: building the config with the derived head_dim (320)
+    instead of the declared key_length (256) over-predicts weight_bytes
+    for gemma3:4b by 34 layers x 2*(8+4) heads x 2560 hidden x 64
+    head-dim delta x 4 bytes = 534,773,760 bytes — pinned by
+    tests/value/test_ollama_gate.py::test_arch_info_reads_key_length.
+    """
+    key_length = info.get(f"{family}.attention.key_length")
+    value_length = info.get(f"{family}.attention.value_length")
+    if (key_length is None) != (value_length is None):
+        raise ValueError(
+            "asymmetric K/V metadata: attention.key_length and attention.value_length "
+            "must both be present or both absent; refusing to guess"
+        )
+    if key_length is not None and int(key_length) != int(value_length):
+        raise ValueError(
+            f"asymmetric K/V head dims (key_length={int(key_length)}, "
+            f"value_length={int(value_length)}) cannot be represented by a single "
+            "head_dim; refusing to guess"
+        )
+    cfg = ModelConfig(
+        vocab_size=vocab_size,
+        hidden_size=int(info[f"{family}.embedding_length"]),
+        num_layers=int(info[f"{family}.block_count"]),
+        num_heads=int(info[f"{family}.attention.head_count"]),
+        num_kv_heads=int(info[f"{family}.attention.head_count_kv"]),
+        intermediate_size=int(info[f"{family}.feed_forward_length"]),
+        max_seq_len=min(int(info[f"{family}.context_length"]), context),
+        dtype=dtype,
+        key_length=int(key_length) if key_length is not None else None,
+    )
+    cfg.validate()
+    return cfg
+
+
 # ---------------------------------------------------------------------------
 # Reference model dimensions
 # ---------------------------------------------------------------------------

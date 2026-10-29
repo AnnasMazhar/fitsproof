@@ -1779,3 +1779,95 @@ Note on F-1 closure: the cost-model mechanism is now fixed and KAT-pinned. Full
 closure of ADOPTION F-1 additionally requires re-running the opt-in ollama
 gemma3:4b integration measurement against the corrected model; that measurement is
 evaluate/improve-pass scope (it needs the live model, not CI).
+
+---
+
+## Cycle 8, Pass 4 (implement-1, third dispatch) — 2026-10-29 — F-1 real-model plumbing
+
+**Measured baseline for this cycle (authoritative: `reports/mutation-c7.json`):
+1023/1140 mutants killed = 89.7%. Gate: 70%.** (Quoted, not re-derived.)
+
+**Gap this pass closes:** the F-1 fix (second dispatch) added `key_length` /
+`tie_word_embeddings` to `ModelConfig` + `cost.py`, but nothing on the real-model
+path read them. `scripts/ollama_gate.py` built its `ModelConfig` from ollama
+`model_info` without `attention.key_length`, so gemma3:4b was still planned with
+head_dim = 2560//8 = 320 instead of the declared 256 (verified against the local
+daemon: `gemma3.attention.key_length = 256`, `value_length = 256`,
+`head_count_kv = 4`, `block_count = 34`).
+
+**What landed:** `fitsproof.engine.model.model_config_from_arch_info()` — maps
+external engine architecture metadata to a `ModelConfig`, reads `key_length` /
+`value_length`, fails closed on asymmetric or partial K/V metadata. The gate now
+calls it; 5 new tests (exact KAT delta + 2 fail-closed + derived-head-dim compat
++ hypothesis monotonicity property).
+
+### Live gate against local ollama gemma3:4b (head_dim now 256, not 320)
+
+```
+$ .venv/bin/python scripts/ollama_gate.py gemma3:4b --budget-gb 12 --context 4096
+model:   gemma3:4b (4.3B, Q4_K_M -> int4_sym)
+shape:   34L x 2560h, heads 8/4 (head_dim 256), vocab 262145, ctx 4096
+budget:  12 GB
+ADMITTED: 7.158 GB predicted peak <= 12.000 GB budget (margin: 4841.6 MB)
+gate exit: 0
+```
+
+(Pre-fix plan for the same config was 7.219 GB predicted peak; the key_length
+plumbing removes the derived-head-dim over-prediction on the real-model path.)
+
+### New tests — KAT with hand computation, fail-closed, property
+
+Hand computation pinned by `test_arch_info_reads_key_length` (float32, gemma3:4b
+real metadata): per-layer attention delta = 2*2560*64*(8+4) = 3,932,160 elements
+x 34 layers x 4 bytes = **534,773,760 bytes**; KV cache at ctx=4096 =
+2*34*4*4096*256*4 = **1,140,850,688 bytes**.
+
+```
+$ .venv/bin/pytest tests/value/test_ollama_gate.py -q
+tests/value/test_ollama_gate.py .........                                [100%]
+
+============================== 9 passed in 22.65s ==============================
+```
+
+### Fresh-clone install + full suite (Python 3.13 default venv, offline)
+
+```
+$ git clone /home/openclaw/portfolio/fitsproof /tmp/opencode/fitsproof-fresh
+$ cd /tmp/opencode/fitsproof-fresh && uv venv .venv && uv pip install -e '.[dev]' --python .venv/bin/python
+$ .venv/bin/pytest -q --tb=short
+tests/value/test_ollama_gate.py .........                                [ 99%]
+tests/value/test_readme_snippets.py ..                                   [100%]
+
+======================= 263 passed in 351.26s (0:05:51) ========================
+```
+
+(263 = 258 prior + 5 new. No test deleted or weakened.)
+
+### Demo, stress, ruff, traceability
+
+```
+$ bash docs/demo.sh
+=== 5. stress: >=20 configs, zero budget violations, zero silent mode changes ===
+ADMITTED: 0.072 GB predicted peak <= 4.000 GB budget (margin: 3927.7 MB)
+Stress harness: 25 configs, 0 violations, 0 silent mode changes.
+  measurement: sampled_vmrss (sampled peak live RSS of each run, not the process high-water mark)
+  margin (budget - sampled peak): min=3909.3 MB, median=3909.5 MB, max=3913.0 MB
+  sampled peak: min=87.0 MB, max=90.7 MB; process VmHWM (separate column, not the measurement): 302.2 MB
+
+$ .venv/bin/ruff check . && .venv/bin/ruff format --check .
+All checks passed!
+44 files already formatted
+
+$ .venv/bin/python scripts/check_research_traceability.py
+TRACEABILITY OK (core only): all core test files cite valid research sources.
+Checked 96 source IDs from RESEARCH.md. PAPER-TRACEABILITY.md table validated (21 IMPLEMENTED rows).
+```
+
+### Honest limits of this pass
+
+- The gate still counts embed/unembed at fp32 for quantised models and ignores
+  the gemma3 vision tower; both are conservative-direction (over-predict)
+  and predate this pass. The ollama predicted-vs-measured re-measurement
+  (AC8-style) remains evaluate/improve-pass scope.
+- Mutation score is not re-derived here (fresh run belongs to the cycle's
+  mutation pass); the quoted baseline remains 1023/1140 = 89.7%.
