@@ -63,7 +63,7 @@ def check_tests_pass() -> list[str]:
         capture_output=True,
         text=True,
         cwd=_REPO_ROOT,
-        timeout=600,  # 10 min timeout for the full suite
+        timeout=900,  # 15 min timeout for the full suite (257 tests, ~375-500s)
     )
 
     if result.returncode != 0:

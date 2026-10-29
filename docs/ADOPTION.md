@@ -2335,17 +2335,17 @@ Range: 31.3% – 67.1%. Updated documented range: **~30–70%**.
 
 ### 16.8 Open items — final state for cycle 8
 
-| # | Item | Status in c8-p3 |
-|---|---|---|
-| 6 / 15 | Bootstrap CI (n_held_out=1 → point mass) | Still open — structural; runtime annotation explains to users |
-| 16 | ru_maxrss stale peak (per-call measurement) | Partly addressed by sampled_vmrss in stress harness; structural gap remains |
-| 17 | Binary release not built (M1) | Still open — v0.2 MANDATE M1 pending |
-| 19 | int8_sym on real trained model with outliers | Still open — requires real ≥6B model |
-| 20 | YaRN not implemented | Still open — v0.2 candidate |
-| 23 | MLA KV formula | Still open — v0.2+ scope |
-| c6-p1-F5 | BLOOM KAT absent from test_cost.py | Still open — requires cost model fix (F-1) first |
-| c6-p2-F6 | Adversarial reviewer independent search | Still open — adversarial pass scope |
-| c8-p1-F5 | Independent MCP SDK client test | **CLOSED** (§16.3) |
+| # | Item | Status in c8-p3 | Status in c8-p5 (implement-1) |
+|---|---|---|---|
+| 6 / 15 | Bootstrap CI (n_held_out=1 → point mass) | Still open — structural; runtime annotation explains to users | **Still open** — structural; n_held_out=1 throughout |
+| 16 | ru_maxrss stale peak (per-call measurement) | Partly addressed by sampled_vmrss in stress harness; structural gap remains | **Still open** — structural instrument gap |
+| 17 | Binary release not built (M1) | Still open — v0.2 MANDATE M1 pending | **CLOSED** — binary built locally (SHA256 in EVIDENCE.md §c8-p4); release.yml CI workflow covers tagged-release clean-job run |
+| 19 | int8_sym on real trained model with outliers | Still open — requires real ≥6B model | **Still open** — requires real ≥6B model |
+| 20 | YaRN not implemented | Still open — v0.2 candidate | **Still open** — v0.2 candidate |
+| 23 | MLA KV formula | Still open — v0.2+ scope | **Still open** — v0.2+ scope |
+| c6-p1-F5 | BLOOM KAT absent from test_cost.py | Still open — requires cost model fix (F-1) first | **CLOSED** — `test_weight_bytes_bloom_176b` passes (19/19 in test_cost.py); cost model fp16 embed fix landed in c7-p5 |
+| c6-p2-F6 | Adversarial reviewer independent search | Still open — adversarial pass scope | **Still open** — adversarial pass scope |
+| c8-p1-F5 | Independent MCP SDK client test | **CLOSED** (§16.3) | **CLOSED** (unchanged) |
 
 ### 16.9 Adoption maturity table — cycle 8 final state
 

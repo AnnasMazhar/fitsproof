@@ -1601,3 +1601,93 @@ Stress harness: 25 configs, 0 violations, 0 silent mode changes.
 - M1 binary: **CLOSED — built locally; release.yml CI workflow covers tagged release.** SHA256 above.
 - HuggingFace publication (AC14): deferred to launch phase (repo not yet public).
 - Modal scale test (AC13): opt-in script exists; run deferred to post-public.
+
+---
+
+## Cycle 8, Pass 4 (implement-1) — 2026-10-29
+
+### What this pass adds
+
+- **tests/contract/test_calibrate.py** (22 new KAT + property tests): added to git
+  tracking. Targets the 117 surviving mutants from the cycle-7 mutation gate in
+  `calibrate.py` (`_fit_bandwidth_utilisation`, `_mape`, `_bootstrap_mape_ci`,
+  `calibrate`). Every test names its fault and cites an external source (Williams et al.
+  2009 [1], McCalpin 1995 [6], Hyndman & Koehler 2006 [27], Davison & Hinkley 1997 [58]).
+- **reports/mutation-c7.json** and **reports/eval-c7-p\*.json** committed.
+- **reports/mutants-survived-c4.txt** committed (117 calibrate.py survivors, reference for
+  cycle-8 improve passes).
+- **docs/ADOPTION.md** MAPE range corrected to ~30–70% (c8-p3 observation at 67.1%).
+- **scripts/check_proof.py** timeout updated to 900 s for the full suite (257 tests, ~420 s).
+
+### Mutation baseline (authoritative: reports/mutation-c7.json)
+
+Cycle-7 mutation gate: **1023/1140 = 89.7%** kill rate. 117 mutants survived, all in
+`calibrate.py`. The 22 new KAT tests directly target the four functions with surviving
+mutants.
+
+### Full test suite — 2026-10-29T08:04Z
+
+```
+$ .venv/bin/pytest -q --tb=no
+tests/adversarial/test_byzantine_inputs.py ............................
+...........................................................
+tests/contract/test_calibrate.py ......................
+tests/contract/test_cost.py ...................
+tests/contract/test_plan_admit_verify.py ............................... 
+...............
+tests/engine/test_attention.py ...............
+tests/engine/test_quant.py ................
+tests/engine/test_sampling.py ............
+tests/engine/test_server.py .......
+tests/engine/test_speculative.py ...
+tests/test_cli_smoke.py ..........
+tests/test_packaging.py ....
+tests/value/test_incumbent_gap.py .........
+tests/value/test_ollama_gate.py ....
+tests/value/test_readme_snippets.py ..
+
+======================= 257 passed in 400.24s (0:06:40) ========================
+```
+
+### Stress harness — 2026-10-29T08:04Z
+
+```
+$ .venv/bin/fitsproof stress
+ADMITTED: 0.072 GB predicted peak <= 4.000 GB budget (margin: 3927.8 MB)
+Stress harness: 25 configs, 0 violations, 0 silent mode changes.
+  measurement: sampled_vmrss (sampled peak live RSS of each run, not the process high-water mark)
+  margin (budget - sampled peak): min=3909.2 MB, median=3909.5 MB, max=3912.8 MB
+  sampled peak: min=87.2 MB, max=90.8 MB; process VmHWM (separate column, not the measurement): 301.9 MB
+```
+
+### Ruff
+
+```
+$ .venv/bin/ruff check .
+All checks passed!
+
+$ .venv/bin/ruff format --check .
+44 files already formatted
+```
+
+### Research traceability
+
+```
+$ .venv/bin/python scripts/check_research_traceability.py
+TRACEABILITY OK (core only): all core test files cite valid research sources.
+Checked 96 source IDs from RESEARCH.md. PAPER-TRACEABILITY.md table validated (21 IMPLEMENTED rows).
+```
+
+### check_proof.py
+
+```
+$ .venv/bin/python scripts/check_proof.py
+check_proof: validating fitsproof proof...
+  [1/5] Checking docs/EVIDENCE.md exists...
+  [2/5] Checking venv exists...
+  [3/5] Running pytest (this may take several minutes)...
+  [4/5] Running stress harness...
+  [5/5] Verifying admit can refuse over-budget configs...
+check_proof: all checks passed.
+PROOF_COMPLETE
+```
