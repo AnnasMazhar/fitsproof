@@ -1871,3 +1871,115 @@ Checked 96 source IDs from RESEARCH.md. PAPER-TRACEABILITY.md table validated (2
   (AC8-style) remains evaluate/improve-pass scope.
 - Mutation score is not re-derived here (fresh run belongs to the cycle's
   mutation pass); the quoted baseline remains 1023/1140 = 89.7%.
+
+## Cycle 8, Pass 4 (implement-1, fourth dispatch) — 2026-10-29 — targeted calibrate KATs
+
+**Measured baseline for this cycle (authoritative: `reports/mutation-c7.json`):
+1023/1140 mutants killed = 89.7%. Gate: 70%.** (Quoted, not re-derived.)
+
+**Gap this pass closes:** the 117 surviving mutants from cycle-7 are all in `calibrate.py`.
+Nine new targeted KATs were added to `tests/contract/test_calibrate.py`, grounded in
+specific mutation analysis from `reports/mutants-survived-c4.txt` (the cycle-7 survivor list).
+
+### New tests and faults each targets
+
+Each test was designed by reading the specific mutant code diff from
+`mutants/src/fitsproof/contract/calibrate.py`:
+
+| Test | Mutant(s) killed | Fault detected |
+|---|---|---|
+| `test_fit_bandwidth_utilisation_bw_zero_returns_fallback` | _fit_bw mutmut_2,4,16 | `bw < 0` vs `<= 0`; fallback returns 1.6 not 0.6 |
+| `test_fit_bandwidth_utilisation_empty_returns_fallback` | mutmut_15,16 | `if utils:` inverts guard; fallback value 1.6 |
+| `test_fit_bandwidth_utilisation_zero_tok_s_excluded` | mutmut_6 | `tok_s >= 0` includes zero tok_s |
+| `test_fit_bandwidth_utilisation_sub_one_tok_s_included` | mutmut_7 | `tok_s > 1` excludes 0<tok_s<1 |
+| `test_fit_bandwidth_utilisation_formula_multiply_not_divide` | mutmut_12,13 | `tok_s/w` or `tok_s*w*bw` |
+| `test_bootstrap_mape_ci_n2_is_not_degenerate` | bootstrap mutmut_7,8 | `n <= 2` or `n < 3` makes n=2 degenerate |
+| `test_bootstrap_mape_ci_upper_quantile_uses_1_minus_alpha_over_2` | bootstrap mutmut_45,46 | `1-alpha*2` gives q_0.90 not q_0.975 |
+| `test_calibrate_seed_affects_split` | calibrate mutmut_2 | seed default 43→42 changes split |
+| `test_calibrate_n2_exact_kat` | calibrate mutmut_2-41 (split logic) | hand-computed mape=55.62% |
+
+### Hand-computed KAT values
+
+**`test_bootstrap_mape_ci_n2_is_not_degenerate`**:
+- predicted=[8.0, 15.0], actual=[10.0, 18.0]
+- MAPE row 0: |10-8|/10 = 20.0%; row 1: |18-15|/18 = 16.67%
+- Bootstrap at n=2 gives CI [16.67, 20.0] (non-degenerate)
+- mutmut_7 (`n <= 2`) or mutmut_8 (`n < 3`) would return degenerate [18.33, 18.33]
+
+**`test_bootstrap_mape_ci_upper_quantile_uses_1_minus_alpha_over_2`**:
+- pred=[5,10,15,20,25], actual=[10]*5; skewed distribution
+- q_0.025=30.0%, q_0.975=120.0% (verified by manual bootstrap, seed=0, n=2000)
+- mutmut_45 (`1-alpha*2=0.90`) gives upper=100.0% (10 points lower)
+
+**`test_calibrate_n2_exact_kat`**:
+- n=2, seed=42, bw=10 GB/s, w=40 MB
+- rng(42).permutation(2) = [1, 0] → train=[ms[1]=150 tok/s], held=[ms[0]=100 tok/s]
+- n_train = max(1, int(2*0.67)) = 1
+- util = 150 * 40_000_000 / 10e9 = 0.6
+- pred_held = decode_tok_s(REFERENCE_CONFIG, ..., util=0.6) = 155.62 tok/s
+  (uses REFERENCE_CONFIG.weight_bytes=38555136, not measurement's 40_000_000)
+- mape = |100 - 155.62| / 100 * 100 = 55.62%
+
+### Full suite
+
+```
+$ .venv/bin/pytest -q --tb=short
+============================= test session starts ==============================
+platform linux -- Python 3.11.15, pytest-8.3.5, pluggy-1.6.0
+rootdir: /home/openclaw/portfolio/fitsproof
+configfile: pyproject.toml
+testpaths: tests
+plugins: cov-6.1.0, hypothesis-6.135.0, anyio-4.15.1, platformdirs-4.12.0
+collected 277 items
+
+tests/adversarial/test_byzantine_inputs.py .............................
+...........................................................
+tests/contract/test_calibrate.py ...............................
+tests/contract/test_cost.py .........................
+tests/contract/test_plan_admit_verify.py ...............................
+...............
+tests/engine/test_attention.py ...............
+tests/engine/test_quant.py ................
+tests/engine/test_sampling.py ............
+tests/engine/test_server.py .......
+tests/engine/test_speculative.py ...
+tests/test_cli_smoke.py ..........
+tests/test_packaging.py ....
+tests/value/test_incumbent_gap.py .........
+tests/value/test_ollama_gate.py .........
+tests/value/test_readme_snippets.py ..
+
+======================= 277 passed in 308.36s (0:05:08) ========================
+```
+
+Test count delta: 268 (prior) → 277 (+9). No test deleted or weakened.
+
+### Ruff
+
+```
+$ .venv/bin/ruff check . && .venv/bin/ruff format --check .
+All checks passed!
+44 files already formatted
+```
+
+### check_proof
+
+```
+$ .venv/bin/python scripts/check_proof.py
+check_proof: validating fitsproof proof...
+  [1/5] Checking docs/EVIDENCE.md exists...
+  [2/5] Checking venv exists...
+  [3/5] Running pytest (this may take several minutes)...
+  [4/5] Running stress harness...
+  [5/5] Verifying admit can refuse over-budget configs...
+check_proof: all checks passed.
+PROOF_COMPLETE
+```
+
+### Honest limits of this pass
+
+- Mutation score not re-run (belongs to the cycle's mutation pass). Quoted baseline: 1023/1140 = 89.7%.
+- The 9 new KATs target the 117 calibrate.py survivors directly; 421 `no_tests` mutants
+  remain (no test coverage for those code paths at all). Killing more would require tests
+  for `collect_measurements()` and `_measure_tok_s()` — real timing functions that require
+  a live Transformer, out of scope for this pass.

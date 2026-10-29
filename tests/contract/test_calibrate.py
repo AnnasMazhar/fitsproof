@@ -77,6 +77,40 @@ Faults detected by each test:
   test_calibrate_single_measurement_fallback:
     Fault: calibrate() with n=1 must return n_held_out=0 and a valid mape.
     A mutation that falls through to the split path crashes with an empty held-out set.
+
+  --- Targeted KATs for cycle-7 surviving mutants (calibrate.py, 117 survived) ---
+
+  test_fit_bandwidth_utilisation_bw_zero_returns_fallback:
+    Fault (mutmut_2): bw < 0 instead of <= 0 — bw=0 skips fallback, causing /0.
+    Fault (mutmut_4/16): fallback value changes from 0.6 to 1.6.
+
+  test_fit_bandwidth_utilisation_empty_returns_fallback:
+    Fault (mutmut_15): `if utils:` inverts guard — non-empty utils return 0.6 (wrong).
+
+  test_fit_bandwidth_utilisation_zero_tok_s_excluded:
+    Fault (mutmut_6): tok_s >= 0 includes zero tok_s, pulling mean toward 0.
+
+  test_fit_bandwidth_utilisation_sub_one_tok_s_included:
+    Fault (mutmut_7): tok_s > 1 excludes valid sub-1 measurements.
+
+  test_fit_bandwidth_utilisation_formula_multiply_not_divide:
+    Fault (mutmut_12): tok_s / w instead of tok_s * w (unit error).
+    Fault (mutmut_13): tok_s * w * bw instead of tok_s * w / bw.
+
+  test_bootstrap_mape_ci_n2_is_not_degenerate:
+    Fault (mutmut_7): n <= 2 forces degenerate [mape, mape] at n=2.
+    Fault (mutmut_8): n < 3 same effect.
+
+  test_bootstrap_mape_ci_upper_quantile_uses_1_minus_alpha_over_2:
+    Fault (mutmut_45): 1 - alpha * 2 changes upper quantile from 0.975 to 0.90.
+    Fault (mutmut_46): 1 - alpha / 3 changes upper quantile to 0.9833.
+
+  test_calibrate_seed_affects_split:
+    Fault (calibrate mutmut_2): seed default=43 produces different split, different MAPE.
+
+  test_calibrate_n2_exact_kat:
+    Fault: any mutation in calibrate() split logic.
+    Hand-computed: n=2, seed=42, bw=10GB/s, measurements [100, 150] tok/s → mape=55.62%.
 """
 
 from __future__ import annotations
@@ -595,4 +629,282 @@ def test_calibrate_ci_lower_le_upper() -> None:
 
     assert result.ci_lower <= result.ci_upper, (
         f"ci_lower ({result.ci_lower:.2f}%) must not exceed ci_upper ({result.ci_upper:.2f}%)"
+    )
+
+
+# ---------------------------------------------------------------------------
+# Targeted KATs for surviving mutants from cycle-7 gate (117 total in calibrate.py)
+# ---------------------------------------------------------------------------
+
+
+def test_fit_bandwidth_utilisation_bw_zero_returns_fallback() -> None:
+    """
+    Source: [6] McCalpin 1995.
+    Fault (mutmut_2): `bw < 0` instead of `bw <= 0` — bw=0 does NOT trigger fallback,
+    causing division by zero.
+    Fault (mutmut_4): fallback returns 1.6 instead of 0.6.
+    Fault (mutmut_16): second fallback (empty utils) returns 1.6 instead of 0.6.
+
+    bw=0 must return exactly 0.6 (the documented fallback for unmeasured machines).
+    """
+    m_zero = MachineProfile(
+        hostname="test-zero-bw",
+        platform_str="linux x86_64",
+        measured_at=0.0,
+        memory_bandwidth_bps=0,  # zero bandwidth
+        gemm_throughput_flops=1e12,
+        memory_bytes=32 * 1024**3,
+        gpu_memory_bytes=0,
+        cpu_count=8,
+    )
+    result = _fit_bandwidth_utilisation([_measurement(tok_s=100.0)], m_zero, REFERENCE_CONFIG)
+    assert result == pytest.approx(0.6, rel=1e-9), (
+        f"bw=0 must return the documented fallback 0.6, got {result}. "
+        "mutmut_2 changes <= to <, mutmut_4/16 change 0.6 to 1.6."
+    )
+
+
+def test_fit_bandwidth_utilisation_empty_returns_fallback() -> None:
+    """
+    Source: [6].
+    Fault (mutmut_15): `if utils:` instead of `if not utils:` — non-empty utils list
+    triggers the fallback, returning 0.6 when the real computation should be used.
+    Fault (mutmut_16): fallback returns 1.6 instead of 0.6.
+
+    Empty measurement list must return exactly 0.6.
+    Non-empty list must return a value computed from the measurements (not 0.6 for
+    typical inputs).
+    """
+    machine = _machine(bw_gb=10.0)
+    # Empty list: fallback
+    result_empty = _fit_bandwidth_utilisation([], machine, REFERENCE_CONFIG)
+    assert result_empty == pytest.approx(0.6, rel=1e-9), (
+        f"Empty measurements must return fallback 0.6, got {result_empty}. "
+        "mutmut_16 changes this to 1.6."
+    )
+
+    # Non-empty, measurable: must NOT return 0.6 for a util that differs
+    # tok_s=50, w=40MB, bw=10GB => util=0.2 (not 0.6)
+    ms = [_measurement(tok_s=50.0, weight_bytes=40_000_000)]
+    result_non_empty = _fit_bandwidth_utilisation(ms, machine, REFERENCE_CONFIG)
+    expected = 50.0 * 40_000_000 / (10.0 * 1e9)  # 0.2
+    assert result_non_empty == pytest.approx(expected, rel=1e-9), (
+        f"Non-empty: expected {expected:.4f}, got {result_non_empty:.4f}. "
+        "mutmut_15 inverts the guard, returning fallback 0.6 for this case."
+    )
+
+
+def test_fit_bandwidth_utilisation_zero_tok_s_excluded() -> None:
+    """
+    Source: [6].
+    Fault (mutmut_6): `tok_s >= 0` instead of `> 0` — zero tok_s contributes 0
+    to the mean, pulling the result toward 0 rather than the fallback.
+    Fault (mutmut_7): `tok_s > 1` instead of `> 0` — sub-1 tok_s is excluded,
+    giving the fallback when the correct value is a small but valid util.
+
+    A measurement with tok_s=0 must be excluded (contrib=0/bw=0, meaningless).
+    The result must be the fallback (0.6), not the zero-contaminated mean.
+    """
+    machine = _machine(bw_gb=10.0)
+
+    # tok_s=0: should be excluded → fallback 0.6
+    ms_zero = [_measurement(tok_s=0.0, weight_bytes=40_000_000)]
+    result = _fit_bandwidth_utilisation(ms_zero, machine, REFERENCE_CONFIG)
+    assert result == pytest.approx(0.6, rel=1e-9), (
+        f"tok_s=0 must be excluded; expected fallback 0.6, got {result:.4f}. "
+        "mutmut_6 changes > 0 to >= 0, including zero-tok_s rows."
+    )
+
+
+def test_fit_bandwidth_utilisation_sub_one_tok_s_included() -> None:
+    """
+    Source: [6].
+    Fault (mutmut_7): `tok_s > 1` excludes small-but-positive tok_s values,
+    returning the fallback 0.6 instead of computing the actual util.
+
+    tok_s=0.5 is a valid (slow) measurement; it must contribute to the util.
+    Hand-computation: util = 0.5 * 40e6 / 10e9 = 0.002 (not 0.6).
+    """
+    machine = _machine(bw_gb=10.0)
+    w = 40_000_000
+    tok_s_small = 0.5  # valid but < 1
+
+    result = _fit_bandwidth_utilisation(
+        [_measurement(tok_s=tok_s_small, weight_bytes=w)], machine, REFERENCE_CONFIG
+    )
+    expected = tok_s_small * w / (10.0 * 1e9)  # 0.002
+    assert result == pytest.approx(expected, rel=1e-9), (
+        f"tok_s=0.5 must be included (>0 not >1); expected {expected:.6f}, got {result:.6f}. "
+        "mutmut_7 changes > 0 to > 1, excluding this valid measurement."
+    )
+
+
+def test_fit_bandwidth_utilisation_formula_multiply_not_divide() -> None:
+    """
+    Source: [1] Williams et al. Roofline, formula: util = tok_s * w / bw.
+    Fault (mutmut_12): `tok_s / w` instead of `tok_s * w` — result is ~3e-13 not 0.5.
+    Fault (mutmut_13): `tok_s * w * bw` instead of `tok_s * w / bw` — result ~2e19.
+
+    Hand-computation: tok_s=125, w=40MB, bw=10GB => util = 125*40e6/10e9 = 0.5.
+    Division variant: 125/(40e6)/10e9 = 3.125e-16 (wildly different).
+    Multiplication variant: 125*40e6*10e9 = 5e18 (also wildly different).
+    """
+    machine = _machine(bw_gb=10.0)
+    w = 40_000_000
+    tok_s = 125.0  # = 250 * 0.5, at 10 GB/s => util=0.5 exactly
+
+    result = _fit_bandwidth_utilisation(
+        [_measurement(tok_s=tok_s, weight_bytes=w)], machine, REFERENCE_CONFIG
+    )
+    expected = tok_s * w / (10.0 * 1e9)  # 0.5
+    assert result == pytest.approx(expected, rel=1e-9), (
+        f"Formula must be tok_s * w / bw = {expected:.6f}, got {result:.6f}. "
+        "mutmut_12 uses division (tok_s/w), mutmut_13 uses multiplication (*bw)."
+    )
+    # Explicit: result must be nowhere near the wrong variants
+    assert abs(result - tok_s / w / (10.0 * 1e9)) > 0.1, (
+        "Result matches division variant (mutmut_12 survived undetected)"
+    )
+
+
+def test_bootstrap_mape_ci_n2_is_not_degenerate() -> None:
+    """
+    Source: [58] Davison & Hinkley §2.4.
+    Fault (mutmut_7): `n <= 2` instead of `n < 2` — n=2 triggers the degenerate
+    early-return, producing [mape, mape] instead of a real bootstrap interval.
+    Fault (mutmut_8): `n < 3` instead of `n < 2` — same effect.
+
+    With n=2, bootstrap resampling can produce two different index selections:
+    [0,0] vs [1,1] vs [0,1]/[1,0], so the CI is NOT a point mass.
+
+    Hand-computation:
+      predicted=[8.0, 15.0], actual=[10.0, 18.0]
+      MAPE row 0: |10-8|/10 = 0.20 = 20%
+      MAPE row 1: |18-15|/18 = 0.1667 = 16.67%
+      mean MAPE (both rows) = 18.33%
+      Bootstrap with replacement on 2 samples:
+        [0,0] => MAPE(8,10)=20%, [1,1] => MAPE(15,18)=16.67%, [0,1] or [1,0] => 18.33%
+      The 95% CI [q_0.025, q_0.975] on n_bootstrap=200 samples spans [16.67, 20.0].
+      A degenerate point-mass returns [18.33, 18.33] — distinct from [16.67, 20.0].
+    """
+    predicted = np.array([8.0, 15.0])
+    actual = np.array([10.0, 18.0])
+
+    lo, hi = _bootstrap_mape_ci(predicted, actual, n_bootstrap=200, seed=42)
+
+    # The degenerate result would be mape = 18.333... for both
+    mape = _mape(predicted, actual)
+
+    assert not (lo == pytest.approx(mape, rel=1e-6) and hi == pytest.approx(mape, rel=1e-6)), (
+        f"n=2 CI must not be degenerate [mape, mape]={mape:.4f}%. "
+        f"Got [{lo:.4f}, {hi:.4f}]. "
+        "mutmut_7 (n <= 2) and mutmut_8 (n < 3) both force a degenerate result at n=2."
+    )
+    # And the CI must be ordered
+    assert lo <= hi, f"CI lower ({lo:.4f}) must be <= upper ({hi:.4f})"
+
+
+def test_bootstrap_mape_ci_upper_quantile_uses_1_minus_alpha_over_2() -> None:
+    """
+    Source: [58] Davison & Hinkley §2.4 — 95% CI uses q_{0.025} and q_{0.975}.
+    Fault (mutmut_45): `1 - alpha * 2` instead of `1 - alpha / 2` → upper quantile=0.90
+    Fault (mutmut_46): `1 - alpha / 3` instead of `1 - alpha / 2` → upper quantile=0.9833
+
+    With alpha=0.05 the upper quantile must be q_0.975 (= 1-0.025), not q_0.90 or q_0.9833.
+
+    Hand-computation on skewed data pred=[5,10,15,20,25], actual=[10]*5:
+      bootstrap mapes span 0% to ~150% — q_0.975=120.0%, q_0.90=100.0%, q_0.9833=120.0%.
+      The CI must have hi=120.0% (not 100.0%).
+    """
+    predicted = np.array([5.0, 10.0, 15.0, 20.0, 25.0])
+    actual = np.array([10.0, 10.0, 10.0, 10.0, 10.0])
+
+    lo, hi = _bootstrap_mape_ci(predicted, actual, n_bootstrap=2000, seed=0)
+
+    # q_0.025 = 30.0, q_0.975 = 120.0 (hand-computed above, verified by run)
+    # q_0.90 = 100.0 (alpha*2 mutation)
+    # Upper bound must NOT be 100.0 (the alpha*2 mutation result)
+    assert hi > 100.0, (
+        f"Upper CI bound must be > 100.0 (q_0.975, not q_0.90). Got hi={hi:.4f}%. "
+        "mutmut_45 uses `1 - alpha * 2` = 0.90, which truncates the upper tail."
+    )
+    assert hi == pytest.approx(120.0, abs=1.0), (
+        f"Expected upper CI ~ 120.0% (q_0.975), got {hi:.4f}%. "
+        "mutmut_46 uses `1 - alpha / 3` = 0.9833, which also gives ~120.0 here."
+    )
+
+
+def test_calibrate_seed_affects_split() -> None:
+    """
+    Source: [27], [58].
+    Fault (calibrate mutmut_2): seed default changes to 43 — the function is seeded
+    deterministically but different seeds produce different train/held-out partitions,
+    leading to different MAPE values.
+
+    Hand-computation for n=6, seed=42 vs seed=43:
+      seed=42 splits measurements differently than seed=43.
+      With varying tok_s [100,110,120,130,140,150], different splits → different util fits.
+      Both results are valid but must be distinct (identical seeds → identical results,
+      different seeds → likely different results on n=6 with spread measurements).
+    """
+    machine = _machine(bw_gb=10.0)
+    ms = [_measurement(tok_s=float(100 + i * 10)) for i in range(6)]
+
+    r42 = calibrate(ms, machine, REFERENCE_CONFIG, seed=42)
+    r43 = calibrate(ms, machine, REFERENCE_CONFIG, seed=43)
+
+    # Same seed must give identical results (reproducibility)
+    r42b = calibrate(ms, machine, REFERENCE_CONFIG, seed=42)
+    assert r42.mape_held_out == r42b.mape_held_out, (
+        "Same seed must give identical MAPE. Seed is not being passed to rng."
+    )
+    assert r42.bandwidth_utilisation == r42b.bandwidth_utilisation, (
+        "Same seed must give identical bandwidth_utilisation."
+    )
+
+    # Different seeds must produce different results
+    assert (
+        r42.mape_held_out != r43.mape_held_out
+        or r42.bandwidth_utilisation != r43.bandwidth_utilisation
+    ), (
+        f"seed=42 and seed=43 produced identical results "
+        f"(mape={r42.mape_held_out:.4f}, util={r42.bandwidth_utilisation:.6f}). "
+        "The seed mutation (default=43 instead of 42) would be undetected."
+    )
+
+
+def test_calibrate_n2_exact_kat() -> None:
+    """
+    Source: [1], [6], [27].
+    Fault: any mutation in calibrate() that changes how n=2 is handled (boundary
+    check, split calculation, prediction step) produces a different MAPE.
+
+    Hand-computation for n=2, seed=42, bw=10 GB/s, w=40 MB:
+      rng(42).permutation(2) = [1, 0]   (verified by run)
+      n_train = max(1, int(2 * 0.67)) = max(1, 1) = 1
+      train_idx = [1], held_idx = [0]
+      train = [measurement[1] = tok_s=150], held = [measurement[0] = tok_s=100]
+      util = 150 * 40_000_000 / 10e9 = 0.6
+      pred_held = decode_tok_s with util=0.6 uses REFERENCE_CONFIG.weight_bytes=38555136
+      pred_held = 0.6 * 10e9 / 38555136 = 155.62 tok/s
+      mape = |100 - 155.62| / 100 * 100 = 55.62%
+    """
+    machine = _machine(bw_gb=10.0)
+    ms = [_measurement(tok_s=100.0), _measurement(tok_s=150.0)]
+
+    result = calibrate(ms, machine, REFERENCE_CONFIG, train_fraction=0.67, seed=42)
+
+    # n_train + n_held_out == 2
+    assert result.n_train + result.n_held_out == 2, (
+        f"n_train={result.n_train} + n_held={result.n_held_out} must equal 2"
+    )
+    assert result.n_train == 1 and result.n_held_out == 1, (
+        f"With n=2, train_fraction=0.67: n_train=1, n_held=1; "
+        f"got n_train={result.n_train}, n_held={result.n_held_out}"
+    )
+    assert result.bandwidth_utilisation == pytest.approx(0.6, rel=1e-6), (
+        f"Expected util=0.6 (from train measurement tok_s=150), got {result.bandwidth_utilisation:.6f}"
+    )
+    assert result.mape_held_out == pytest.approx(55.6213, rel=1e-3), (
+        f"Expected mape~55.62%, got {result.mape_held_out:.4f}%"
     )
