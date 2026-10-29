@@ -1691,3 +1691,91 @@ check_proof: validating fitsproof proof...
 check_proof: all checks passed.
 PROOF_COMPLETE
 ```
+
+---
+
+## Cycle 8, Pass 4 (implement-1, second dispatch) — 2026-10-29 — F-1 cost-model fix
+
+**Measured baseline for this cycle (authoritative: `reports/mutation-c7.json`):
+1023/1140 mutants killed = 89.7%. Gate: 70%.** (Quoted, not re-derived; a fresh
+mutation run belongs to the cycle's mutation pass.)
+
+**What landed:** the F-1 cost-model fix that ADOPTION.md carried as "open — cost model
+fix in implement pass": `ModelConfig` now accepts `tie_word_embeddings` (source [49],
+GPT-2) and `key_length` (external spec: gemma3 `attention.key_length`), and
+`cost.py:weight_bytes` / `prefill_ttft_s` / `arithmetic_intensity` count exactly one
+embedding matrix for tied models and use the declared head dimension everywhere.
+Backward compatible: both fields default to the previous behaviour, pinned by
+`test_key_length_absent_matches_derived_head_dim`.
+
+Direct demonstration of the two mechanisms (raw output):
+
+```
+$ .venv/bin/python - <<'PY'
+from dataclasses import replace
+from fitsproof.engine.model import ModelConfig, REFERENCE_CONFIG
+from fitsproof.contract.cost import weight_bytes, kv_cache_bytes
+
+g = ModelConfig(vocab_size=262144, hidden_size=2560, num_layers=34, num_heads=8,
+                num_kv_heads=1, intermediate_size=8192, max_seq_len=131072,
+                dtype="float16", key_length=256)
+derived = replace(g, key_length=None)
+print("gemma3-4b-like head_dim with key_length=256:", g.head_dim, " derived:", derived.head_dim)
+print("weight_bytes key_length=256 :", weight_bytes(g), f"({weight_bytes(g)/1e9:.2f} GB)")
+print("weight_bytes derived 320    :", weight_bytes(derived), f"({weight_bytes(derived)/1e9:.2f} GB)")
+print("over-prediction removed     :", weight_bytes(derived)-weight_bytes(g), "bytes")
+tied = replace(g, tie_word_embeddings=True)
+print("weight_bytes untied - tied  :", weight_bytes(g)-weight_bytes(tied), "= one embed matrix", 262144*2560*2)
+print("kv_cache ctx=4096 key_length:", kv_cache_bytes(g, 4096), " derived:", kv_cache_bytes(derived, 4096))
+PY
+gemma3-4b-like head_dim with key_length=256: 256  derived: 320
+weight_bytes key_length=256 : 7765411840 (7.77 GB)
+weight_bytes derived 320    : 7965952000 (7.97 GB)
+over-prediction removed     : 200540160 bytes
+weight_bytes untied - tied  : 1342177280 = one embed matrix 1342177280
+kv_cache ctx=4096 key_length: 285212672  derived: 356515840
+```
+
+New tests (6, all KAT or hypothesis property, each naming its fault; sources [49], [4],
+external spec gemma3 `attention.key_length`):
+
+```
+$ .venv/bin/pytest tests/contract/test_cost.py -q
+tests/contract/test_cost.py .........................                    [100%]
+
+============================== 25 passed in 0.68s ===============================
+```
+
+Full suite:
+
+```
+$ .venv/bin/pytest -q
+======================= 263 passed in 389.79s (0:06:29) ========================
+```
+
+(257 -> 263; no test deleted or weakened — REFERENCE_CONFIG is unchanged, so every
+pre-existing KAT still asserts the same numbers.)
+
+```
+$ .venv/bin/ruff check .
+All checks passed!
+
+$ .venv/bin/ruff format --check .
+44 files already formatted
+```
+
+Stress harness after the fix (reference model untouched; end-to-end path re-verified):
+
+```
+$ .venv/bin/fitsproof stress
+ADMITTED: 0.072 GB predicted peak <= 4.000 GB budget (margin: 3928.0 MB)
+Stress harness: 25 configs, 0 violations, 0 silent mode changes.
+  measurement: sampled_vmrss (sampled peak live RSS of each run, not the process high-water mark)
+  margin (budget - sampled peak): min=3909.7 MB, median=3909.9 MB, max=3913.3 MB
+  sampled peak: min=86.7 MB, max=90.3 MB; process VmHWM (separate column, not the measurement): 301.9 MB
+```
+
+Note on F-1 closure: the cost-model mechanism is now fixed and KAT-pinned. Full
+closure of ADOPTION F-1 additionally requires re-running the opt-in ollama
+gemma3:4b integration measurement against the corrected model; that measurement is
+evaluate/improve-pass scope (it needs the live model, not CI).

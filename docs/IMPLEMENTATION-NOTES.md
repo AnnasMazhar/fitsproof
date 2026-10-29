@@ -338,3 +338,22 @@ a structured record.
 - `tests/contract/test_plan_admit_verify.py::test_admit_refused_plan_raises_on_verify`
 - `tests/contract/test_plan_admit_verify.py::test_admit_does_not_fit_returns_refused`
 - `tests/contract/test_plan_admit_verify.py::test_admit_degraded_has_non_none_degradation`
+
+## F-1 cost-model fix: weight tying + attention.key_length (c8-p4 implement pass)
+
+External references:
+- Source [49] Radford et al. 2019 (GPT-2): tied word embeddings share one matrix
+  between input embedding and output head; a tied model must not be charged for a
+  second (unembedding) copy.
+- External spec: gemma3 `config.json` `attention.key_length` — the per-head dimension
+  can be declared explicitly (gemma3-4b: 256) and differs from `hidden/num_heads` (320).
+
+| Reference | Implementation | Test |
+|---|---|---|
+| [49] one embedding matrix when tied | `src/fitsproof/contract/cost.py:weight_bytes` (unembed term gated on `cfg.tie_word_embeddings`); same gating in `prefill_ttft_s` and `arithmetic_intensity` param counts | `tests/contract/test_cost.py::test_weight_bytes_tying_fp32_known_answer`, `::test_weight_bytes_tying_fp16_known_answer`, `::test_prefill_params_respect_tying`, `::test_tying_reduction_is_exactly_one_embedding_matrix` |
+| [4] GQA KV formula with declared head_dim | `src/fitsproof/engine/model.py:ModelConfig.head_dim` returns `key_length` when set; `kv_cache_bytes`/`weight_bytes` consume `cfg.head_dim` | `tests/contract/test_cost.py::test_key_length_overrides_head_dim_kv`, `::test_key_length_absent_matches_derived_head_dim` |
+
+Configuration surface: `ModelConfig.tie_word_embeddings: bool = False`,
+`ModelConfig.key_length: int | None = None` — both default to the previous behaviour,
+so existing bundles are byte-identical (pinned by
+`test_key_length_absent_matches_derived_head_dim`).

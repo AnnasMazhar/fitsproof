@@ -43,10 +43,20 @@ class ModelConfig:
     dtype: str  # "float32" or "float16"
     rope_theta: float = 10000.0
     rms_norm_eps: float = 1e-5
+    # Source [49] Radford et al. 2019 (GPT-2): tied embeddings share one matrix
+    # between the input embedding and the output (unembedding) head. Real models
+    # differ (GPT-2 ties; BLOOM and gemma3:4b do not), so this is per-config.
+    tie_word_embeddings: bool = False
+    # Source: gemma3 config.json attention.key_length — some architectures set the
+    # per-head dimension explicitly (gemma3-4b: 256) rather than deriving it as
+    # hidden_size // num_heads (= 320). None = derive (backward compatible).
+    key_length: int | None = None
 
     @property
     def head_dim(self) -> int:
-        """Dimension per attention head."""
+        """Dimension per attention head (attention.key_length when declared)."""
+        if self.key_length is not None:
+            return self.key_length
         return self.hidden_size // self.num_heads
 
     @property
@@ -63,6 +73,10 @@ class ModelConfig:
         if self.num_heads % self.num_kv_heads != 0:
             raise ValueError(
                 f"num_heads {self.num_heads} must be divisible by num_kv_heads {self.num_kv_heads}"
+            )
+        if self.key_length is not None and self.key_length % self.num_kv_heads != 0:
+            raise ValueError(
+                f"key_length {self.key_length} must be divisible by num_kv_heads {self.num_kv_heads}"
             )
         if self.dtype not in {"float32", "float16"}:
             raise ValueError(f"dtype must be float32 or float16, got {self.dtype!r}")
