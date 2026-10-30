@@ -1983,3 +1983,44 @@ PROOF_COMPLETE
   remain (no test coverage for those code paths at all). Killing more would require tests
   for `collect_measurements()` and `_measure_tok_s()` — real timing functions that require
   a live Transformer, out of scope for this pass.
+
+---
+
+## Cycle 8, Pass 4 (implement-1, pass 2) — 2026-10-30
+
+**Goal:** Add targeted KATs to kill all 117 surviving mutants from cycle-7 mutation gate.
+
+**Cycle-7 mutation baseline (authoritative — reports/mutation-c7.json):**
+1023/1140 mutants killed = 89.7%. Gate: 70%.
+
+**Surviving mutants:** All 117 in `src/fitsproof/contract/calibrate.py`:
+- 12 in `_fit_bandwidth_utilisation` (bw boundary, fallback value, tok_s/weight_bytes guards, formula, guard inversion)
+- 8 in `_mape` (dtype=None variants, float("NAN"/"Nan"/"XXnanXX") vs "nan", float(None))
+- 46 in `_bootstrap_mape_ci` (default param mutations, rng=None, n<=2/n<3 boundaries, quantile index mutations)
+- 51 in `calibrate()` (seed/rng/n boundary mutations, None substitutions in both n<2 and n>=2 paths, field assignment mutations)
+
+**Tests added (22 new KATs):**
+
+```
+$ .venv/bin/pytest tests/contract/test_calibrate.py -q
+51 passed in 2.48s
+```
+
+**Full suite:**
+
+```
+$ .venv/bin/pytest -q
+297 passed in 325.97s (0:05:25)
+```
+
+Test count progression: 179 (c4) → 235 (c8-p4-pass1) → 277 (c8-p4-pass1-v2) → 297 (this pass).
+
+**Ruff:**
+
+```
+$ .venv/bin/ruff check . && .venv/bin/ruff format --check .
+All checks passed!
+44 files already formatted
+```
+
+**Commit:** 82575df — `test(contract): c8-p4 implement-1 — 22 calibrate KATs targeting all 117 c7 mutation survivors`
