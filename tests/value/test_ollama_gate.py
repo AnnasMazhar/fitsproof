@@ -32,6 +32,33 @@ Faults detected:
       Fault: the gate silently exits 0 when model metadata cannot be parsed.
       A malformed or truncated response must cause a refused exit, not admission.
 
+  test_arch_info_reads_key_length:
+      Fault: model_config_from_arch_info (and therefore the gate) builds the
+      config with the derived head_dim (hidden//heads = 320) while the engine
+      metadata declares attention.key_length = 256 (gemma3:4b, external spec,
+      captured from the local ollama daemon 2026-10-29). This is the F-1
+      over-prediction mechanism on the real-model path: 534,773,760 bytes too
+      much on weight_bytes (hand-computed in the test). A mapping that drops
+      key_length fails the exact-delta KAT.
+
+  test_arch_info_derives_head_dim_when_absent:
+      Fault: the mapping requires key_length, so architectures that do not
+      declare it (llama etc., head_dim = hidden//heads) would be refused or
+      crash. Absent key_length must reproduce the derived head_dim.
+
+  test_arch_info_refuses_asymmetric_kv_dims:
+      Fault: key_length != value_length is silently coerced to one head_dim,
+      mis-sizing K/V projections and the KV cache. Fail closed with ValueError.
+
+  test_arch_info_refuses_partial_kv_metadata:
+      Fault: only one of key_length/value_length present is treated as absent
+      (or guessed); partial metadata must fail closed, not derive.
+
+  test_weight_bytes_monotonic_in_head_dim:
+      Fault: a sign/coefficient error in any head_dim term of weight_bytes
+      (sources [4], [6] formula) breaks the cost model's monotonic growth in
+      head_dim — the property the KAT delta depends on term-by-term.
+
 All tests run offline (no real daemon). The daemon-down path is the normal CI path.
 The daemon-up path is opt-in via FITSPROOF_OLLAMA_INTEGRATION_TEST=1 (skipped otherwise).
 """
@@ -43,8 +70,12 @@ import json
 import os
 import sys
 import threading
+from dataclasses import replace
 from pathlib import Path
 from subprocess import run as _run
+
+from fitsproof.contract.cost import kv_cache_bytes, weight_bytes
+from fitsproof.engine.model import model_config_from_arch_info
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 GATE_SCRIPT = REPO_ROOT / "scripts" / "ollama_gate.py"
@@ -281,3 +312,129 @@ def test_ollama_gate_exits_nonzero_on_metadata_failure() -> None:
     assert "GATE REFUSED" in stderr, (
         f"Metadata failure must print 'GATE REFUSED'. Got stderr: {stderr!r}"
     )
+
+
+# ---------------------------------------------------------------------------
+# model_config_from_arch_info — F-1 key_length plumbing (KAT + properties)
+# ---------------------------------------------------------------------------
+
+# Real gemma3:4b /api/show text-tower metadata, captured from the local ollama
+# daemon on 2026-10-29 (external specification; vision-tower keys omitted).
+GEMMA3_INFO = {
+    "gemma3.attention.head_count": 8,
+    "gemma3.attention.head_count_kv": 4,
+    "gemma3.attention.key_length": 256,
+    "gemma3.attention.value_length": 256,
+    "gemma3.block_count": 34,
+    "gemma3.context_length": 131072,
+    "gemma3.embedding_length": 2560,
+    "gemma3.feed_forward_length": 10240,
+}
+
+
+def test_arch_info_reads_key_length() -> None:
+    """
+    KAT (external spec: gemma3 config.json / ollama model_info, 2026-10-29):
+    gemma3:4b declares attention.key_length=256 while hidden//heads=320.
+
+    Hand computation of the weight_bytes delta (sources [4], [6] formula):
+      per-layer attention projections = 2*h*hd*d (Q,O) + 2*kv_h*hd*d (K,V)
+      delta per layer = 2*d*(hd_derived - hd_declared)*(h + kv_h)
+                     = 2*2560*64*(8+4) = 3,932,160 elements
+      x 34 layers x 4 bytes (float32) = 534,773,760 bytes
+    KV cache at ctx=4096, quant=none:
+      2 * 34 layers * 4 kv_heads * 4096 * 256 * 4 bytes = 1,140,850,688 bytes
+    """
+    cfg = model_config_from_arch_info("gemma3", GEMMA3_INFO, vocab_size=262144, context=4096)
+    assert cfg.head_dim == 256, f"declared key_length must win, got head_dim={cfg.head_dim}"
+
+    derived = replace(cfg, key_length=None)
+    assert derived.head_dim == 320
+    delta = weight_bytes(derived) - weight_bytes(cfg)
+    assert delta == 534_773_760, (
+        f"key_length must remove exactly the hand-computed 534,773,760-byte "
+        f"over-prediction, got delta={delta}"
+    )
+    assert kv_cache_bytes(cfg, 4096) == 1_140_850_688
+
+
+def test_arch_info_derives_head_dim_when_absent() -> None:
+    """
+    Fault detected: architectures that do not declare key_length (llama class)
+    would be refused or crash if the mapping required it. Absent key_length
+    must reproduce the derived head_dim (hidden // heads).
+    """
+    info = {
+        "llama.embedding_length": 384,
+        "llama.block_count": 6,
+        "llama.attention.head_count": 6,
+        "llama.attention.head_count_kv": 2,
+        "llama.feed_forward_length": 1536,
+        "llama.context_length": 512,
+    }
+    cfg = model_config_from_arch_info("llama", info, vocab_size=32000, context=512)
+    assert cfg.key_length is None
+    assert cfg.head_dim == 384 // 6 == 64
+
+
+def test_arch_info_refuses_asymmetric_kv_dims() -> None:
+    """
+    Fault detected: key_length != value_length is silently coerced to a single
+    head_dim, mis-sizing K/V projections and the KV cache. Fail closed.
+    """
+    bad = {**GEMMA3_INFO, "gemma3.attention.value_length": 128}
+    try:
+        model_config_from_arch_info("gemma3", bad, vocab_size=262144, context=4096)
+    except ValueError as exc:
+        assert "refusing to guess" in str(exc)
+    else:
+        raise AssertionError("asymmetric key/value_length must raise ValueError (fail closed)")
+
+
+def test_arch_info_refuses_partial_kv_metadata() -> None:
+    """
+    Fault detected: only one of key_length/value_length present is treated as
+    absent and silently derived. Partial metadata must fail closed.
+    """
+    partial = {k: v for k, v in GEMMA3_INFO.items() if not k.endswith("value_length")}
+    try:
+        model_config_from_arch_info("gemma3", partial, vocab_size=262144, context=4096)
+    except ValueError as exc:
+        assert "both be present or both absent" in str(exc)
+    else:
+        raise AssertionError("partial K/V metadata must raise ValueError (fail closed)")
+
+    missing = {k: v for k, v in GEMMA3_INFO.items() if not k.endswith("key_length")}
+    try:
+        model_config_from_arch_info("gemma3", missing, vocab_size=262144, context=4096)
+    except ValueError as exc:
+        assert "both be present or both absent" in str(exc)
+    else:
+        raise AssertionError("partial K/V metadata must raise ValueError (fail closed)")
+
+
+def test_weight_bytes_monotonic_in_head_dim() -> None:
+    """
+    Property (from the weight_bytes formula, sources [4] and [6]): every
+    attention-projection term is positively linear in head_dim, so
+    weight_bytes must be strictly increasing in key_length for a fixed
+    config. Fault detected: a sign or coefficient error in any head_dim term
+    (e.g. dropping O's head_dim dependence or negating K/V) breaks the
+    monotonicity the F-1 delta KAT relies on.
+    """
+    from hypothesis import given, settings
+    from hypothesis import strategies as st
+
+    @settings(max_examples=24, deadline=None)
+    @given(hd=st.integers(min_value=4, max_value=252))
+    def _check(hd: int) -> None:
+        hd = hd - (hd % 4)  # key_length % num_kv_heads == 0 required by validate()
+        hd = max(hd, 4)
+        base = model_config_from_arch_info("gemma3", GEMMA3_INFO, vocab_size=262144, context=4096)
+        cfg_a = replace(base, key_length=hd)
+        cfg_b = replace(base, key_length=hd + 4)
+        assert weight_bytes(cfg_b) > weight_bytes(cfg_a), (
+            f"weight_bytes must strictly increase with head_dim ({hd} -> {hd + 4})"
+        )
+
+    _check()

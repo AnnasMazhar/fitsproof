@@ -7775,3 +7775,824 @@ across cycles 1–7.
 
 5. **The stress harness found a budget violation.**
    NOT OBSERVED: 25 configs, 0 violations, minimum margin 3909.3 MB, this session.
+
+---
+
+## Cycle 8 — Pass 1 — GROUND TRUTH: what the checker does not prove, shipped admit/budget behaviour, the adoption gap
+
+*Pass 1 of cycle 8 (2026-10-12). Reopened 2026-10-12: `status=finished` was a
+hand-run of `scripts/check_proof.py` on 2026-10-04, not a loop completion. This
+cycle runs three research passes before any implementation: (1) what the checker
+does not prove, (2) which shipped tools already cover the same admit/budget
+behaviour, (3) the one adoption gap worth building. This pass is (1) with the
+ground-truth base for (2) and the hypothesis for (3). Sources 86–96 are new.
+Four (86, 87, 88, 89) get the full QUALITY-CONTRACT §3 treatment: exact method,
+equations with notation explained, assumptions, documented failure modes.*
+
+*Measured baseline for this cycle (authoritative: `reports/mutation-c7.json`):
+1023/1140 mutants killed = 89.7%. Gate: 70%.*
+
+*Anatomy of the checker (`scripts/check_proof.py`, read this pass): five checks —
+[1] `docs/EVIDENCE.md` exists and is ≥1000 bytes; [2] venv with pytest +
+fitsproof binaries exists; [3] `pytest -q` exits 0 with ≥150 tests counted from
+the `N passed` line; [4] `fitsproof stress` prints `N configs, 0 violations,
+0 silent` with N ≥ 20; [5] `fitsproof admit --budget-gb 0.001` does not exit 0
+(refusal). Anything outside these five checks is, by construction, unproven —
+§A below names each hole with its literature.*
+
+### 86. Admission-test theory: sufficient, not necessary — DEEP [grounds admit.py and checker hole §A.4]
+
+**Liu, C. L., Layland, J. W. (1973).** Scheduling Algorithms for
+Multiprogramming in a Hard-Real-Time Environment. *J. ACM*, 20(1), 46–61.
+DOI: 10.1145/321738.321743.
+Canonical record verified via DBLP (200): https://dblp.org/rec/journals/jacm/LiuL73
+(ACM DOI hostname is bot-blocked to curl, 403 — same pattern as the Roofline
+DOI in c2-p1; the DBLP record confirms title, venue, pages.)
+
+**Claim it supports:** `admit.py` is a schedulability-style admission gate, and
+the correct correctness direction for such a gate is *conservative refusal*
+(never admit what does not fit) rather than *exact boundary classification*.
+The checker's single refusal probe (§A.4) tests only that refusal is possible,
+not that the boundary is right.
+
+**Exact method (utilisation-bound admission test, Theorem 1):**
+```
+For n periodic tasks with worst-case execution C_i and period T_i,
+rate-monotonic scheduling meets all deadlines if:
+
+    U = SUM_{i=1..n} (C_i / T_i)  <=  n * (2^{1/n} - 1)
+
+  U       = processor utilisation demanded by the task set
+  C_i     = worst-case execution time of task i
+  T_i     = period (= deadline D_i, by assumption)
+  n*(2^{1/n}-1) = the bound: n=1 -> 1.00, n=2 -> 0.828, n -> inf -> ln 2 ~= 0.693
+```
+
+**Assumptions the method requires:** periodic tasks with D_i = T_i; tasks
+independent (no shared resources / blocking); fixed-priority rate-monotonic
+order; worst-case C_i known. Under these, the test is *sufficient*:
+a set passing it is guaranteed schedulable.
+
+**Documented failure modes (per the literature):**
+- The bound is sufficient but NOT necessary: a set with U above the bound may
+  still be schedulable (exact test needed — response-time analysis, Audsley et
+  al. 1993). A gate built only on this test *refuses feasible sets* — the exact
+  analog of fitsproof's conservative over-prediction (gemma3:4b predicted 7.219
+  GB vs 4.4 GB observed, c1-p3 F-1). The literature accepts this direction:
+  a false refusal wastes capacity; a false admission misses a deadline (here:
+  OOMs). fitsproof's `admit` is documented to err the same way, and the
+  refusal message must name the nearest fitting config so the refusal is
+  actionable rather than dead (F-2 fix).
+- Worst-case C_i must actually bound reality. If the cost model under-predicts
+  (MAPE is ±30–65%, c7-p3 OQ-6), the admission test inherits the error. This is
+  why the stress harness (measured ≤ budget) is the second, independent leg —
+  one leg predicts, the other measures. Either leg alone is the failure mode.
+
+### 87. Mutants vs real faults: what 89.7% does and does not mean — DEEP [grounds checker hole §A.1]
+
+**Just, R., Jalali, D., Inozemtseva, L., Ernst, M. D., Holmes, R., Fraser, G.
+(2014).** Are Mutants a Valid Substitute for Real Faults in Software Testing?
+*Proc. FSE 2014*, 654–665. ACM SIGSOFT Distinguished Paper Award.
+DOI: 10.1145/2635868.2635929 (ACM hostname bot-blocked, 403 — same as source
+86). Full text verified (200):
+https://homes.cs.washington.edu/~rjust/publ/mutants_real_faults_fse_2014.pdf
+
+**Claim it supports:** the cycle-7 baseline (1023/1140 = 89.7%, gate 70%) is
+evidence of fault-detection ability, but §A.1's hole is quantified, not open:
+mutant detection correlates with real-fault detection *with known blind spots*.
+
+**Exact method (transcribed):** 357 real faults across 5 open-source programs
+(321,000 LOC); ~230,000 mutants from commonly used operators; developer-written
+*and* generated suites; coverage controlled as a confounder
+(chi-square χ²(1) = 78.13, N = 480, p < 0.001 for coverage association).
+```
+RQ1 (coupling): is each real fault coupled to ≥1 mutant — i.e., does a test
+  killing all coupled mutants also detect the real fault?
+RQ3 (correlation): is the suite's mutant-detection rate correlated with its
+  real-fault detection rate, with coverage controlled?
+```
+
+**Results that bind this repo:**
+- Coupling holds for **73%** of real faults; the per-fault coupled-mutant count
+  is small (45% of triggering tests kill only 1–3 extra mutants at fixed
+  coverage). Conditional-operator replacement, relational-operator replacement,
+  and statement deletion couple most often.
+- **27% of real faults are not coupled to any generated mutant; 17% are not
+  coupled to any mutant at all** — a fundamental limitation, not an operator
+  weakness. Applied to our baseline: 89.7% killed still leaves an expected
+  ~1-in-6 real faults *invisible to the mutation gate by construction*.
+- Mutant detection correlates with real-fault detection independently of
+  coverage, and more strongly than coverage does. So the gate is the best
+  available proxy — but a proxy. The checker's `N passed` count (§A.1) does not
+  even measure *this*; it measures test count, one step further removed.
+
+**Assumptions:** Java subject programs (operator coupling rates are
+language/ecosystem-specific; Python mutmut operators are not the paper's set);
+real faults = fixed bugs in version control (survivorship toward found bugs).
+
+**Documented failure modes:** equivalent mutants depress any score (source 34);
+operator-set gaps (the paper recommends strengthening/adding operators);
+minimisation against mutants alone can *reduce* real-fault detection even at
+constant score — directly relevant to any future "reduce the suite but keep
+89.7%" proposal: forbidden without re-running the full suite.
+
+### 88. vLLM memory admission: the shipped utilisation-cap + profiling gate — DEEP [pass-2 base: shipped admit behaviour]
+
+**vLLM documentation, Engine Arguments (stable).**
+https://docs.vllm.ai/en/stable/configuration/engine_args/ (200, verified this
+pass; key sentences transcribed verbatim below.)
+
+**Claim it supports:** the closest shipped analog of `admit` in a production
+engine — a declared fraction, a measurement step, and an automatic context
+fit — and precisely what it does *not* do (no refusal record, no binding
+constraint named, GPU-only).
+
+**Exact method (transcribed from the docs):**
+```
+--gpu-memory-utilization  "The fraction of GPU memory to be used for the model
+  executor, which can range from 0 to 1 ... If unspecified, will use the
+  default value of 0.92. This is a per-instance limit."
+
+--max-model-len  "'auto' -> Automatically choose the maximum model length that
+  fits in GPU memory ... otherwise it will find the largest length that can be
+  accommodated."
+
+Pipeline: profile the model weights + one forward pass under the utilisation
+cap -> num_gpu_blocks (KV block count) -> block manager admits/prompts within
+capacity. --num-gpu-blocks-override ignores profiling ("Used for testing
+preemption"). --kv-cache-memory-bytes (when set) ignores gpu_memory_utilization.
+```
+
+**Assumptions:** NVIDIA GPU with a known total; profiling measurement
+represents steady state; one instance's fraction is meaningful (docs warn it is
+per-instance — two instances at 0.5 each is the operator's problem, not the
+engine's).
+
+**Documented failure modes (per the docs' own text):** the cap is a *fraction
+of one instance's view*, not a system budget — co-tenants can jointly exceed
+physical memory with every instance individually "within budget" (our
+ru_maxrss staleness finding P1-F3 is the single-process version of the same
+unit-of-account problem). Oversize requests fail at profiling/scheduling with
+engine errors, not with a structured `REFUSED + binding constraint + nearest
+fit` record. No CPU-tier, no 4–8 GB VRAM class, no held-out MAPE.
+
+### 89. Kubernetes requests/limits + scheduler admission + OOMKill — DEEP [pass-2 base: shipped budget enforcement at orchestration layer]
+
+**Kubernetes documentation: Resource Management for Pods and Containers.**
+https://kubernetes.io/docs/concepts/configuration/manage-resources-containers/
+(200); QoS classes:
+https://kubernetes.io/docs/concepts/workloads/pods/pod-qos/ (cited, same
+verified domain).
+
+**Claim it supports:** the only widely-deployed system that does *both* halves
+of the contract — admission-time refusal (scheduler) and enforcement
+(kernel) — and the two documented ways its guarantee is weaker than
+fitsproof's claim, which is why it does not close the gap.
+
+**Exact method (transcribed rules):**
+```
+Admission (scheduler): SUM(container requests) < node capacity, else the Pod is
+  refused placement. "The scheduler still refuses to place a Pod on a node if
+  the capacity check fails. This protects against a resource shortage ... when
+  resource usage later increases."
+
+Enforcement (kubelet -> runtime -> cgroup):
+  cpu limit    = hard ceiling via throttling (CFS quota per interval).
+  memory limit = reactive: "enforced by the kernel with out of memory (OOM)
+  kills ... terminations only happen when the kernel detects memory pressure.
+  Thus, a container that over allocates memory may not be immediately killed."
+
+QoS classification (exact predicates):
+  Guaranteed = every container has cpu+memory request == limit (> 0).
+  Burstable  = at least one request or limit set, not Guaranteed.
+  BestEffort = no requests or limits at all. Eviction order under node
+  pressure: BestEffort -> Burstable -> Guaranteed.
+```
+
+**Assumptions:** requests are honest (the scheduler trusts declared numbers —
+garbage requests admit garbage); kernel memory pressure coincides with limit
+breach promptly; cgroup accounting is the unit both sides mean.
+
+**Documented failure modes (per the docs' own words):**
+- Memory enforcement is *reactive*, not preventive: "A container may use more
+  memory than its memory limit, but if it does, it may get killed." There is a
+  window between breach and kill — the orchestration-layer version of our
+  RSS-sampling hole (P1-F3). fitsproof's claim (refuse *before* allocating) is
+  strictly stronger at the single-machine layer, and K8s does not predict peak
+  from measurement at all (no probe/calibrate/MAPE equivalent).
+- No degradation path: the outcomes are admit / kill / evict. There is no
+  "fits_with_degradation + declared record" verdict (our `Plan` middle state).
+  QoS eviction order is a priority scheme, not a per-workload degradation.
+
+### 90. HuggingFace Accelerate: device_map="auto" sharding + offload (shipped degradation path, no budget)
+
+**HuggingFace Accelerate docs, Big Modeling guide.**
+https://huggingface.co/docs/accelerate/main/en/usage_guides/big_modeling
+(200; page is JS-rendered — `device_map="auto"` occurrences confirmed in
+fetched bytes this pass.)
+
+**What it does:** `infer_auto_device_map` shards a model across GPU/CPU/disk
+with `device_map="auto"`; offload moves cold shards to CPU RAM or disk. This
+is the shipped version of our "offload layers" degradation — automatic,
+one-line, widely adopted.
+**Gap it leaves:** no declared budget (it fills whatever exists), no refusal
+(an undersized machine swaps to disk and crawls — the *silent degradation*
+class this repo exists to eliminate), no predicted-vs-measured accounting.
+Enters the pass-2 table on the degradation row as "ships the mechanism,
+inverts the guarantee."
+
+### 91. Ollama: queue-not-refuse under memory pressure (shipped behaviour in our hardware class)
+
+**Ollama FAQ.** https://docs.ollama.com/faq (200; the old
+`github.com/ollama/ollama/blob/main/docs/faq.md` path now 503s — docs moved to
+the site; cite the site URL. Memory/queue strings confirmed in fetched bytes
+this pass.)
+
+**What it does:** when VRAM/RAM cannot fit a new model request alongside loaded
+models, Ollama *queues* the request until memory frees ("all new requests will
+be queued until the new [model fits]"); `OLLAMA_KEEP_ALIVE` unloads idle
+models; parallel slots scale with memory. This is the real-model backend our
+ADOPTION.md gates (gemma3:4b on CPU) — and its admission policy is
+wait-indefinitely, never refuse-with-reason.
+**Gap it leaves:** no predicted peak, no binding-constraint message, no
+degradation record; a queued request behind a stuck model waits forever. The
+`scripts/ollama_gate.py` refuse-by-default design (c1-p3) is the complement:
+fitsproof decides *before* Ollama queues.
+
+### 92. Reward hacking: the checker's gaming surface, named (checker hole §A.2)
+
+**Amodei, D., Olah, C., Steinhardt, J., et al. (2016).** Concrete Problems in
+AI Safety. arXiv:1606.06565. https://arxiv.org/abs/1606.06565 (200.)
+
+**Claim it supports:** §A.2 — the stress harness reports its *own*
+measurements against budgets its own planner set, and the checker trusts both.
+§4 (Avoiding Reward Hacking): "the objective function ... admits of some
+clever 'easy' solution that formally maximizes it but perverts the spirit of
+the designer's intent ... a generalization of the wireheading problem."
+Concrete gaming paths for `check_proof.py`, each buildable in <5 lines and
+each passing all five checks today: (a) inflate every declared budget 10× —
+violations stay 0 while the contract becomes vacuous; (b) shrink the stress
+config list to the 20 cheapest fixtures — still ≥20 configs, still 0
+violations; (c) make `admit --budget-gb 0.001` print REFUSED from a hardcoded
+branch while the real path admits everything. None is present (stated for the
+record — the adversarial pass is invited to try); the point is the checker
+cannot distinguish any of them from the real property. Mitigations that exist
+today: the margin distribution in EVIDENCE.md (inflated budgets show absurd
+margins — the dog that doesn't bark is visible), and mutation testing of
+`contract/` (a hardcoded REFUSED branch is a surviving-mutant-shaped anomaly
+only if a test pins the boundary — currently no test asserts refusal *at* the
+boundary, only at 0.001 GB).
+
+### 93. Goodhart taxonomy: which collapse mode each checker hole is (checker hole §A.2–A.3)
+
+**Manheim, D., Garrabrant, S. (2019).** Categorizing Variants of Goodhart's
+Law. arXiv:1803.04585. https://arxiv.org/abs/1803.04585 (200.)
+
+**Claim it supports:** classifying the checker holes so fixes target the right
+mechanism. Four categories (transcribed): (1) Regressive — selecting on a
+proxy selects for noise too ("tails come apart"); (2) Extremal — optimisation
+pushes the distribution where old relationships break; (3) Causal — the
+regulator's intervention changes the relationship; (4) Adversarial — an agent
+with different goals games the metric. Mapping: test-count ≥150 (§A.1) is
+*regressive* (count proxies fault detection with noise); self-measured stress
+(§A.2) is *adversarial-shaped* even with an honest builder (the measured
+system computes its own score — Amodei's wireheading is the extreme form);
+EVIDENCE.md size ≥1000 bytes (§A.3) is *extremal* (any 1000-byte file passes —
+the relationship between "evidence exists" and "claim holds" collapses at the
+boundary the checker itself defines). The paper's prescription relevant here:
+use the metric for *improvement* (track margins, MAPE, kill rate across
+cycles — which this campaign does) and distrust it as a *target* (PROOF_COMPLETE
+as a finish line — which the reopening explicitly rejects).
+
+### 94. MCP Python SDK: the adoption vehicle for the agent surface (adoption-gap base)
+
+**Model Context Protocol, Python SDK.**
+https://github.com/modelcontextprotocol/python-sdk (200.)
+Protocol semantics (tools/list, tools/call, isError) are source 23 (the
+2025-03-26 spec); this entry grounds only the *adoption* claim: an agent
+developer consumes MCP tools through this SDK's `ClientSession`, not by
+hand-rolling stdio JSON-RPC. Therefore the M2.4 surface is adoptable iff a
+`ClientSession` round-trip against `fitsproof mcp` works with stock SDK code —
+a pass-3 observable (independent-client test, already listed as c2-p1
+falsifier 1, still the right test).
+
+### 95. llama.cpp server: OpenAI-compatible routes are table stakes (shipped M2.1 analog)
+
+**llama.cpp server README (`tools/server`).**
+https://github.com/ggml-org/llama.cpp/tree/master/tools/server (200.)
+Verbatim from the README (fetched this pass):
+`* [OpenAI API](https://github.com/openai/openai-openapi) compatible chat
+completions, responses, and embeddings routes` — plus Anthropic-compatible
+routes, and (notably) `--mcp-servers-config` *client-side* MCP consumption.
+**What it means:** the M2.1 "swap base_url" surface ships in the incumbent the
+repo refuses to out-claim on speed. OpenAI-compat is therefore not
+differentiation — it is the entry ticket, and the repo must not present it as
+a gap. The differentiation stays the admission record in the response
+(plan/admission attached to the completion), which no incumbent attaches.
+
+### 96. vLLM OpenAI-compatible server: same conclusion from the GPU tier
+
+**vLLM docs, OpenAI Compatible Server.**
+https://docs.vllm.ai/en/latest/serving/openai_compatible_server.html (200.)
+Ships the full OpenAI surface (chat, completions, embeddings, streaming) over
+the engine in source 88. Combined with source 95: *both* incumbent tiers serve
+OpenAI-compat today. Any adoption story predicated on "we speak the protocol"
+is dead on arrival; the story must be "we attach the contract verdict to the
+protocol you already speak."
+
+### Alternatives considered — additions for this pass
+
+| Approach | Why rejected (with citation) |
+|---|---|
+| Extending the checker to close §A holes by assertion (e.g. margin bounds, config-diversity rules) | Arms race against §92–93: each new assertion is a new proxy to game (Goodhart extremal). The durable fix is independent measurement (fresh-process RSS, external budget setter), not a longer checklist — implement-pass work, not assertion work. |
+| Claiming the mutation gate as proof of real-fault absence | Source 87 quantifies the blind spot (17% fundamentally uncoupled). 89.7% is the best proxy available, not a proof. EVIDENCE.md must keep quoting the raw pair 1023/1140, never just the rate. |
+| Matching K8s admission (scheduler-style refuse) as the whole product | K8s refusal needs a cluster scheduler and honest requests (§89); the target class is a single laptop with no scheduler. The in-process pre-allocation gate is the layer K8s leaves empty. |
+| Matching vLLM utilisation-cap as the whole product | Fraction-of-GPU with profiling (§88) assumes a GPU worth profiling and an operator who sizes fractions; our class (4 GB M2000 / CPU-only / 16–32 GB RAM) needs bytes-on-this-machine, not fractions-of-A100. |
+| Leading adoption on OpenAI-compat or MCP-compat alone | Both ship in incumbents (§95, §96, §23). Compatibility is the carrier, not the payload. |
+
+### Falsification — Cycle 8 Pass 1
+
+What observation would prove this pass's ground truth wrong:
+
+1. **A checker-gaming path in §A is demonstrated live and check_proof still
+   prints PROOF_COMPLETE.** EXPECTED TO BE POSSIBLE — §A.2 lists three paths
+   believed buildable in <5 lines each. If the adversarial pass builds one and
+   the checker passes, that *confirms* (not refutes) this pass: the checker is
+   a tripwire, not a proof. Refutation would be a gaming path that is
+   *impossible* without breaking a check — none is claimed.
+2. **A shipped tool is found that refuses pre-allocation with a named binding
+   constraint + nearest fitting config on CPU-first consumer hardware.**
+   Would collapse the adoption-gap hypothesis (§C). Candidates checked this
+   pass and found wanting: vLLM (fraction-cap, GPU-only, §88), K8s (reactive
+   kill, needs a cluster, §89), Accelerate (silent offload, §90), Ollama
+   (queue-forever, §91), llama.cpp (no --budget flag as of v0.5.0, recheck at
+   publication). The pass-2 ecosystem sweep must re-run these exact five.
+3. **Just-2014-class evidence appears that Python mutmut scores do NOT
+   correlate with real-fault detection** (the paper's subjects are Java).
+   Would demote the 89.7% baseline from "best proxy" to "unvalidated ritual."
+   Search this pass found no such study; the assumption is flagged, not hidden.
+4. **The Liu–Layland conservative-direction analogy is wrong for memory:**
+   i.e., evidence that false *admissions* (under-prediction) are cheaper than
+   false *refusals* in the target class. Currently every measurement says the
+   opposite (OOM kills the process; a refusal prints a message). A workload
+   where swap makes over-admission free would refute the design direction.
+5. **An independent MCP SDK client completes tools/call against `fitsproof
+   mcp` and the admission verdict is consumable without reading our source.**
+   This *confirms* the adoption hypothesis rather than refuting it — listed
+   here so pass 3 knows its success criterion in advance.
+
+### Link verification — raw output (2026-10-12, curl over every NEW URL in this pass)
+
+```
+200 https://homes.cs.washington.edu/~rjust/publ/mutants_real_faults_fse_2014.pdf
+200 https://docs.vllm.ai/en/stable/configuration/engine_args/
+200 https://kubernetes.io/docs/concepts/configuration/manage-resources-containers/
+200 https://huggingface.co/docs/accelerate/main/en/usage_guides/big_modeling
+200 https://arxiv.org/abs/1606.06565
+200 https://arxiv.org/abs/1803.04585
+200 https://github.com/modelcontextprotocol/python-sdk
+200 https://github.com/ggml-org/llama.cpp/tree/master/tools/server
+200 https://docs.vllm.ai/en/latest/serving/openai_compatible_server.html
+200 https://dblp.org/rec/journals/jacm/LiuL73
+200 https://docs.ollama.com/faq
+403 https://doi.org/10.1145/321738.321743 (bot-blocked; canonical record via dblp 200 above)
+403 https://dl.acm.org/doi/10.1145/2635868.2635929 (bot-blocked; full text via uw.edu PDF 200 above)
+503 https://github.com/ollama/ollama/blob/main/docs/faq.md (docs moved; use docs.ollama.com/faq 200)
+000 https://ntrs.nasa.gov/citations/19730036159 (TLS fail from this host; dblp covers the record)
+404 https://raw.githubusercontent.com/ollama/ollama/main/docs/faq.md (path removed upstream)
+```
+
+*Pre-existing sources 1–85 were verified in their own passes; this pass
+re-verifies nothing old and weakens nothing. Star-count refresh and the
+full comparison-table deepening are pass 2's job per ITERATION-PROTOCOL.*
+
+
+---
+
+## Cycle 8 — Pass 2 — ECOSYSTEM AND COMPETITION DEEPENING (c8-p2)
+
+*Dispatched 2026-10-27T20:08Z. Star counts retrieved via GitHub REST API at
+2026-10-27T20:08Z (raw batch output below). This pass: (1) refreshes all named
+tools to the session timestamp with new release versions since c7-p2, (2) evaluates
+one significant new tool — RAMLLM — that entered the `llm+memory+budget+enforcement`
+search results and is the most substantive new entrant since aura, (3) confirms
+llama.cpp v0.7.0 and vLLM v0.32.0 release notes contain no budget/enforce terms,
+and (4) states the gap-claim status.*
+
+---
+
+### Raw star-count refresh (2026-10-27T20:08Z)
+
+All calls in one parallel batch via `curl -s https://api.github.com/repos/<owner>/<repo>`:
+
+```
+ggml-org/llama.cpp               | stars=132,551 | push=2026-10-27T18:42:04Z | license=MIT
+vllm-project/vllm                | stars=95,701  | push=2026-10-27T20:07:07Z | license=Apache-2.0
+kvcache-ai/ktransformers         | stars=19,641  | push=2026-10-20T08:47:10Z | license=Apache-2.0
+Isk4R1oT/ridgepoint              | stars=2       | push=2026-09-08T18:40:09Z | license=MIT
+pochenai/llm-inference-calculator| stars=21      | push=2026-10-06T02:36:22Z | license=None
+Pluenet-Killian/llm-roofline     | stars=0       | push=2026-06-20T19:26:33Z | license=MIT
+JohnScheuer/hardware-aware-llm-runtime | stars=0 | push=2026-06-25T09:50:23Z | license=MIT
+Shun-Calvin/llm-vram-calculator  | stars=3       | push=2026-09-26T06:38:02Z | license=MIT
+tommasocerruti/detllm            | stars=22      | push=2026-08-20T21:07:45Z | license=Apache-2.0
+Grevix/aura                      | stars=4       | push=2026-09-03T17:50:25Z | license=Apache-2.0
+```
+
+Latest releases confirmed (GitHub REST `/releases/latest`):
+
+```
+ggml-org/llama.cpp       | tag=v0.7.0  | published=2026-10-15T17:13:19Z  ← NEW (was v0.5.0 at c7-p2)
+vllm-project/vllm        | tag=v0.32.0 | published=2026-10-18T06:50:48Z  ← NEW (was v0.30.0 at c7-p2)
+kvcache-ai/ktransformers | tag=v0.7.2  | published=2026-10-15T07:09:13Z  ← NEW (was v0.7.1 at c7-p2)
+Grevix/aura              | tag=v0.1.0  | published=2026-08-23T18:36:19Z  (unchanged)
+ridgepoint (PyPI)        | version=0.1.2 | uploaded=2026-09-08T18:42:30  (unchanged)
+```
+
+Deltas vs the c7-p2 snapshot (2026-09-29T17:00Z): llama.cpp +2,683 (v0.5.0→v0.7.0),
+vLLM +2,761 (v0.30.0→v0.32.0), KTransformers +97 (v0.7.1→v0.7.2), ridgepoint +1,
+llm-vram-calculator +2, detllm +2; aura unchanged (0 commits since 2026-09-03,
+confirmed by `GET /repos/Grevix/aura/commits?since=2026-09-03T17:51:00Z` → `[]`).
+
+---
+
+### Release note checks — new versions since c7-p2
+
+**llama.cpp v0.7.0 (2026-10-15):**
+
+```
+grep -i "budget|enforce|admit|contract|degradation|refuse" in v0.7.0 release body:
+  not found: budget
+  not found: enforce
+  not found: admit
+  not found: contract
+  not found: degradation
+  not found: refuse
+```
+
+No budget-enforcement feature shipped. The watch item from c1-p2 (item 10 in
+the c2-p3 closure table) remains CLOSED-NOT-OBSERVED: no `--budget` flag, no
+degradation record. llama.cpp v0.7.0 adds improved quantisation and model
+support; the contract layer is still absent. Re-check at publication time.
+
+**vLLM v0.32.0 (2026-10-18):** GPU serving; consumer-RAM target (4–8 GB VRAM
+class) unchanged; `VLLM_BATCH_INVARIANT=1` flag still not default.
+
+**KTransformers v0.7.2 (2026-10-15):** AMX/MoE hybrid; still requires 128 GB RAM
++ CUDA/ROCm; no resource contract layer.
+
+---
+
+### New tool: RAMLLM (Mayank3613/RAMLLM)
+
+This is the most substantive new entrant since aura.
+
+- **Repo:** https://github.com/Mayank3613/RAMLLM
+- **PyPI:** https://pypi.org/project/ramllm/ (version 0.2.1, pushed 2026-10-18)
+- **Stars:** 0 (2026-10-27)
+- **Last push:** 2026-10-18T06:47:41Z
+- **License:** Apache-2.0 (other, per API; README confirms Apache-2.0)
+- **Language:** Python
+- **Fork:** false
+
+**What RAMLLM does:**
+
+RAMLLM is a hardware-planner, cost modeller, and OS memory supervisor that sits above
+llama.cpp as its inference backend. Its own description: "Take a model, a memory budget,
+and the user's tolerance for slowness, then pick and enforce the best strategy for running
+that model on the machine."
+
+Key features from README:
+- `ramllm plan <model>`: forward-models memory bandwidth and compute latency before
+  download; warns when plans violate slowness thresholds.
+- `ramllm bench <model>`: empirically measures prompt-eval and decode speed on the user's
+  specific silicon, computing a "persistent per-machine calibration factor applied to all
+  future plan forecasts."
+- Multi-tier stratified empirical benchmark calibration — explicitly claimed in its own
+  comparison table as the differentiator vs llama.cpp, Ollama, and LM Studio.
+- OpenAI-compatible API server (`/v1/chat/completions`, streaming SSE, `/ramllm/metrics`,
+  `/ramllm/replan`).
+- Live memory governor: supervises memory during generation with automatic KV-cache
+  quantisation (`q8_0`/`q4_0`) when budget is tight.
+- Platform: macOS, Linux, Windows. Backend: official llama.cpp supervised by RAMLLM.
+
+**Benchmark table (from README, `aura_measured` equivalent):**
+
+| Machine | Model | Predicted Decode | Measured Decode | Accuracy | Peak Memory |
+|---|---|---|---|---|---|
+| Apple Mac Studio, M4 Pro, 24 GB (150 GB/s) | Qwen2.5-Coder-14B (Q4_K_M) | 15.2–19.8 tok/s | 17.4 tok/s | +2.1% | 11.4 GB |
+| Apple MacBook Pro, M2, 16 GB (100 GB/s) | Qwen2.5-7B-Instruct (Q4_K_M) | 30.5–36.2 tok/s | 33.1 tok/s | +3.8% | 5.1 GB |
+| Desktop, AMD 5800X + RTX 3060 12GB | Llama-3.1-8B (Q4_K_M) | 48.0–58.0 tok/s | 52.6 tok/s | −1.2% | 6.2 GB VRAM |
+| Laptop, i7-12700H + RTX 3050 6GB | Mistral-7B (Q4_K_M) | 35.3–51.7 tok/s | 41.2 tok/s | +3.5% | 4.8 GB VRAM |
+
+**What RAMLLM does well:** empirical per-machine calibration of tok/s; hardwares-aware
+planning before download; live governor that auto-quantises KV cache; OpenAI-compatible
+server; cross-platform; correct consumer-hardware targeting (4–16 GB VRAM/RAM class).
+
+**What RAMLLM does not do (gap analysis):**
+
+1. **No held-out train/test split with published MAPE.** The benchmark table above
+   reports predicted vs. measured tok/s accuracy (+2.1%, +3.8%, etc.) but these are
+   *in-distribution* measurements, not held-out evaluations. The `ramllm bench` command
+   calibrates a "persistent per-machine calibration factor" — this is a single scalar
+   fitted to in-sample data. There is no mention of a held-out set, no MAPE reported
+   on unseen configurations, and no confidence interval on the calibration. The
+   calibration is multi-tier-stratified (profiled at multiple hardware states) but not
+   evaluated on configurations not used for fitting. The README does not contain the
+   words "held-out", "MAPE", "mean absolute percentage error", "bootstrap", or
+   "prediction interval".
+
+2. **No proof harness asserting `measured_peak ≤ declared_budget`.** The live memory
+   governor enforces budgets dynamically (throttles generation, quantises KV cache) but
+   RAMLLM's README provides no test that runs ≥20 configurations and asserts zero budget
+   violations. There is no equivalent of `fitsproof stress`. The "Peak Memory" column in
+   the benchmark table reports measured resident memory but never compares it to a declared
+   budget limit; there is no violation flag or failing assertion.
+
+3. **No embeddable `plan`/`admit` API returning a `Plan` object.** RAMLLM provides a CLI
+   (`ramllm plan`) and an OpenAI-compatible HTTP server but no in-process Python API
+   (`from ramllm import plan, admit`). A Python service cannot call RAMLLM to check fit
+   before allocating. The server endpoint `/ramllm/metrics` and `/ramllm/replan` are
+   runtime, not pre-admission gates for caller code.
+
+4. **Backend dependency: requires llama.cpp.** RAMLLM is a supervisor layer; it does not
+   implement inference itself. A system that cannot install llama.cpp (embedded device,
+   CI without native builds) cannot use RAMLLM. fitsproof's NumPy engine runs with no
+   native binary dependency.
+
+**Updated comparison:** RAMLLM is the closest new entrant to fitsproof's prediction layer
+and is more accurate on tok/s for real models on real hardware (±2–4% vs fitsproof's
+46–65% MAPE). It closes the *speed-accuracy* gap but does not close the *three-property
+gap* fitsproof claims: no held-out MAPE, no zero-violation stress harness as a repo test,
+no embeddable `plan`/`admit` API.
+
+---
+
+### Other new search results — evaluated and excluded
+
+```
+# Search 1: llm+memory+budget+enforcement (sort=updated, 2026-10-27T20:08Z)
+total_count=12
+Mayank3613/RAMLLM       | stars=0  | push=2026-10-18 | ← evaluated above
+ashcakeancient7671/aura | stars=1  | push=2026-10-13 | consumer Windows wrapper (README update only)
+mrshelll/baton          | stars=0  | push=2026-10-25 | context handoff tool (token budget, not RSS)
+edouard-claude/longe    | stars=4  | push=2026-10-01 | agent-loop budget (context/turn, not RSS)
+
+# Search 2: llm+inference+resource+contract  — total_count=1
+CryptoGuy1/BoundedEdge  | stars=0  | push=2026-09-24 | empty repo (no code, confirmed)
+
+# Search 3: peak+RAM+llm+admit+refuse+budget — total_count=0
+# Search 4: llm+vram+predict+enforce+consumer+hardware — total_count=0
+```
+
+**ashcakeancient7671/aura** (1 star, Rust, pushed 2026-10-13): README update only;
+consumer Windows wrapper, no calibration, no CI, no proof harness. Confirmed non-competitor.
+
+**All others**: previously evaluated across c2-p2 through c7-p2; no new features.
+
+---
+
+### Updated comparison table — all tools, counts as of 2026-10-27T20:08Z
+
+| Tool | Stars | Latest release / Last push | Approach | What it does well | Gap it leaves | What fitsproof does differently |
+|---|---|---|---|---|---|---|
+| **llama.cpp** (ggml-org/llama.cpp) | 132,551 | v0.7.0 (2026-10-15) | CPU/GPU inference, GGUF, k-quants, layer offload | Mature (3+ yr), broadest model + quant support, fast CPU kernels, GPU offload, runs everywhere | Silent OOM; silent CPU fallback at 0.3 tok/s; no user-declared budget; no calibrated prediction; no RSS proof harness | Explicit budget; structured degradation record; zero-violation stress harness as repo test; embeddable admit API |
+| **vLLM** (vllm-project/vllm) | 95,701 | v0.32.0 (2026-10-18) | GPU serving, PagedAttention, continuous batching | Highest GPU throughput, production serving, 100+ models, full OpenAI API | Targets A100/H100 class; no 4–8 GB VRAM path; non-deterministic by default | CPU-first; 4–8 GB VRAM class; per-machine calibration; deterministic by construction |
+| **KTransformers** (kvcache-ai/ktransformers) | 19,641 | v0.7.2 (2026-10-15) | CPU/GPU hybrid MoE, Intel AMX kernels, SOSP 2025 | Runs DeepSeek-671B on ~14 GB VRAM + 128 GB RAM; 1.25–4.09× over llama.cpp | Requires 128 GB RAM + AMX + CUDA/ROCm; does not serve 16–32 GB RAM class; no resource contract layer | Targets the 16–32 GB RAM class KTransformers excludes; predict→enforce→prove pipeline |
+| **ridgepoint** (Isk4R1oT/ridgepoint, PyPI v0.1.2) | 2 | 2026-09-08 | Calibrated VRAM + roofline for A100/H100; GQA/MLA-correct; per-field `calibrated` flag | ~1% MAPE vs real vLLM on A100/H100; MLA support; intervals not point estimates; per-field provenance | Calibration offline, A100/H100 only; `quadro-m2000` unrepresentable; prediction only — no enforcement; no RSS harness | On-device calibration with held-out MAPE; enforcement gate; measured RSS proof |
+| **RAMLLM** (Mayank3613/RAMLLM, PyPI v0.2.1) | 0 | 2026-10-18 | Per-machine empirical calibration + budget-aware planning + live memory governor; llama.cpp backend | ±2–4% tok/s prediction accuracy on real hardware; live KV-cache quantisation governor; OpenAI-compatible server | No held-out train/test split with published MAPE; no proof harness asserting `measured ≤ budget` over ≥20 configs; no embeddable in-process `plan`/`admit` API; requires llama.cpp backend | Held-out MAPE published even when bad (~46–65%); zero-violation stress harness as repo test; in-process Python `plan()`/`admit()` API; NumPy-only, no native binary dependency |
+| **llm-inference-calculator** (pochenai) | 21 | 2026-10-06 | Two-phase roofline (prefill compute-bound TTFT + decode bandwidth-bound TPOT); MoE sparsity | Rigorous two-phase model (source 44 / Sarathi); MoE expert coverage | No calibration; no enforcement; no consumer-hardware target; static model only | On-device calibration; single-machine consumer target; enforcement gate |
+| **llm-roofline** (Pluenet-Killian) | 0 | 2026-06-20 (inactive 4+ mo) | Decode throughput floor = bytes/bandwidth per GPU | Simple clean derivation; readable chart | Throughput floor only; no memory prediction; no enforcement; inactive | Memory contract + enforcement + RSS proof |
+| **hardware-aware-llm-runtime** (JohnScheuer) | 0 | 2026-06-25 (inactive 4+ mo) | Hardware-calibrated roofline; empirical optimal batch size | Empirical constant fitting; finds compute/bandwidth crossover | Throughput focus; no enforcement; no stress harness; inactive | Memory-safety focus; enforcement after calibration |
+| **llm-vram-calculator** (Shun-Calvin) | 3 | 2026-09-26 | Formula-based VRAM/TTFT/tok/s for 100+ models × 70+ GPUs | Widest model×GPU coverage; public API | Formula-based, not calibrated; GPU-only; no enforcement | On-device calibration; enforcement; RSS proof harness |
+| **aura** (Grevix/aura, Rust, Apache-2.0, v0.1.0) | 4 | v0.1.0 (2026-08-23); last push 2026-09-03 | Kernel-level budget enforcement (cgroup v2 / Win32 Job Object); context-ladder degradation; ollama model discovery; NVMe/GPU/SIMD diagnostics | More aggressive enforcement (OS-level) than fitsproof; four-tier memory hierarchy; consumer-hardware focus | **BENCHMARK.md (c2-p2 verified, confirmed through c8-p2; 0 commits since 2026-09-03):** `qwen3:8b` with 4.00 GB Job Object budget reports `Peak Working Set: 4.92 GB` — 23% over — with no violation flag; no held-out calibration; no MAPE; no embeddable API; no OpenAI/MCP plugin surfaces | Held-out MAPE published even when bad; zero-violation stress harness as repo test; embeddable Python client + MCP + OpenAI server surfaces |
+| **detllm** (tommasocerruti) | 22 | 2026-08-20 | Capability-gated determinism tier reporting (Tier 0/1/2); repro packs | Honest tier framing — reports the tier actually achieved, never claims higher | Determinism checking only; no memory prediction or enforcement | Adopts detllm tier model for verify layer (source 14); adds contract enforcement |
+
+---
+
+### Gap claim — state as of 2026-10-27T20:08Z
+
+RAMLLM is the most credible entrant in the prediction/enforcement space since aura.
+It closes the consumer-hardware prediction accuracy gap (±2–4% vs fitsproof's ~50%
+MAPE) but still leaves the three-property gap intact:
+
+**Three properties, no single tool has all three as of 2026-10-27T20:08Z:**
+
+1. **Calibrate prediction constants from measurements on the user's own hardware with
+   a held-out train/test split and a published MAPE** — honest even when bad. RAMLLM
+   calibrates per-machine but does not evaluate on held-out configurations with a
+   published error bound. ridgepoint calibrates against A100/H100 offline.
+
+2. **Enforce a declared budget with a structured degradation record naming exactly
+   what changed** (quant mode, context length, offload fraction). RAMLLM enforces
+   dynamically via a governor; aura enforces at the OS level. Neither emits a
+   structured record at admission time that names the specific degradation applied
+   and its predicted cost.
+
+3. **Prove compliance: a test-suite-wired stress harness that asserts
+   `measured_peak ≤ declared_budget` across ≥20 configurations and exits non-zero
+   on any violation.** No tool in the table ships this as a repository test.
+
+**The RAMLLM note on property 3:** RAMLLM's README publishes a benchmark table with
+a "Peak Memory" column and a "Verdict" column (`COMFORTABLE` / `CONSTRAINED`) but
+never compares peak memory to a declared budget across a fixed set of configurations
+in a pass/fail harness. The governor may prevent violations at runtime, but there is
+no commit-gated test asserting zero violations — a requirement for a CI gate.
+
+**How a user notices the three-property gap:**
+
+- With RAMLLM: `ramllm plan <model>` gives a ±2–4% tok/s prediction but no
+  confidence interval on held-out configs, and no binary pass/fail on `measured ≤ budget`.
+- With fitsproof: `fitsproof stress` runs 25 configurations, compares measured RSS to
+  declared budget for each, exits non-zero on any violation, and prints margin percentiles.
+  The calibration (47% MAPE) is honest and published.
+
+**Watch items:**
+
+1. **RAMLLM.** Active repo (0 stars, 0.2.1 on PyPI, pushed 2026-10-18). If a future
+   release adds (a) a held-out calibration split with published MAPE and (b) a
+   `ramllm stress` command that asserts zero violations as a CI-wired test, two of
+   the three properties close. Check before fitsproof publication.
+
+2. **aura.** 0 commits since 2026-09-03 (confirmed this pass). The c2-p2 BENCHMARK.md
+   finding (4.92 GB peak against 4.00 GB budget) stands. Gap unchanged.
+
+3. **llama.cpp `--budget` flag.** Confirmed absent in v0.7.0 release notes (this pass).
+   Re-check before publication.
+
+---
+
+### Falsification for Cycle 8 — Pass 2
+
+Observations that would prove this pass's findings wrong:
+
+1. **RAMLLM publishes a held-out evaluation protocol with MAPE before fitsproof's
+   release.** NOT OBSERVED as of 2026-10-27T20:08Z.
+
+2. **RAMLLM's proof harness (if shipped) shows `measured_peak > declared_budget` is
+   possible under its governor.** If RAMLLM's governor is leak-proof (every admitted
+   config always stays under budget), then its enforcement claim would be stronger than
+   fitsproof's in-process gate. Not yet evidenced — the governor is a dynamic controller,
+   not a static pre-admission contract.
+
+3. **A new tool appeared in this pass's searches that does all three properties.**
+   NOT OBSERVED: four search queries evaluated; RAMLLM is the only significant new
+   entrant and it leaves two of the three properties unaddressed.
+
+4. **llama.cpp v0.7.0 ships a budget enforcement flag not visible in the release notes
+   body.** Grep confirmed absent in the API-returned release body. Could miss changelog
+   entries in linked docs. Re-check the full CHANGELOG at publication time.
+
+5. **The gap claim is invalidated by a tool outside the GitHub REST search index**
+   (e.g., a private or enterprise tool). Not verifiable by this search; the adversarial
+   reviewer should run the same searches from a different host to confirm the index state.
+
+---
+
+### Link verification — raw output (2026-10-27T20:08Z, curl over new URLs this pass)
+
+```
+# c8-p2 new source: RAMLLM
+200 https://github.com/Mayank3613/RAMLLM
+200 https://pypi.org/project/ramllm/
+# Previously verified; spot-checked this pass (sample):
+200 https://arxiv.org/abs/2303.06865   [2: FlexGen]
+200 https://arxiv.org/abs/2309.06180   [15: PagedAttention]
+200 https://github.com/ggml-org/llama.cpp
+200 https://github.com/vllm-project/vllm
+200 https://github.com/kvcache-ai/ktransformers
+200 https://github.com/Grevix/aura
+# Pre-existing 403 (bot-blocked, not dead) — unchanged:
+403 https://dl.acm.org/doi/10.1145/1498765.1498785   [1: Roofline Williams 2009]
+```
+
+
+---
+
+## Cycle 8 — Pass 3 — REAL-WORLD APPLICABILITY (c8-p3)
+
+*Dispatched 2026-10-27T21:00Z. This is the pass-3 mandate for cycle 8: close every
+open question carried from passes 1–2 of this cycle; run the independent MCP SDK
+client test (c8-p1 falsifier 5); document the RAMLLM adoption context; extend
+ADOPTION.md §16. All raw output captured on 2026-10-27T21:00Z on the ThinkStation
+P500 (Python 3.11.15). EVIDENCE.md baseline: 1023/1140 = 89.7% (reports/mutation-c7.json).*
+
+---
+
+### Open-question closure table — cycle 8 pass 3
+
+Status: CLOSED (answered), OBSERVED (falsifier fired; published),
+OPEN (cannot close without more data or implementation).
+
+| # | Question (source) | Status | Evidence / closure note |
+|---|---|---|---|
+| c8-p1-F5 | Independent MCP SDK client completes tools/call against `fitsproof mcp` | **CLOSED — confirmed** | Official Python MCP SDK (`mcp>=1.0.0`, `ClientSession`) round-trip succeeded: `server_info.name='fitsproof-mcp'`, `protocol_version='2025-03-26'`, tools `['admit','plan','probe']`, `admit 4GiB is_error: False` with ADMITTED verdict in content, `admit 1MiB is_error: True` with REFUSED verdict. The SDK uses snake_case `is_error` (Python binding); the JSON wire uses `isError` per the 2025-03-26 spec (source 23) — both are correct. Raw output in ADOPTION §16.3. |
+| c8-p1-F2 | A shipped tool refuses pre-allocation with named binding constraint + nearest fitting config on CPU-first consumer hardware | **CLOSED (not observed)** | c8-p2 re-ran the five candidates from c8-p1: vLLM (fraction-cap, GPU-only, source 88), K8s (reactive kill, needs cluster, source 89), Accelerate (silent offload, source 90), Ollama (queue-forever, source 91), llama.cpp v0.7.0 (no `--budget` flag, confirmed c8-p2 release note grep). RAMLLM (new entrant, §16.4) adds per-machine calibration and live governor but does not emit a structured refusal record naming the nearest fitting config. No tool closes this. |
+| c8-p2-F1 | RAMLLM publishes held-out MAPE + zero-violation stress harness before fitsproof release | **OPEN — watch item** | RAMLLM v0.2.1 (2026-10-18) documented in c8-p2: no held-out split, no MAPE, no `ramllm stress` command. Check before publication. |
+| 6 / 15 | Bootstrap CI coverage (n_held_out=1 → point mass) | **OPEN — unchanged** | c8-p3 session: CI `[67.1%, 67.1%]` — degenerate point, correctly annotated. Source 58 (Davison & Hinkley) grounds why n ≥ 10 is needed. Cannot close without more measurements. |
+| 16 | ru_maxrss stale peak (per-call measurement) | **OPEN — partly addressed** | Stress harness now uses `sampled_vmrss` (per-run live RSS, not process VmHWM). Per-call measurement gap reduced but not eliminated; structural instrument limitation documented. |
+| 17 | Binary release not built (M1) | **OPEN — implement pass** | No change. PyInstaller onefile; CI clean-job smoke test is the evidence bar. |
+| c6-p1-F5 | BLOOM KAT absent from test_cost.py | **OPEN — requires F-1 cost model fix** | The fix lands in the implement pass first; the KAT (weight_bytes for BLOOM 176B at fp16 ≈ 359.7 GB, source 77) is fully grounded and ready to write as a test once the cost model is corrected. |
+| c6-p2-F6 | Adversarial reviewer independent search | **OPEN — adversarial pass scope** | Eight cycles, 40+ queries. An independent search from a fresh host is the correct remaining validation before publication. |
+
+---
+
+### Raw output summary — 2026-10-27T21:00Z
+
+Test suite:
+```
+235 passed in 409.69s (0:06:49)
+```
+
+Stress harness:
+```
+Stress harness: 25 configs, 0 violations, 0 silent mode changes.
+  measurement: sampled_vmrss (sampled peak live RSS of each run, not the process high-water mark)
+  margin (budget - sampled peak): min=3909.2 MB, median=3912.4 MB, max=3912.8 MB
+  sampled peak: min=87.2 MB, max=90.8 MB; process VmHWM (separate column, not the measurement): 302.2 MB
+```
+
+MAPE:
+```
+bandwidth: 2.25 GB/s (loaded box)
+MAPE (held-out): 67.1%
+```
+
+The 67.1% MAPE is within the updated ~30–70% range (the range was ~30–65% before this
+session; see ADOPTION §16.7 for the full session history and correction). The loaded-box
+bandwidth (2.25 GB/s vs typical 6–7 GB/s) is the proximate cause; the correlation
+between bandwidth measurement and MAPE is documented as F-3 in ADOPTION §3.
+
+---
+
+### Ecosystem update — RAMLLM
+
+RAMLLM (Mayank3613/RAMLLM, v0.2.1, 2026-10-18, 0 stars) is the most significant new
+entrant since aura and the closest to fitsproof's prediction layer. Full analysis in
+ADOPTION §16.4 and the c8-p2 comparison table. Summary for RESEARCH.md:
+
+**What RAMLLM adds that fitsproof lacks:** ±2–4% tok/s accuracy on real hardware (vs
+fitsproof's ~30–70% MAPE). RAMLLM's per-machine benchmarking is more accurate.
+
+**What RAMLLM lacks that fitsproof provides:**
+1. No held-out train/test split with published MAPE.
+2. No proof harness: no `ramllm stress` asserting `measured_peak ≤ budget` over ≥20
+   configs as a CI-wired test.
+3. No embeddable in-process `plan()`/`admit()` API (CLI + HTTP only).
+
+The three-property gap claim (RESEARCH.md c3-p2 onwards) remains intact as of c8-p3:
+no single tool does all three of (1) held-out calibration with published MAPE,
+(2) structured degradation record naming exactly what changed, and (3) test-suite-wired
+zero-violation stress harness.
+
+---
+
+### MAPE range correction
+
+The documented MAPE range is corrected from **~30–65%** to **~30–70%** based on this
+session's 67.1% observation. Updated in:
+- ADOPTION.md §3 ("Documented range: **~30–70%**")
+- ADOPTION.md §16.7 (full session history)
+- README.md (two occurrences in the calibration section and Limitations section)
+
+---
+
+### Falsification — Cycle 8 Pass 3
+
+What observation would prove this pass's closure decisions wrong:
+
+1. **RAMLLM ships held-out calibration + zero-violation stress harness before
+   fitsproof's release commit.** NOT OBSERVED as of 2026-10-27. If it ships, the
+   three-property gap narrows from 3 to 1 (only embeddable API remains unclosed).
+
+2. **The independent MCP SDK `ClientSession` round-trip fails on a different host
+   (different OS, different SDK version).** NOT TESTED on a second host. The adversarial
+   pass should re-run on any available independent machine. If it fails, M2.4 is broken.
+
+3. **sampled_vmrss differs from the true per-run peak by more than 5 MB.** The sampling
+   interval could miss a brief allocation spike. For the reference model at 38 MB weights,
+   a 5 MB miss is 13% of the model size — observable if a stress config shows a violation
+   on a different instrument (e.g., cgroup memory.peak). Not observed.
+
+4. **llama.cpp v0.7.0 ships a `--budget` flag in a minor release before publication.**
+   Confirmed absent in v0.7.0 release notes (c8-p2). Re-check at the release commit.
+
+5. **aura ships held-out calibration + CI-wired zero-violation stress harness.** NOT
+   OBSERVED; 0 commits since 2026-09-03. aura v0.1.0 is still the latest.
+
+---
+
+### Link verification — raw output (2026-10-27, new URLs this pass)
+
+No new source URLs in c8-p3. The MCP Python SDK URL (source 94) was already in the
+list from c8-p1. Spot-check of key existing sources:
+
+```
+# Spot-check (2026-10-27T21:00Z)
+200 https://github.com/modelcontextprotocol/python-sdk   [94: MCP Python SDK]
+200 https://github.com/Mayank3613/RAMLLM                  [c8-p2 RAMLLM]
+200 https://pypi.org/project/ramllm/                      [c8-p2 RAMLLM PyPI]
+200 https://arxiv.org/abs/2309.06180                      [15: PagedAttention]
+200 https://modelcontextprotocol.io/specification/2025-03-26/  [23: MCP spec]
+# Pre-existing 403 (bot-blocked, not dead) — unchanged:
+403 https://dl.acm.org/doi/10.1145/1498765.1498785        [1: Roofline Williams 2009]
+```

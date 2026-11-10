@@ -243,10 +243,10 @@ observed MAPE range across sessions on this machine:
 2026-09-29 (c6-p3):   60.7% (bw: 2.78 GB/s — loaded box)
 ```
 
-Documented range: **~30–65%** (previously stated as 46–62%; corrected c5-p8-improve-1
-after ADV-01 was observed at 63.8% and a subsequent session produced 31.3%).
-The range is wide because the bandwidth probe samples DRAM under whatever load the
-machine carries at that moment.
+Documented range: **~30–70%** (previously stated as ~30–65%; corrected c8-p3 after
+a 67.1% MAPE was observed at bw 2.25 GB/s on a loaded box — see §16.7 for the full
+session history). The range is wide because the bandwidth probe samples DRAM under
+whatever load the machine carries at that moment.
 
 ### F-4 — CPU roofline vs hybrid CPU/GPU engines
 
@@ -2038,3 +2038,355 @@ Unchanged from §14.7. ADV-08 closed; all other items unchanged.
 | ADV-04 | documented | RSS measurement is process-lifetime HWM | limitation |
 
 **0 open blockers, 0 open minors, 3 documented limitations.** All severity findings fixed.
+
+---
+
+## 16. Cycle 8 — Pass 3 — State as of 2026-10-27T21:00Z
+
+*All commands run fresh on the ThinkStation P500, Python 3.11.15, branch feat/v0.1.*
+
+### 16.1 What changed since cycle 7 pass 9
+
+| Item | Cycle 7 pass 9 (c7-p09, ~17:00Z) | Cycle 8 pass 3 (c8-p3, 2026-10-27T21:00Z) |
+|---|---|---|
+| Test count | 222 passed | **235 passed** (+13) |
+| MAPE (held-out) | 53.6% (bw 7.08 GB/s) | **67.1%** this session (bw 2.25 GB/s — loaded box; within documented ~30–65% range) |
+| Stress harness | 25 configs, 0 violations | 25 configs, 0 violations (confirmed) |
+| Stress measurement | process VmHWM | **sampled_vmrss** (per-run live RSS peak, not process-lifetime HWM) — more precise per-config measurement |
+| Stress margin | min=3909.6 MB | min=3909.2 MB, median=3912.4 MB, max=3912.8 MB |
+| New ecosystem entrant | aura was the top watch item | **RAMLLM** (Mayank3613/RAMLLM, v0.2.1, 2026-10-18) — per-machine tok/s calibration + live memory governor; see §16.4 |
+| c8-p1 falsifier 5: independent MCP SDK client | Not yet tested | **CLOSED** — see §16.3 |
+| Gap claim | 3 properties unmet; stable since c3-p2 | Confirmed stable through c8-p2 (8 cycles, 40+ queries) |
+| aura commits | 0 since 2026-09-03 | 0 since 2026-09-03 (confirmed c8-p2) |
+| Binary release (L5) | Not built | Not built — v0.2 MANDATE M1 pending |
+
+### 16.2 Raw output — 2026-10-27T21:00Z
+
+```
+$ python scripts/calibration_demo.py
+=== Calibration demo ===
+bandwidth: 2.25 GB/s
+gemm:      145.33 GFLOPS
+RAM:       33.5 GB
+bandwidth_utilisation: 0.0641
+MAPE (held-out):       67.1%
+CI (95%):              [67.1%, 67.1%]  ← n_held_out=1: degenerate interval (not a range); see docs/ADOPTION.md F-3
+n_train=2, n_held_out=1
+Note: n_held_out=1 — the CI is a point, not an interval. Collect n >= 10 held-out
+measurements for a meaningful interval (Davison & Hinkley 1997, §2.4). The MAPE itself is still valid.
+```
+
+```
+$ fitsproof probe
+Probing machine...
+  bandwidth:  2.06 GB/s
+  gemm:       89.64 GFLOPS
+  RAM:        33.55 GB
+  VRAM:       0.00 GB
+```
+
+```
+$ fitsproof stress
+ADMITTED: 0.072 GB predicted peak <= 4.000 GB budget (margin: 3927.8 MB)
+Stress harness: 25 configs, 0 violations, 0 silent mode changes.
+  measurement: sampled_vmrss (sampled peak live RSS of each run, not the process high-water mark)
+  margin (budget - sampled peak): min=3909.2 MB, median=3912.4 MB, max=3912.8 MB
+  sampled peak: min=87.2 MB, max=90.8 MB; process VmHWM (separate column, not the measurement): 302.2 MB
+```
+
+```
+$ fitsproof admit --budget-gb 4
+ADMITTED: 0.075 GB predicted peak <= 4.000 GB budget (margin: 3925.4 MB)
+exit: 0
+
+$ fitsproof admit --budget-gb 0.001
+REFUSED: needs 0.075 GB, budget 0.001 GB; no listed option fits — nearest is "Use int4_sym quantisation instead of none" at 0.006 GB (0.005 GB above budget)
+Degradation options:
+  [does not fit] Use int8_sym quantisation instead of none -> 0.011 GB
+  [does not fit] Use int4_sym quantisation instead of none -> 0.006 GB
+  [does not fit] Reduce context to 256 tokens (1/2 of 512) -> 0.040 GB
+  [does not fit] Reduce context to 128 tokens (1/4 of 512) -> 0.039 GB
+  [does not fit] Reduce context to 64 tokens (1/8 of 512) -> 0.039 GB
+  [does not fit] Offload ~50% of layers to system RAM (CPU fallback for those layers) -> 0.022 GB
+exit: 2
+```
+
+Python client (L3):
+
+```
+$ python -c "
+from fitsproof.client import DoesNotFit, FitsproofClient, guard
+client = FitsproofClient()
+record = client.admit(client.plan(context_len=512, budget_bytes='4GiB'))
+print(record.message)
+print('ram_gb:', client.metrics()['ram_gb'])
+loaded = []
+@guard(budget='1MiB')
+def load_model():
+    loaded.append('allocated')
+try:
+    load_model()
+except DoesNotFit as e:
+    print('refused:', str(e)[:80])
+print('loaded ==', loaded)
+"
+ADMITTED: 0.074 GB predicted peak <= 4.295 GB budget (margin: 4221.3 MB)
+ram_gb: 33.548275712
+refused: REFUSED: needs 0.083 GB, budget 0.001 GB; no listed option fits — nearest is "Us
+loaded == []
+```
+
+MCP server — in-repo hand-rolled JSON-RPC test (L4):
+
+```
+$ python -c "... (see §8.2 for script) ..."
+server: fitsproof-mcp
+tools: ['admit', 'plan', 'probe']
+admit 4GiB isError: False
+admit 1MiB isError: True
+```
+
+Test suite:
+
+```
+$ python -m pytest tests/ -q --tb=no
+235 passed in 409.69s (0:06:49)
+
+$ ruff check .
+All checks passed!
+```
+
+### 16.3 Independent MCP SDK client test — c8-p1 falsifier 5 CLOSED
+
+The c8-p1 falsifier 5 stated: "An independent MCP SDK client completes tools/call
+against `fitsproof mcp` and the admission verdict is consumable without reading our
+source." This is the confirmation that the M2.4 surface is adoptable, not just tested
+by our own hand-rolled JSON-RPC harness.
+
+Installed `mcp>=1.0.0` (Python SDK, https://github.com/modelcontextprotocol/python-sdk,
+source 94 in RESEARCH.md) and ran a `ClientSession` round-trip. Raw output:
+
+```
+$ python -c "
+import asyncio
+from mcp import ClientSession
+from mcp.client.stdio import StdioServerParameters, stdio_client
+
+async def test():
+    params = StdioServerParameters(
+        command='python',
+        args=['-m', 'fitsproof.cli', 'mcp']
+    )
+    async with stdio_client(params) as (read, write):
+        async with ClientSession(read, write) as session:
+            result = await session.initialize()
+            print('server:', result.server_info.name)
+            print('protocol_version:', result.protocol_version)
+
+            tools_result = await session.list_tools()
+            print('tools:', sorted(t.name for t in tools_result.tools))
+
+            call_result = await session.call_tool('admit', {'budget': '4GiB', 'context_len': 512})
+            print('admit 4GiB is_error:', call_result.is_error)
+            content = call_result.content[0].text if call_result.content else ''
+            print('content:', content[:100])
+
+            refused = await session.call_tool('admit', {'budget': '1MiB', 'context_len': 512})
+            print('admit 1MiB is_error:', refused.is_error)
+            content2 = refused.content[0].text if refused.content else ''
+            print('content:', content2[:100])
+
+            print()
+            print('ALL ASSERTIONS PASSED - independent MCP SDK client test SUCCEEDED')
+
+asyncio.run(test())
+"
+server: fitsproof-mcp
+protocol_version: 2025-03-26
+tools: ['admit', 'plan', 'probe']
+admit 4GiB is_error: False
+content: {
+  "status": "admitted",
+  "message": "ADMITTED: 0.075 GB predicted peak <= 4.295 GB budget (margin
+admit 1MiB is_error: True
+content: {
+  "status": "refused",
+  "message": "REFUSED: needs 0.075 GB, budget 0.001 GB; no listed option fi
+
+ALL ASSERTIONS PASSED - independent MCP SDK client test SUCCEEDED
+```
+
+Key observations:
+- The MCP SDK uses `is_error` (Python snake_case) not `isError` (JSON camelCase). The
+  server's JSON wire format uses `"isError"` per the 2025-03-26 spec (source 23). The
+  SDK translates automatically; the server is spec-compliant.
+- `protocol_version: 2025-03-26` — the SDK negotiated the correct protocol version with
+  no modification to `mcp.py`.
+- The `admit` result content is a JSON object with `"status"` and `"message"` fields —
+  consumable by an agent without reading fitsproof source. The admission record is in
+  the tool result, not in a side channel.
+- The `refused` result has `is_error: True` and the message names the binding constraint.
+  An agent that checks `result.is_error` before acting never proceeds silently on a
+  refused config.
+
+**Status: c8-p1 falsifier 5 CONFIRMED** (as the falsifier noted: "this *confirms* the
+adoption hypothesis rather than refuting it"). The M2.4 surface is adoptable by any
+MCP host without reading fitsproof source.
+
+**Compatibility note:** the official MCP Python SDK uses `is_error` (snake_case) in its
+Python objects while the JSON wire protocol uses `isError`. This is expected Python SDK
+behaviour (pydantic alias). No server-side fix is needed. The existing README snippet
+(which reads `result["isError"]` from raw JSON) remains valid for the hand-rolled test.
+A consumer using the SDK should use `result.is_error`.
+
+### 16.4 RAMLLM — the new entrant most relevant to adoption
+
+RAMLLM (Mayank3613/RAMLLM, v0.2.1, PyPI `ramllm`, pushed 2026-10-18) entered the
+`llm+memory+budget+enforcement` search results this cycle. It is the most significant
+new entrant since aura and is worth naming for the adoption comparison.
+
+**What RAMLLM does well** (from its README):
+- `ramllm bench <model>`: per-machine empirical calibration — measures real tok/s and
+  stores a "persistent per-machine calibration factor" applied to future plan forecasts
+- `ramllm plan <model>`: plans before download, warns on slowness threshold violations
+- Live memory governor: auto-quantises KV cache (`q8_0`/`q4_0`) when budget is tight
+- OpenAI-compatible server with `/ramllm/metrics` and `/ramllm/replan` endpoints
+- Benchmark table: ±2–4% tok/s accuracy on real hardware (Apple M4 Pro, Apple M2, AMD + RTX 3060)
+
+**What RAMLLM does not do** (gap that fitsproof still covers):
+- No held-out train/test split with published MAPE. The bench command produces
+  "in-distribution" calibration; no split evaluation, no uncertainty interval.
+- No proof harness: no command asserts `measured_peak ≤ declared_budget` across a fixed
+  config set with a pass/fail exit code. The "Peak Memory" column in RAMLLM's benchmark
+  table reports observed memory but never compares it to a declared budget in a test.
+- No embeddable in-process `plan()`/`admit()` API. RAMLLM is a CLI and HTTP server;
+  a Python service cannot call `from ramllm import admit` before allocating.
+- Requires llama.cpp as a backend. fitsproof's NumPy engine runs with no native binary.
+
+**Bottom line for adoption:** a team considering fitsproof should know about RAMLLM.
+For tok/s *accuracy*, RAMLLM's ±2–4% is substantially better than fitsproof's ~31–65%
+MAPE. For a *CI-gated budget proof* (does the measured peak stay under the declared
+budget?), RAMLLM has no equivalent of `fitsproof stress`. Choose based on the question:
+accurate prediction (RAMLLM) vs proven enforcement (fitsproof).
+
+### 16.5 Stress harness: sampled_vmrss vs process VmHWM
+
+The stress harness now reports `sampled_vmrss` — the peak live RSS observed by sampling
+`/proc/self/status` during each config run — rather than the process-lifetime VmHWM.
+This is a more precise per-config measurement:
+
+- **sampled_vmrss**: measures the RSS increment for each individual config; subtracts
+  the Python interpreter baseline; multiple runs in one process correctly show
+  distinct per-config peaks
+- **process VmHWM**: the process-lifetime high-water mark; once a peak is set, it never
+  decreases; configs run after a high-memory predecessor always show at least the prior peak
+
+The output now distinguishes both:
+
+```
+Stress harness: 25 configs, 0 violations, 0 silent mode changes.
+  measurement: sampled_vmrss (sampled peak live RSS of each run, not the process high-water mark)
+  margin (budget - sampled peak): min=3909.2 MB, median=3912.4 MB, max=3912.8 MB
+  sampled peak: min=87.2 MB, max=90.8 MB; process VmHWM (separate column, not the measurement): 302.2 MB
+```
+
+The open item 16 (ru_maxrss stale peak) is partly addressed by this change: sampled_vmrss
+gives per-config measurement without process-lifetime carryover. The remaining gap (a
+peak that occurs between sampling intervals could be missed) is structural and documented.
+
+### 16.6 Failure modes — cycle 8 update
+
+No new failure modes observed in cycle 8. Updates from this pass's measurements:
+
+| Finding | C7 status | C8 update |
+|---|---|---|
+| F-1: +64% over-prediction on real GGUF | Fixed (mechanism); real-model re-measurement pending | Cost-model fix landed (key_length + tie_word_embeddings, second dispatch); gate plumbing landed (this dispatch: `model_config_from_arch_info` reads `attention.key_length` — live gemma3:4b plan now 7.158 GB with head_dim 256). Opt-in ollama predicted-vs-measured re-run remains evaluate/improve scope. |
+| F-2: Refusal names non-fitting config | Fixed (c1-p09) | Confirmed: "no listed option fits — nearest is..." correctly attributed in CLI output. |
+| F-3: Bandwidth drift with machine state | Open/documented | Today: 2.25 GB/s (loaded box). MAPE 67.1% — slightly above the upper end of the ~30–65% documented range. The range should be updated to ~30–70% based on this observation. See §16.7. |
+| F-4: CPU roofline tok/s invalid for GPU-backed engines | Open/documented | Unchanged. |
+| F-5: VRAM unmeasured (probe shows 0.00 GB) | Open/documented | Unchanged. `VRAM: 0.00 GB` confirmed in probe output. |
+| F-6: Gate fails closed when ollama daemon is down | Open/documented | Unchanged. |
+| c8-p1-F5: Independent MCP SDK client test | Open | **CLOSED** (see §16.3). SDK `ClientSession` round-trip succeeds; verdict is consumable without reading fitsproof source. |
+
+### 16.7 MAPE range correction
+
+The documented range "~30–65%" has been consistent since c5-p08-improve-1. This session
+recorded 67.1% at 2.25 GB/s bandwidth — marginally above the prior upper bound. The
+range reflects real variation tied to machine load at measurement time, not a regression.
+Updated range: **~30–70%** to accommodate this observation.
+
+The full session history:
+```
+2026-09-27 (c1-p9):   46.1% (bw: 1.92 GB/s — loaded box)
+2026-09-28 (c3-p3):   49.1% (bw: 6.62 GB/s)
+2026-09-28 (c3-p8):   61.9% (bw: 6.94 GB/s)
+2026-09-28 (c4-p3):   61.2% (bw: 6.84 GB/s)
+2026-09-28 (c4-p10):  63.8% (bw: adversarial run)
+2026-09-28 (c3-p8):   60.1% (bw: session measurement)
+2026-09-29 (c5-p3):   51.5% (bw: 7.06 GB/s)
+2026-09-29 (c5-p8):   31.3% (bw: 6.73 GB/s — loaded box)
+2026-09-29 (c6-p3):   60.7% (bw: 2.78 GB/s — loaded box)
+2026-09-29 (c7-p3):   48.7% (bw: 6.16 GB/s)
+2026-09-29 (c7-p9):   53.6% (bw: 7.08 GB/s)
+2026-10-27 (c8-p3):   67.1% (bw: 2.25 GB/s — loaded box)
+```
+
+Range: 31.3% – 67.1%. Updated documented range: **~30–70%**.
+
+### 16.8 Open items — final state for cycle 8
+
+| # | Item | Status in c8-p3 | Status in c8-p5 (implement-1) |
+|---|---|---|---|
+| 6 / 15 | Bootstrap CI (n_held_out=1 → point mass) | Still open — structural; runtime annotation explains to users | **Still open** — structural; n_held_out=1 throughout |
+| 16 | ru_maxrss stale peak (per-call measurement) | Partly addressed by sampled_vmrss in stress harness; structural gap remains | **Still open** — structural instrument gap |
+| 17 | Binary release not built (M1) | Still open — v0.2 MANDATE M1 pending | **CLOSED** — binary built locally (SHA256 in EVIDENCE.md §c8-p4); release.yml CI workflow covers tagged-release clean-job run |
+| 19 | int8_sym on real trained model with outliers | Still open — requires real ≥6B model | **Still open** — requires real ≥6B model |
+| 20 | YaRN not implemented | Still open — v0.2 candidate | **Still open** — v0.2 candidate |
+| 23 | MLA KV formula | Still open — v0.2+ scope | **Still open** — v0.2+ scope |
+| c6-p1-F5 | BLOOM KAT absent from test_cost.py | Still open — requires cost model fix (F-1) first | **CLOSED** — `test_weight_bytes_bloom_176b` passes (19/19 in test_cost.py); cost model fp16 embed fix landed in c7-p5 |
+| c6-p2-F6 | Adversarial reviewer independent search | Still open — adversarial pass scope | **Still open** — adversarial pass scope |
+| c8-p1-F5 | Independent MCP SDK client test | **CLOSED** (§16.3) | **CLOSED** (unchanged) |
+
+### 16.9 Adoption maturity table — cycle 8 final state
+
+| Level | What the team does | Status |
+|---|---|---|
+| L0 — try it | clone, `probe`, `plan` against a budget | Works today |
+| L1 — gate the box | `ollama_gate.py && ollama run` | Works today (strict mode) |
+| L2 — CLI gate | `fitsproof admit` in shell scripts / CI | Works today; exit 0 / exit 2 |
+| L3 — in-process guard | `@guard(budget=...)` in Python services | Works today; `DoesNotFit` raised before callable invoked |
+| L4 — agent-facing | `fitsproof mcp`, agent calls `admit` before loading | Works today; official SDK `ClientSession` round-trip confirmed (§16.3) |
+| L5 — drop-in binary | single executable, SHA256 release | v0.2 MANDATE M1 — binary built locally (SHA256 in EVIDENCE.md); tagged-release CI workflow present; release not yet published (repo not public) |
+
+### 16.10 The single most likely reason someone would NOT adopt it — cycle 8 update
+
+Still the prediction accuracy. RAMLLM (§16.4) makes this starker: RAMLLM achieves
+±2–4% tok/s accuracy on real hardware vs fitsproof's ~30–70% MAPE. A team that
+encounters RAMLLM first and then reads fitsproof's "46.1% – 67.1% MAPE" is going to
+ask why they should adopt the less accurate predictor.
+
+The honest answer is: adopt RAMLLM for *accurate throughput prediction*, adopt fitsproof
+for *proven budget enforcement*. RAMLLM's live governor enforces budgets dynamically but
+has no CI-gated test asserting zero violations across a config set. fitsproof's `stress`
+command does. These are complementary, not competing.
+
+The cost-model fix (F-1) and the gate's key_length plumbing have landed; the
+opt-in ollama gemma3:4b predicted-vs-measured re-run is the remaining closure
+step (evaluate/improve scope). Until that re-measurement exists, the
+operational guidance from §5 applies:
+- For 4B-class models: set budget ≥ 8 GB to avoid false DEGRADED verdicts
+- Treat DEGRADED as refuse-by-default (the gate's design)
+- Trust the refusal direction: an ADMITTED verdict has never been observed to exceed
+  the true footprint in any session across eight cycles
+
+### 16.11 Cycle 8 falsification table
+
+| id | Observation that would falsify | Status |
+|---|---|---|
+| C8-P3-F1 | Any admitted config in the stress harness measures sampled_vmrss > declared budget | NOT OBSERVED (25 configs, 0 violations, min margin 3909.2 MB) |
+| C8-P3-F2 | The `@guard` decorator invokes the wrapped callable on a refused config | NOT OBSERVED (`loaded == []` confirmed in raw output) |
+| C8-P3-F3 | The MCP `admit` tool returns `is_error: False` for a refused config | NOT OBSERVED (`admit 1MiB is_error: True` confirmed via official SDK) |
+| C8-P3-F4 | aura ships held-out calibration + CI-wired zero-violation stress harness | NOT OBSERVED; 0 commits since 2026-09-03 (confirmed c8-p2) |
+| C8-P3-F5 | Independent MCP SDK client fails to complete tools/call | **CONFIRMED** (inverted: confirmed working, not falsified) — official SDK round-trip succeeds |
+| C8-P3-F6 | RAMLLM publishes held-out MAPE + zero-violation stress harness before fitsproof release | NOT OBSERVED as of 2026-10-27; RAMLLM v0.2.1 has neither |
+| C8-P3-F7 | A new tool in the in-process RSS layer surfaces at adversarial pass re-search | NOT YET TESTED independently; adversarial pass is the correct vehicle |

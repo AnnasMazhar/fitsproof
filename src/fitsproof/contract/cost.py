@@ -77,10 +77,15 @@ def weight_bytes(cfg: ModelConfig, quant: str = "none") -> int:
     Norm weights are float32 regardless of quant (standard practice).
     Embedding and unembed tables use the model's stored dtype (cfg.dtype) when
     quant="none", preventing over-prediction for fp16 models.
+    When cfg.tie_word_embeddings is True (source [49], GPT-2), the output head
+    shares the embedding matrix and exactly ONE copy is counted.
 
     Formula: sum over each weight matrix of (elements * bits/8).
 
     Sources:
+      [49] Radford et al. 2019 (GPT-2): tied word embeddings — one matrix serves
+           both the input embedding and the output head; counting two copies
+           over-predicts by V*hidden*dtype_bytes (F-1 finding).
       [67] BigScience Workshop 2023 (BLOOM): embedding dtype must match model
            precision — non-tied lm_head at the model's stored dtype; fp32
            hardcoding causes over-prediction for fp16 models.
@@ -88,7 +93,9 @@ def weight_bytes(cfg: ModelConfig, quant: str = "none") -> int:
            fp32 for embeddings would over-predict embed contribution by 2×.
 
     Fault detected: hardcoding fp32 for embeddings causes 2× over-prediction
-    for fp16 models (F-1 finding). Tested with BLOOM-176B known-answer test.
+    for fp16 models (F-1 finding). Counting an unembedding copy for tied models
+    over-predicts by one embedding matrix (F-1 finding, source [49]). Tested
+    with BLOOM-176B and GPT-2 tying known-answer tests.
     """
     # For quant="none", use the model's stored dtype for weight matrices.
     # For explicit quantisation, use the quant bits (overrides model dtype).
@@ -126,8 +133,10 @@ def weight_bytes(cfg: ModelConfig, quant: str = "none") -> int:
     # Per-layer norms (float32, small)
     norm_bytes_per_layer = 2 * d * 4  # attn_norm + ffn_norm
 
-    # Final norm (float32) + unembed (model dtype, same as embedding)
-    final_bytes = d * 4 + V * d * embed_dtype_bytes
+    # Final norm (float32); unembed only exists as a separate matrix when the
+    # model does not tie embeddings (source [49]: tied models share one copy).
+    unembed_b = 0 if cfg.tie_word_embeddings else V * d * embed_dtype_bytes
+    final_bytes = d * 4 + unembed_b
 
     total = int(
         embed_b
@@ -235,7 +244,7 @@ def prefill_ttft_s(
         V * d  # embed
         + L * (h * hd * d + kv_h * hd * d + kv_h * hd * d + d * h * hd)  # attn
         + L * (ff * d + ff * d + d * ff)  # ffn
-        + V * d  # unembed
+        + (0 if cfg.tie_word_embeddings else V * d)  # unembed (source [49])
     )
     flops = 2.0 * params * seq_len
     if machine.gemm_throughput_flops <= 0:
@@ -267,7 +276,7 @@ def arithmetic_intensity(cfg: ModelConfig, quant: str = "none") -> float:
         V * d
         + L * (h * hd * d + kv_h * hd * d + kv_h * hd * d + d * h * hd)
         + L * (ff * d + ff * d + d * ff)
-        + V * d
+        + (0 if cfg.tie_word_embeddings else V * d)  # unembed (source [49])
     )
     w = weight_bytes(cfg, quant)
     if w <= 0:

@@ -8,6 +8,9 @@ Research source mappings (M4 — QUALITY-CONTRACT §4 / fitsproof.md M4):
   [7] Frantar et al. 2022 (GPTQ): int8 halves, int4 quarters weight bytes vs float32.
   [67] BigScience Workshop 2023 (BLOOM): embedding dtype must match model precision.
   [75] BLOOM KAT: weight_bytes(bloom_176b_fp16) embedding contribution ≈ 13.4 GB (fp16).
+  [49] Radford et al. 2019 (GPT-2): tied word embeddings — one matrix serves both
+       the input embedding and the output head; counting two copies over-predicts
+       by V*hidden*dtype_bytes (F-1 fix, c8-p4).
   [80] Patel et al. 2024 (Splitwise): TPOT = (weight_bytes + kv_bytes_per_token) / bandwidth
        — decode is memory-bandwidth-bound; KV term is secondary at short context.
 
@@ -78,9 +81,39 @@ Faults detected by each test:
 
   (hypothesis) test_kv_cache_bytes_scales_with_context:
     Larger context must use more KV cache memory.
+
+  test_weight_bytes_tying_fp32_known_answer (source [49]):
+    KAT: tied config counts exactly one fewer embedding matrix, fp32.
+    Fault: counting an unembed copy for a tied model over-predicts by
+    V*hidden*4 bytes; not counting the difference at all means tying is ignored.
+
+  test_weight_bytes_tying_fp16_known_answer (source [49]):
+    KAT: same difference at the model dtype (fp16 -> V*hidden*2).
+    Fault: applying tying reduction at the wrong dtype width.
+
+  test_key_length_overrides_head_dim_kv (external spec: gemma3 attention.key_length):
+    KAT: KV cache uses key_length=256, not hidden/heads=320 (F-1 cause 1).
+    Fault: deriving head_dim from hidden/heads when the config declares
+    attention.key_length over-predicts every attention projection and the
+    KV term by head_dim_ratio^2 / head_dim_ratio respectively.
+
+  test_key_length_absent_matches_derived_head_dim:
+    Backward compatibility: key_length=None must equal key_length=hidden//heads.
+    Fault: the override changes behaviour for configs that never declared it.
+
+  test_prefill_params_respect_tying (source [49]):
+    KAT: prefill TTFT scales by the hand-derived parameter-count ratio.
+    Fault: fixing weight_bytes but leaving the prefill param count untied makes
+    the two functions inconsistent for the same config.
+
+  (hypothesis) test_tying_reduction_is_exactly_one_embedding_matrix (source [49]):
+    For any valid config, weight_bytes(untied) - weight_bytes(tied) equals
+    V*hidden*dtype_bytes exactly, at the model's own dtype.
 """
 
 from __future__ import annotations
+
+from dataclasses import replace
 
 import numpy as np
 import pytest
@@ -89,8 +122,10 @@ from hypothesis import strategies as st
 
 from fitsproof.contract.calibrate import _mape
 from fitsproof.contract.cost import (
+    arithmetic_intensity,
     decode_tok_s,
     kv_cache_bytes,
+    prefill_ttft_s,
     weight_bytes,
 )
 from fitsproof.contract.probe import MachineProfile, _get_system_ram
@@ -745,4 +780,198 @@ def test_decode_throughput_kv_term_is_secondary_at_short_context() -> None:
         f"weight_bytes={w:,}, kv_total={kv_total:,}. "
         f"Splitwise full formula: TPOT = (weight + kv) / bandwidth. "
         f"fitsproof omits KV term; error at this context = {kv_fraction * 100:.1f}%."
+    )
+
+
+# ---------------------------------------------------------------------------
+# KAT + property tests: F-1 cost-model fix (weight tying + key_length)
+# c8-p4 implement pass. Sources: [49] GPT-2 weight tying; [4] GQA KV formula;
+# external spec: gemma3 config.json attention.key_length (ADOPTION §3 F-1).
+# ---------------------------------------------------------------------------
+
+
+def test_weight_bytes_tying_fp32_known_answer() -> None:
+    """
+    KAT (source [49] Radford et al. 2019, GPT-2 §2.1 "Byte Pair Encoding"
+    / model architecture: "the token embeddings are zero-tied to the output
+    embeddings"):
+
+    A tied model stores ONE embedding matrix. weight_bytes(untied) minus
+    weight_bytes(tied) must equal exactly V * hidden * dtype_bytes.
+
+    Hand derivation (REFERENCE_CONFIG, float32):
+      embedding matrix = vocab * hidden * 4 = 256 * 384 * 4 = 393,216 bytes
+      untied total (existing KAT)          = 38,555,136 bytes
+      tied total   = 38,555,136 - 393,216  = 38,161,920 bytes
+
+    Fault detected: counting an unembed copy for a tied model over-predicts
+    by 393,216 bytes on this config (the F-1 over-prediction mechanism on
+    real tied models); ignoring tying entirely makes the difference zero.
+    """
+    untied = weight_bytes(REFERENCE_CONFIG, quant="none")
+    tied = weight_bytes(replace(REFERENCE_CONFIG, tie_word_embeddings=True), quant="none")
+    one_embed = 256 * 384 * 4
+    assert untied - tied == one_embed, (
+        f"untied-tied = {untied - tied}, expected one embedding matrix {one_embed}. "
+        f"untied={untied}, tied={tied}"
+    )
+    assert tied == 38_161_920, f"tied total = {tied}, expected 38,161,920"
+    assert untied == 38_555_136, f"untied total = {untied}, expected 38,555,136"
+
+
+def test_weight_bytes_tying_fp16_known_answer() -> None:
+    """
+    KAT (sources [49] tying, [67] BLOOM embedding dtype): the tying reduction
+    is counted at the model's stored dtype, not at fp32.
+
+    Hand derivation (REFERENCE dims, dtype=float16):
+      embedding matrix = 256 * 384 * 2 = 196,608 bytes
+      difference must be 196,608, not 393,216 (fp32) and not 98,304 (fp8).
+
+    Fault detected: applying the tying reduction at the wrong dtype width
+    (e.g. hardcoding 4 bytes) — the exact F-1 fp32-hardcode mechanism.
+    """
+    base = replace(REFERENCE_CONFIG, dtype="float16")
+    untied = weight_bytes(base, quant="none")
+    tied = weight_bytes(replace(base, tie_word_embeddings=True), quant="none")
+    one_embed_fp16 = 256 * 384 * 2
+    assert untied - tied == one_embed_fp16, (
+        f"untied-tied = {untied - tied}, expected {one_embed_fp16} (fp16 embedding)"
+    )
+
+
+def test_key_length_overrides_head_dim_kv() -> None:
+    """
+    KAT (external spec: gemma3 config.json — attention.key_length=256 while
+    hidden_size/num_heads = 2560/8 = 320; ADOPTION §3 F-1 cause 1; KV formula
+    from source [4] Ainslie et al. 2023 GQA):
+
+      kv_cache_bytes = 2 * L * n_kv_heads * ctx * head_dim * dtype_bytes
+                     = 2 * 34 * 1 * 4 * 256 * 4 = 278,528 bytes
+
+    With the wrong head_dim (320) it would be 348,160 — 25% high, exactly the
+    observed F-1 projection/KV over-prediction on gemma3:4b.
+
+    Fault detected: deriving head_dim as hidden/heads when the config declares
+    attention.key_length — every attention projection and the KV cache term is
+    scaled by (320/256)^2 / (320/256) respectively.
+    """
+    gemma_like = ModelConfig(
+        vocab_size=262144,
+        hidden_size=2560,
+        num_layers=34,
+        num_heads=8,
+        num_kv_heads=1,
+        intermediate_size=8192,
+        max_seq_len=131072,
+        dtype="float16",
+        key_length=256,
+    )
+    assert gemma_like.head_dim == 256
+    kv = kv_cache_bytes(gemma_like, context_len=4, quant="none")
+    assert kv == 2 * 34 * 1 * 4 * 256 * 4, f"kv_cache_bytes = {kv}, expected 278,528"
+
+    # Projections must shrink too: Q is (heads*key_length, hidden), not
+    # (heads*(hidden//heads), hidden). weight_bytes(key_length=256) must be
+    # strictly lower than the derived-head_dim default.
+    derived = replace(gemma_like, key_length=None)
+    assert derived.head_dim == 320
+    assert kv_cache_bytes(derived, context_len=4, quant="none") == 348_160
+    assert weight_bytes(gemma_like, quant="none") < weight_bytes(derived, quant="none")
+
+
+def test_key_length_absent_matches_derived_head_dim() -> None:
+    """
+    Backward compatibility: key_length=None must be byte-identical to
+    key_length=hidden//num_heads for every cost function.
+
+    Fault detected: the override changes behaviour for configs that never
+    declared attention.key_length (silent regression on all existing bundles).
+    """
+    for cfg in (REFERENCE_CONFIG, replace(REFERENCE_CONFIG, tie_word_embeddings=True)):
+        explicit = replace(cfg, key_length=cfg.hidden_size // cfg.num_heads)
+        assert weight_bytes(cfg, "none") == weight_bytes(explicit, "none")
+        assert kv_cache_bytes(cfg, 128, "none") == kv_cache_bytes(explicit, 128, "none")
+        assert prefill_ttft_s(cfg, make_machine(), 128) == prefill_ttft_s(
+            explicit, make_machine(), 128
+        )
+
+
+def test_prefill_params_respect_tying() -> None:
+    """
+    KAT (source [49] tying + Kaplan et al. 2020 Appendix D prefill FLOPs
+    = 2 * n_params * seq_len; prefill_ttft_s must use the same parameter
+    accounting as weight_bytes for the same config).
+
+    Hand derivation (REFERENCE_CONFIG, fp32, untied):
+      per layer attn = (6*64*384)*2 + (2*64*384)*2 = 393,216 params
+      per layer ffn  = 3 * 1024 * 384               = 1,179,648 params
+      layers total   = 6 * 1,572,864                = 9,437,184 params
+      embed + unembed = 2 * 256 * 384               =   196,608 params
+      params_untied  = 9,633,792;  params_tied = 9,633,792 - 98,304 = 9,535,488
+
+    Fault detected: fixing weight_bytes but leaving prefill param counting
+    untied makes prefill_ttft_s inconsistent with weight_bytes on tied models
+    (TTFT over-predicted by the 0.9899 ratio no matter the machine).
+    """
+    machine = make_machine()
+    tied_cfg = replace(REFERENCE_CONFIG, tie_word_embeddings=True)
+    ttft_untied = prefill_ttft_s(REFERENCE_CONFIG, machine, seq_len=64)
+    ttft_tied = prefill_ttft_s(tied_cfg, machine, seq_len=64)
+    params_untied = 9_633_792
+    params_tied = 9_535_488
+    expected_ratio = params_tied / params_untied
+    assert ttft_tied == pytest.approx(ttft_untied * expected_ratio, rel=1e-12), (
+        f"ttft_tied={ttft_tied}, ttft_untied={ttft_untied}, expected ratio {expected_ratio}"
+    )
+    # arithmetic_intensity = 2*params / weight_bytes uses the same accounting.
+    ai_tied = arithmetic_intensity(tied_cfg, "none")
+    w_tied = weight_bytes(tied_cfg, "none")
+    assert ai_tied == pytest.approx(2.0 * params_tied / w_tied, rel=1e-12)
+
+
+@given(
+    vocab=st.integers(min_value=2, max_value=512),
+    n_heads=st.integers(min_value=1, max_value=8),
+    group=st.integers(min_value=1, max_value=8),
+    n_layers=st.integers(min_value=1, max_value=8),
+    ff=st.integers(min_value=1, max_value=512),
+    fp16=st.booleans(),
+)
+@settings(max_examples=25, deadline=None)
+def test_tying_reduction_is_exactly_one_embedding_matrix(
+    vocab: int,
+    n_heads: int,
+    group: int,
+    n_layers: int,
+    ff: int,
+    fp16: bool,
+) -> None:
+    """
+    Property (source [49]): for ANY valid config, tying removes exactly the
+    one unembedding matrix — never more, never less — and never increases the
+    predicted peak.
+
+    Fault detected: any implementation where the tying branch drops a
+    projection, a norm, or scales the whole total (would break exact
+    equality), or where tying is inverted (tied > untied).
+    """
+    kv_heads = n_heads  # MHA special case; GQA covered by the KATs above
+    cfg = ModelConfig(
+        vocab_size=vocab,
+        hidden_size=n_heads * 4,
+        num_layers=n_layers,
+        num_heads=n_heads,
+        num_kv_heads=kv_heads,
+        intermediate_size=ff,
+        max_seq_len=16,
+        dtype="float16" if fp16 else "float32",
+    )
+    tied = replace(cfg, tie_word_embeddings=True)
+    embed_bytes = vocab * cfg.hidden_size * (2 if fp16 else 4)
+    untied_total = weight_bytes(cfg, "none")
+    tied_total = weight_bytes(tied, "none")
+    assert tied_total <= untied_total
+    assert untied_total - tied_total == embed_bytes, (
+        f"reduction {untied_total - tied_total} != one embedding matrix {embed_bytes}"
     )

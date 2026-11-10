@@ -33,7 +33,7 @@ import urllib.request
 from fitsproof.contract.admit import admit
 from fitsproof.contract.plan import plan
 from fitsproof.contract.probe import probe
-from fitsproof.engine.model import ModelConfig
+from fitsproof.engine.model import model_config_from_arch_info
 
 OLLAMA_HOST = "http://127.0.0.1:11434"
 
@@ -168,17 +168,12 @@ def main() -> int:
         quant = map_quant(quant_label)
         blob = blob_path(show.get("modelfile", ""))
         vocab = gguf_vocab_size(blob)
-        cfg = ModelConfig(
+        cfg = model_config_from_arch_info(
+            family,
+            info,
             vocab_size=vocab,
-            hidden_size=int(info[f"{family}.embedding_length"]),
-            num_layers=int(info[f"{family}.block_count"]),
-            num_heads=int(info[f"{family}.attention.head_count"]),
-            num_kv_heads=int(info[f"{family}.attention.head_count_kv"]),
-            intermediate_size=int(info[f"{family}.feed_forward_length"]),
-            max_seq_len=min(int(info[f"{family}.context_length"]), args.context),
-            dtype="float32",
+            context=args.context,
         )
-        cfg.validate()
     except (KeyError, ValueError, OSError) as exc:
         print(f"GATE REFUSED: cannot read model metadata for {args.model}: {exc}", file=sys.stderr)
         return 2
@@ -191,7 +186,7 @@ def main() -> int:
     print(f"model:   {args.model} ({details.get('parameter_size', '?')}, {quant_label} -> {quant})")
     print(
         f"shape:   {cfg.num_layers}L x {cfg.hidden_size}h, heads {cfg.num_heads}"
-        f"/{cfg.num_kv_heads}, vocab {cfg.vocab_size}, ctx {args.context}"
+        f"/{cfg.num_kv_heads} (head_dim {cfg.head_dim}), vocab {cfg.vocab_size}, ctx {args.context}"
     )
     print(f"budget:  {args.budget_gb:g} GB")
     print(record.message)
